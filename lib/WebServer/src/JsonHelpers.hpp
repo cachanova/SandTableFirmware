@@ -18,6 +18,7 @@ public:
         uint32_t uptime = millis() / 1000;
         int clearingProgress = (state == "CLEARING") ? progress : -1;
         HomingStatus homing = polarControl->getHomingStatus();
+        DriverAvailability drivers = polarControl->getDriverAvailability();
 
         out.print("{\"state\":\"");
         out.print(state);
@@ -39,6 +40,17 @@ public:
         out.print(uptime);
         out.print(",\"storageAvailable\":");
         out.print(isSDCardReady() ? "true" : "false");
+        out.print(",\"drivers\":{\"theta\":");
+        out.print(drivers.theta ? "true" : "false");
+        out.print(",\"rho\":");
+        out.print(drivers.rho ? "true" : "false");
+        out.print(",\"rhoCompanion\":");
+        out.print(drivers.rhoCompanion ? "true" : "false");
+        out.print(",\"thetaAxis\":");
+        out.print(drivers.thetaAxis() ? "true" : "false");
+        out.print(",\"rhoAxis\":");
+        out.print(drivers.rhoAxis() ? "true" : "false");
+        out.print("}");
         out.print(",\"homing\":{\"cycle\":");
         out.print(homing.cycle);
         out.print(",\"fastApproachMs\":");

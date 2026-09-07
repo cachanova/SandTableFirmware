@@ -163,6 +163,49 @@ bool testCoordinatedAxisArrival() {
     return passed;
 }
 
+bool testDisconnectedAxisIsSkipped() {
+    std::cout << "\n=== Test: Disconnected Axis Is Skipped ===" << std::endl;
+
+    auto runMove = [](bool thetaAvailable, bool rhoAvailable,
+                      float targetTheta, float targetRho,
+                      float& actualTheta, float& actualRho) {
+        resetMock();
+        MotionPlanner planner;
+        planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
+                     R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
+                     T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
+        planner.setAxisAvailability(thetaAvailable, rhoAvailable);
+        if (!planner.addSegment(targetTheta, targetRho)) return false;
+        planner.setEndOfPattern(true);
+        planner.recalculate();
+        planner.start();
+        for (int i = 0; i < 200000 && !planner.isIdle(); ++i) {
+            planner.process();
+            advanceMicros(STEP_TIMER_PERIOD_US);
+        }
+        planner.getCurrentPosition(actualTheta, actualRho);
+        return planner.isIdle();
+    };
+
+    float theta = 0.0f;
+    float rho = 0.0f;
+    const bool rhoOnlyFinished = runMove(false, true, 1.0f, 25.0f, theta, rho);
+    const bool rhoOnlyPassed = rhoOnlyFinished && fabsf(theta) < 0.0001f &&
+        fabsf(rho - 25.0f) <= (1.0f / STEPS_PER_MM_R);
+
+    theta = 0.0f;
+    rho = 0.0f;
+    const bool thetaOnlyFinished = runMove(true, false, 0.2f, 25.0f, theta, rho);
+    const bool thetaOnlyPassed = thetaOnlyFinished &&
+        fabsf(theta - 0.2f) <= (1.0f / STEPS_PER_RAD_T) && fabsf(rho) < 0.0001f;
+
+    const bool passed = rhoOnlyPassed && thetaOnlyPassed;
+    std::cout << (passed ? "PASS" : "FAIL")
+              << ": rho-only=" << rhoOnlyPassed
+              << ", theta-only=" << thetaOnlyPassed << std::endl;
+    return passed;
+}
+
 bool testInvalidMotionInputs() {
     std::cout << "\n=== Test: Invalid Motion Inputs ===" << std::endl;
     SCurve::Profile profile;
@@ -827,6 +870,7 @@ int main(int argc, char* argv[]) {
     allPassed &= testSynchronizedBoundaryVelocity();
     allPassed &= testMixedAxisBoundaryContinuityRegression();
     allPassed &= testCoordinatedAxisArrival();
+    allPassed &= testDisconnectedAxisIsSkipped();
     allPassed &= testInvalidMotionInputs();
     allPassed &= testGracefulStopAfterFullGeneration();
     allPassed &= testSCurveBasic();

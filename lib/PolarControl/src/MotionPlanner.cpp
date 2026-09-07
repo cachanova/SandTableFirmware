@@ -118,6 +118,16 @@ bool MotionPlanner::addSegment(float theta, float rho) {
 
     m_stopEventQueued = false;
 
+    // Hold an unavailable axis at its last commanded position. This prevents
+    // both GPIO pulses and fictitious position updates when a driver is
+    // disconnected, while allowing the other axis to keep operating.
+    if (!m_thetaAvailable.load()) {
+        theta = stepsToTheta(m_queuedTSteps.load());
+    }
+    if (!m_rhoAvailable.load()) {
+        rho = stepsToRho(m_queuedRSteps.load());
+    }
+
     // Clamp rho to valid range
     rho = std::max(0.0f, std::min(rho, m_maxRho));
     const double thetaSteps = static_cast<double>(theta) * m_stepsPerRadT;
@@ -196,6 +206,11 @@ bool MotionPlanner::addSegment(float theta, float rho) {
     m_queuedRSteps.store(seg.rho.targetSteps);
 
     return true;
+}
+
+void MotionPlanner::setAxisAvailability(bool thetaAvailable, bool rhoAvailable) {
+    m_thetaAvailable.store(thetaAvailable);
+    m_rhoAvailable.store(rhoAvailable);
 }
 
 static bool calculateProfileForDuration(float distance, float vStart, float vEnd,

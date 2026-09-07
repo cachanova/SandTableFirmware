@@ -40,11 +40,25 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
         .readout { padding: 13px; border: 1px solid var(--border); border-radius: 12px; background: rgba(0,0,0,.18); }
         .label { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: 1px; }
         .value { margin-top: 4px; font-variant-numeric: tabular-nums; }
-        button { width: 100%; margin-top: 14px; padding: 12px; color: var(--text); border: 1px solid rgba(248,113,113,.45);
-            border-radius: 12px; background: rgba(248,113,113,.13); font: inherit; cursor: pointer; }
-        button:hover { background: rgba(248,113,113,.22); }
+        .drivers { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0; }
+        .driver { padding: 6px 10px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; font-size: .78rem; }
+        .driver::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--danger); }
+        .driver.connected { color: var(--text); }
+        .driver.connected::before { background: var(--success); }
+        .jog-controls { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; margin-top: 18px; }
+        .jog-card { padding: 16px; border: 1px solid var(--border); border-radius: 14px; background: rgba(0,0,0,.18); }
+        .jog-card h2 { margin: 0; font-size: 1rem; font-weight: 600; }
+        .jog-card p { min-height: 2.5em; margin: 6px 0 13px; color: var(--muted); font-size: .8rem; line-height: 1.35; }
+        .jog-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; }
+        button { color: var(--text); border-radius: 10px; font: inherit; cursor: pointer; }
+        .jog { min-height: 46px; padding: 8px 5px; border: 1px solid rgba(201,162,39,.42); background: rgba(201,162,39,.12); font-size: .82rem; }
+        .jog:hover { background: rgba(201,162,39,.22); }
+        .jog .arrow { display: inline-block; margin-right: 3px; color: var(--accent-light); font-size: 1rem; line-height: .7; }
+        button:disabled { opacity: .35; cursor: not-allowed; }
+        #stop { width: 100%; margin-top: 18px; padding: 12px; border: 1px solid rgba(248,113,113,.45); background: rgba(248,113,113,.13); }
+        #stop:hover { background: rgba(248,113,113,.22); }
         .error { min-height: 1.3em; margin-top: 12px; color: var(--danger); text-align: center; font-size: .86rem; }
-        @media (max-width: 560px) { body { padding: 12px; } .card { padding: 14px; } nav a { padding: 8px 10px; font-size: .78rem; } h1 { font-size: 1.9rem; } }
+        @media (max-width: 560px) { body { padding: 12px; } .card { padding: 14px; } nav a { padding: 8px 10px; font-size: .78rem; } h1 { font-size: 1.9rem; } .jog-controls { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
@@ -61,6 +75,37 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
             <div class="readout"><div class="label">Current</div><div class="value" id="current">—</div></div>
             <div class="readout"><div class="label">Target</div><div class="value" id="target">—</div></div>
         </div>
+        <div class="drivers" aria-label="Motor driver connections">
+            <span class="driver" id="driverTheta">Theta disconnected</span>
+            <span class="driver" id="driverRho">Rho disconnected</span>
+            <span class="driver" id="driverRhoCompanion">Rho companion disconnected</span>
+        </div>
+        <div class="jog-controls">
+            <section class="jog-card">
+                <h2>Theta · rotation</h2>
+                <p>Jog counterclockwise or clockwise from the latest target.</p>
+                <div class="jog-grid">
+                    <button class="jog" data-axis="theta" data-delta="-1" aria-label="Theta 1 degree counterclockwise"><span class="arrow">↺</span>1°</button>
+                    <button class="jog" data-axis="theta" data-delta="-10" aria-label="Theta 10 degrees counterclockwise"><span class="arrow">↺</span>10°</button>
+                    <button class="jog" data-axis="theta" data-delta="-100" aria-label="Theta 100 degrees counterclockwise"><span class="arrow">↺</span>100°</button>
+                    <button class="jog" data-axis="theta" data-delta="1" aria-label="Theta 1 degree clockwise"><span class="arrow">↻</span>1°</button>
+                    <button class="jog" data-axis="theta" data-delta="10" aria-label="Theta 10 degrees clockwise"><span class="arrow">↻</span>10°</button>
+                    <button class="jog" data-axis="theta" data-delta="100" aria-label="Theta 100 degrees clockwise"><span class="arrow">↻</span>100°</button>
+                </div>
+            </section>
+            <section class="jog-card">
+                <h2>Rho · radius</h2>
+                <p>Jog inward or outward from the latest target.</p>
+                <div class="jog-grid">
+                    <button class="jog" data-axis="rho" data-delta="-1">In 1 mm</button>
+                    <button class="jog" data-axis="rho" data-delta="-10">In 10 mm</button>
+                    <button class="jog" data-axis="rho" data-delta="-100">In 100 mm</button>
+                    <button class="jog" data-axis="rho" data-delta="1">Out 1 mm</button>
+                    <button class="jog" data-axis="rho" data-delta="10">Out 10 mm</button>
+                    <button class="jog" data-axis="rho" data-delta="100">Out 100 mm</button>
+                </div>
+            </section>
+        </div>
         <button id="stop">Stop all motion</button><div id="error" class="error"></div>
     </section>
 </div>
@@ -72,7 +117,8 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
     const dot = document.getElementById('stateDot');
     const errorEl = document.getElementById('error');
     const sendEl = document.getElementById('sendState');
-    let current = null, target = null, maxRho = 0, geometryReady = false, enabled = false, dragging = false;
+    let current = null, target = null, maxRho = 0, geometryReady = false, enabled = false, canvasEnabled = false, dragging = false;
+    let axes = {theta:false,rho:false};
     let queued = null, sending = false, sendTimer = 0, lastSentAt = 0, sendController = null;
     let commandGeneration = 0, stopInProgress = false;
 
@@ -98,7 +144,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
         ctx.beginPath(); ctx.moveTo(pad,c); ctx.lineTo(s-pad,c); ctx.moveTo(c,pad); ctx.lineTo(c,s-pad); ctx.stroke();
         if (target) drawMarker(target.x,target.y,'#e8c547',9,true);
         if (current) drawMarker(current.x,current.y,'#4ade80',7,false);
-        if (!enabled) { ctx.fillStyle='rgba(15,15,26,.55)'; ctx.beginPath(); ctx.arc(c,c,r,0,Math.PI*2); ctx.fill(); }
+        if (!canvasEnabled) { ctx.fillStyle='rgba(15,15,26,.55)'; ctx.beginPath(); ctx.arc(c,c,r,0,Math.PI*2); ctx.fill(); }
     }
     function pointerTarget(ev) {
         const rect=canvas.getBoundingClientRect(), s=rect.width, pad=12, d=s-pad*2;
@@ -111,6 +157,34 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
         if (!enabled) return;
         target=value; queued=value; document.getElementById('target').textContent=`ρ ${value.rho.toFixed(1)} mm · θ ${(value.theta*180/Math.PI).toFixed(1)}°`;
         draw(); scheduleSend(immediate);
+    }
+    function targetFromPolar(theta,rho) {
+        const radius=maxRho>0 ? rho/maxRho*.5 : 0;
+        return {x:.5+Math.cos(theta)*radius,y:.5+Math.sin(theta)*radius,rho,theta};
+    }
+    function wrapAngle(theta) { return Math.atan2(Math.sin(theta),Math.cos(theta)); }
+    function updateControls() {
+        canvasEnabled=enabled && axes.theta && axes.rho;
+        document.querySelectorAll('.jog').forEach(button => {
+            button.disabled=!enabled || !axes[button.dataset.axis];
+        });
+        draw();
+    }
+    function setDriverState(id,label,connected) {
+        const el=document.getElementById(id); el.classList.toggle('connected',connected);
+        el.textContent=`${label} ${connected?'connected':'disconnected'}`;
+    }
+    function jog(axis,delta) {
+        if (!enabled || !axes[axis] || !current) return;
+        const base=target || current;
+        let theta=base.theta, rho=base.rho;
+        if (axis==='theta') theta=wrapAngle(theta+delta*Math.PI/180);
+        else rho=Math.max(0,Math.min(maxRho,rho+delta));
+        if (Math.abs(theta-base.theta)<1e-8 && Math.abs(rho-base.rho)<.001) {
+            errorEl.textContent=delta<0?'Already at the inner limit':'Already at the outer limit';
+            return;
+        }
+        setTarget(targetFromPolar(theta,rho),true);
     }
     function sameTarget(a,b) {
         return a && b && Math.abs(a.rho-b.rho)<.001 && Math.abs(a.theta-b.theta)<.000001;
@@ -137,7 +211,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
             sending=false; if (generation===commandGeneration && queued) scheduleSend(false);
         }
     }
-    canvas.addEventListener('pointerdown', ev => { if (!enabled) return; dragging=true; canvas.setPointerCapture(ev.pointerId); setTarget(pointerTarget(ev),true); });
+    canvas.addEventListener('pointerdown', ev => { if (!canvasEnabled) return; dragging=true; canvas.setPointerCapture(ev.pointerId); setTarget(pointerTarget(ev),true); });
     canvas.addEventListener('pointermove', ev => { if (dragging) setTarget(pointerTarget(ev)); });
     canvas.addEventListener('pointerup', ev => {
         if (!dragging) return; dragging=false;
@@ -146,31 +220,38 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
         else if (queued) scheduleSend(true);
     });
     canvas.addEventListener('pointercancel', () => { dragging=false; });
+    document.querySelectorAll('.jog').forEach(button => button.addEventListener('click',() => jog(button.dataset.axis,Number(button.dataset.delta))));
     document.getElementById('stop').addEventListener('click', async () => {
-        commandGeneration++; queued=null; clearTimeout(sendTimer); dragging=false; stopInProgress=true; enabled=false; draw();
+        commandGeneration++; queued=null; clearTimeout(sendTimer); dragging=false; stopInProgress=true; enabled=false; updateControls();
         if (sendController) sendController.abort();
         try { const r=await fetch('/api/motion/stop',{method:'POST'}); if(!r.ok) throw new Error('Stop request failed'); errorEl.textContent=''; sendEl.textContent='Stopped'; }
         catch(err) { errorEl.textContent=err.message; }
         finally { stopInProgress=false; refreshStatus(); }
     });
     function updatePosition(p) {
-        if (!p) return; current={x:p.x,y:p.y};
+        if (!p) return;
         const rho=p.rho ?? p.r, theta=p.theta ?? p.t;
+        current={x:p.x,y:p.y,rho:Number(rho),theta:Number(theta)};
         document.getElementById('current').textContent=`ρ ${Number(rho).toFixed(1)} mm · θ ${(Number(theta)*180/Math.PI).toFixed(1)}°`; draw();
     }
     async function refreshStatus() {
         try {
             const r=await fetch('/api/status'); if(!r.ok) throw new Error(); const data=await r.json();
             const allowed=['IDLE','RUNNING','PAUSED','STOPPING','CLEARING','PREPARING']; enabled=!stopInProgress && geometryReady && allowed.includes(data.state);
-            stateEl.textContent=data.state.replaceAll('_',' '); dot.className='dot '+(enabled?'ready':'blocked'); draw();
-        } catch (_) { enabled=false; stateEl.textContent='Offline'; dot.className='dot blocked'; draw(); }
+            const drivers=data.drivers || {};
+            axes={theta:drivers.thetaAxis===true,rho:drivers.rhoAxis===true};
+            setDriverState('driverTheta','Theta',drivers.theta===true);
+            setDriverState('driverRho','Rho',drivers.rho===true);
+            setDriverState('driverRhoCompanion','Rho companion',drivers.rhoCompanion===true);
+            stateEl.textContent=data.state.replaceAll('_',' '); dot.className='dot '+(enabled?'ready':'blocked'); updateControls();
+        } catch (_) { enabled=false; axes={theta:false,rho:false}; stateEl.textContent='Offline'; dot.className='dot blocked'; updateControls(); }
     }
     async function initialPosition() {
         try {
             const r=await fetch('/api/position'); if(!r.ok) throw new Error(); const data=await r.json();
             const radius=Number(data.maxRho); if(!Number.isFinite(radius) || radius<=0) throw new Error();
             maxRho=radius; geometryReady=true; updatePosition(data.current); refreshStatus();
-        } catch (_) { geometryReady=false; enabled=false; draw(); }
+        } catch (_) { geometryReady=false; enabled=false; updateControls(); }
     }
     const events=new EventSource('/api/stream'); events.addEventListener('pos',ev=>{ try { updatePosition(JSON.parse(ev.data)); } catch (_) {} });
     window.addEventListener('resize',resize); resize(); initialPosition(); refreshStatus(); setInterval(refreshStatus,1000); setInterval(()=>{ if(!geometryReady) initialPosition(); },2000);

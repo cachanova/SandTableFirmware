@@ -87,6 +87,15 @@ struct HomingSettings {
   uint16_t minimumTravelMs = 600;
 };
 
+struct DriverAvailability {
+  bool theta = false;
+  bool rho = false;
+  bool rhoCompanion = false;
+
+  bool thetaAxis() const { return theta; }
+  bool rhoAxis() const { return rho || rhoCompanion; }
+};
+
 enum class TuningUpdateResult : uint8_t {
   UPDATED,
   REJECTED,
@@ -119,6 +128,7 @@ public:
   bool home();
   bool confirmHome(bool successful);
   HomingStatus getHomingStatus() const;
+  DriverAvailability getDriverAvailability() const;
 #if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING)
   // Bench-only escape hatch: establish a logical origin without moving the
   // mechanism. This must never be present in a production build.
@@ -246,6 +256,9 @@ private:
 
   std::atomic<State_t> m_state{UNINITIALIZED};
   std::atomic<bool> m_driverBusInitialized{false};
+  std::atomic<bool> m_thetaDriverConnected{false};
+  std::atomic<bool> m_rhoDriverConnected{false};
+  std::atomic<bool> m_rhoCompanionDriverConnected{false};
 #ifdef SISYPHUS_THETA_COMMISSIONING
   std::atomic<bool> m_thetaCommissioningStartPermit{false};
 #endif

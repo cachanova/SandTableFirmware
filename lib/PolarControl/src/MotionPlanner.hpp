@@ -178,6 +178,11 @@ public:
     void setMotionLimits(float rMaxVel, float rMaxAccel, float rMaxJerk,
                          float tMaxVel, float tMaxAccel, float tMaxJerk);
 
+    // Prevent commands and logical position updates for axes whose motor
+    // drivers were not detected during startup. Rho may remain available when
+    // either of its two drivers is connected because they share STEP/DIR.
+    void setAxisAvailability(bool thetaAvailable, bool rhoAvailable);
+
     // Signal end of pattern (causes deceleration to stop)
     void setEndOfPattern(bool ending);
 
@@ -257,6 +262,8 @@ private:
     // State
     std::atomic<bool> m_running;
     std::atomic<bool> m_timerActive{false};
+    std::atomic<bool> m_thetaAvailable{true};
+    std::atomic<bool> m_rhoAvailable{true};
     bool m_endOfPattern;
     bool m_stopEventQueued = false;
     uint32_t m_completedCount;

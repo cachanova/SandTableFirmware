@@ -123,6 +123,12 @@ static bool readTmcRegisterChecked(uint8_t driverAddress,
     return false;
 }
 
+static bool tmcDriverPresent(uint8_t driverAddress) {
+    uint32_t ioInput = 0;
+    return readTmcRegisterChecked(driverAddress, 0x06, ioInput) &&
+        ((ioInput >> 24) & 0xFF) == 0x21;
+}
+
 // ============================================================================
 // Lifecycle
 // ============================================================================
@@ -248,46 +254,48 @@ bool PolarControl::setupDrivers() {
         return false;
     }
 
-    // Production requires every addressed driver. Single-axis commissioning
-    // intentionally permits the two rho drivers to be physically disconnected.
-    const bool thetaReady = m_tDriver.isSetupAndCommunicating();
+    auto configureConnectedDriver = [&](TMC2209& driver,
+                                        const DriverSettings& settings,
+                                        uint8_t address,
+                                        const char* name) {
+        if (!tmcDriverPresent(address)) {
+            LOG("Motor driver %s disconnected; skipping configuration\r\n", name);
+            ErrorLog::instance().log("WARN", "MOTOR", "DRIVER_OFFLINE",
+                                     "Motor driver is disconnected", name);
+            return false;
+        }
+        if (!applyDriverSettings(driver, settings, address, name)) {
+            LOG("Motor driver %s failed verification; leaving it disabled\r\n", name);
+            ErrorLog::instance().log("ERROR", "MOTOR", "DRIVER_CONFIG",
+                                     "Driver configuration did not verify", name);
+            return false;
+        }
+        driver.enable();
+        return true;
+    };
+
+    const bool thetaReady = configureConnectedDriver(
+        m_tDriver, m_tDriverSettings, T_ADDR, "theta");
+    bool rhoReady = false;
+    bool rhoCompanionReady = false;
 #ifdef SISYPHUS_THETA_COMMISSIONING
-    if (!thetaReady) {
-        ErrorLog::instance().log("ERROR", "MOTOR", "THETA_DRIVER_OFFLINE",
-                                 "Theta TMC2209 is not communicating");
-        return false;
-    }
+    LOG("THETA COMMISSIONING: rho drivers are not probed; rho STEP remains low\r\n");
 #else
-    if (!thetaReady || !m_rDriver.isSetupAndCommunicating() ||
-        !m_rCDriver.isSetupAndCommunicating()) {
-        ErrorLog::instance().log("ERROR", "MOTOR", "DRIVER_OFFLINE",
-                                 "One or more TMC2209 drivers are not communicating");
-        return false;
-    }
+    rhoReady = configureConnectedDriver(
+        m_rDriver, m_rDriverSettings, R_ADDR, "rho");
+    rhoCompanionReady = configureConnectedDriver(
+        m_rCDriver, m_rDriverSettings, RC_ADDR, "rho-companion");
 #endif
 
-    // Apply, read back, and enable only the axis under test in commissioning
-    // mode. Never start motion with an unverified register configuration.
-    if (!applyDriverSettings(m_tDriver, m_tDriverSettings, T_ADDR, "theta")) {
-        ErrorLog::instance().log("ERROR", "MOTOR", "THETA_CONFIG_VERIFY_FAILED",
-                                 "Theta driver settings did not verify over UART");
-        return false;
-    }
-#ifdef SISYPHUS_THETA_COMMISSIONING
-    m_tDriver.enable();
-    LOG("THETA COMMISSIONING: rho drivers may be disconnected; rho STEP remains low\r\n");
-#else
-    if (!applyDriverSettings(m_rDriver, m_rDriverSettings, R_ADDR, "rho") ||
-        !applyDriverSettings(m_rCDriver, m_rDriverSettings, RC_ADDR,
-                             "rho-companion")) {
-        ErrorLog::instance().log("ERROR", "MOTOR", "RHO_CONFIG_VERIFY_FAILED",
-                                 "Rho driver settings did not verify over UART");
-        return false;
-    }
-    m_tDriver.enable();
-    m_rDriver.enable();
-    m_rCDriver.enable();
-#endif
+    m_thetaDriverConnected.store(thetaReady);
+    m_rhoDriverConnected.store(rhoReady);
+    m_rhoCompanionDriverConnected.store(rhoCompanionReady);
+    m_planner.setAxisAvailability(thetaReady, rhoReady || rhoCompanionReady);
+
+    LOG("Driver availability: theta=%s rho=%s rho-companion=%s\r\n",
+        thetaReady ? "connected" : "disconnected",
+        rhoReady ? "connected" : "disconnected",
+        rhoCompanionReady ? "connected" : "disconnected");
 
     m_state = INITIALIZED;
     return true;
@@ -298,6 +306,13 @@ bool PolarControl::home() {
     LOG("THETA COMMISSIONING: homing rejected\r\n");
     return false;
 #endif
+    if (!m_rhoDriverConnected.load() ||
+        !m_rhoCompanionDriverConnected.load()) {
+        LOG("Cannot home: both rho drivers must be connected\r\n");
+        ErrorLog::instance().log("WARN", "HOME", "DRIVER_OFFLINE",
+                                 "Both rho drivers are required for homing");
+        return false;
+    }
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     State_t state = m_state.load();
     if (state != IDLE && state != INITIALIZED && state != HOMING_FAILED) {
@@ -414,6 +429,14 @@ HomingStatus PolarControl::getHomingStatus() const {
     status.trigger = m_homingTrigger.load();
     status.failure = m_homingFailure.load();
     return status;
+}
+
+DriverAvailability PolarControl::getDriverAvailability() const {
+    DriverAvailability availability;
+    availability.theta = m_thetaDriverConnected.load();
+    availability.rho = m_rhoDriverConnected.load();
+    availability.rhoCompanion = m_rhoCompanionDriverConnected.load();
+    return availability;
 }
 
 static float driverFullScaleCurrentMa() {
@@ -1234,10 +1257,12 @@ void PolarControl::emergencyStop() {
     m_state.store(INITIALIZED);
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     if (m_driverBusInitialized.load()) {
-        m_tDriver.moveAtVelocity(0);
-        m_rDriver.moveAtVelocity(0);
-        m_rCDriver.moveAtVelocity(0);
-        m_rDriver.disableInverseMotorDirection();
+        if (m_thetaDriverConnected.load()) m_tDriver.moveAtVelocity(0);
+        if (m_rhoDriverConnected.load()) {
+            m_rDriver.moveAtVelocity(0);
+            m_rDriver.disableInverseMotorDirection();
+        }
+        if (m_rhoCompanionDriverConnected.load()) m_rCDriver.moveAtVelocity(0);
     }
     m_planner.stop();
     m_posGen.reset();
@@ -1543,7 +1568,7 @@ TuningUpdateResult PolarControl::saveThetaDriverSettings(const DriverSettings& s
     }
 
     const DriverSettings previousSettings = m_tDriverSettings;
-    const bool driverReady = m_driverBusInitialized.load();
+    const bool driverReady = m_thetaDriverConnected.load();
     auto restoreDriver = [&]() {
         if (!driverReady) return true;
         const bool restored = applyDriverSettings(
@@ -1613,12 +1638,14 @@ TuningUpdateResult PolarControl::saveRhoDriverSettings(const DriverSettings& set
     }
 
     const DriverSettings previousSettings = m_rDriverSettings;
-    const bool driversReady = m_driverBusInitialized.load();
+    const bool primaryReady = m_rhoDriverConnected.load();
+    const bool companionReady = m_rhoCompanionDriverConnected.load();
+    const bool driversReady = primaryReady || companionReady;
     auto restoreDrivers = [&]() {
         if (!driversReady) return true;
-        const bool primaryRestored = applyDriverSettings(
+        const bool primaryRestored = !primaryReady || applyDriverSettings(
             m_rDriver, previousSettings, R_ADDR, "rho");
-        const bool companionRestored = applyDriverSettings(
+        const bool companionRestored = !companionReady || applyDriverSettings(
             m_rCDriver, previousSettings, RC_ADDR, "rho-companion");
         if (!primaryRestored || !companionRestored) {
             m_state.store(INITIALIZED);
@@ -1630,9 +1657,9 @@ TuningUpdateResult PolarControl::saveRhoDriverSettings(const DriverSettings& set
     };
 
     if (driversReady) {
-        const bool primaryApplied = applyDriverSettings(
+        const bool primaryApplied = !primaryReady || applyDriverSettings(
             m_rDriver, settings, R_ADDR, "rho");
-        const bool companionApplied = primaryApplied && applyDriverSettings(
+        const bool companionApplied = !companionReady || applyDriverSettings(
             m_rCDriver, settings, RC_ADDR, "rho-companion");
         if (!primaryApplied || !companionApplied) {
             restoreDrivers();
@@ -2227,6 +2254,7 @@ static void fillDriverJson(TMC2209& driver, uint8_t driverAddress,
         readTmcRegisterChecked(driverAddress, 0x06, ioInput) &&
         ((ioInput >> 24) & 0xFF) == 0x21;
     doc["name"] = name;
+    doc["connected"] = uartResponseValid;
     doc["uartResponseValid"] = uartResponseValid;
     doc["communicating"] = uartResponseValid && driver.isCommunicating();
     doc["setupOk"] = uartResponseValid && driver.isSetupAndCommunicating();
@@ -2301,6 +2329,13 @@ static void fillDriverJson(TMC2209& driver, uint8_t driverAddress,
     }
 }
 
+static void writeDisconnectedDriver(Print& out, const char* name) {
+    out.print("{\"name\":\"");
+    out.print(name);
+    out.print("\",\"connected\":false,\"uartResponseValid\":false,");
+    out.print("\"communicating\":false,\"setupOk\":false}");
+}
+
 void PolarControl::writeThetaDriverSettings(Print& out) {
     if (!m_driverBusInitialized.load()) {
         out.print("{\"error\":\"Driver UART is not initialized\"}");
@@ -2308,6 +2343,10 @@ void PolarControl::writeThetaDriverSettings(Print& out) {
     }
     if (m_state.load() == HOMING) {
         out.print("{\"error\":\"Driver diagnostics unavailable during homing\"}");
+        return;
+    }
+    if (!m_thetaDriverConnected.load()) {
+        writeDisconnectedDriver(out, "theta");
         return;
     }
     xSemaphoreTake(m_mutex, portMAX_DELAY);
@@ -2326,6 +2365,10 @@ void PolarControl::writeRhoDriverSettings(Print& out) {
         out.print("{\"error\":\"Driver diagnostics unavailable during homing\"}");
         return;
     }
+    if (!m_rhoDriverConnected.load()) {
+        writeDisconnectedDriver(out, "rho");
+        return;
+    }
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     JsonDocument doc;
     fillDriverJson(m_rDriver, R_ADDR, "rho", doc);
@@ -2340,6 +2383,10 @@ void PolarControl::writeRhoCompanionDriverSettings(Print& out) {
     }
     if (m_state.load() == HOMING) {
         out.print("{\"error\":\"Driver diagnostics unavailable during homing\"}");
+        return;
+    }
+    if (!m_rhoCompanionDriverConnected.load()) {
+        writeDisconnectedDriver(out, "rhoCompanion");
         return;
     }
     xSemaphoreTake(m_mutex, portMAX_DELAY);
