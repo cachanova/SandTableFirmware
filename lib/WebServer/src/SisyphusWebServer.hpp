@@ -28,6 +28,7 @@ private:
     enum class PendingMotion : uint8_t {
         NONE,
         MANUAL,
+        MANUAL_JOG,
         THETA_CONTINUOUS,
         THETA_STRESS,
         RHO_CONTINUOUS,
@@ -37,6 +38,8 @@ private:
     PendingMotion m_pendingMotion = PendingMotion::NONE;
     float m_pendingManualTheta = 0.0f;
     float m_pendingManualRho = 0.0f;
+    float m_pendingJogTheta = 0.0f;
+    float m_pendingJogRho = 0.0f;
 
     // Pattern queue management
     String m_queuedPattern;
@@ -68,6 +71,7 @@ private:
     void handlePatternPause(AsyncWebServerRequest *request);
     void handlePatternResume(AsyncWebServerRequest *request);
     void handleManualMove(AsyncWebServerRequest *request);
+    void handleManualJog(AsyncWebServerRequest *request);
     void handleMotionStop(AsyncWebServerRequest *request);
     void handleMotionTelemetry(AsyncWebServerRequest *request);
     void handleHome(AsyncWebServerRequest *request);
@@ -117,6 +121,7 @@ private:
     void processPatternQueue();
     void clearPlaybackLocked();
     bool prepareReplacementLocked();
+    bool prepareManualJogLocked();
     bool queueTuningTestLocked(PendingMotion motion);
     void broadcastPosition(); // New streaming method
     void broadcastSinglePosition(AsyncEventSourceClient *client = nullptr);

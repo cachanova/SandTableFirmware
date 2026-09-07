@@ -316,6 +316,11 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
         handleManualMove(request);
     });
 
+    m_server.on("/api/manual/jog", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handleManualJog(request);
+    });
+
     m_server.on("/api/motion/stop", HTTP_POST, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handleMotionStop(request);
@@ -864,21 +869,31 @@ void SisyphusWebServer::broadcastPosition() {
 void SisyphusWebServer::processPatternQueue() {
     SemaphoreGuard stateLock(m_stateMutex);
     auto state = m_polarControl->getState();
-    if (state != PolarControl::IDLE) return;
 
     // Non-pattern commands use a single replaceable slot. Pointer drags can
     // therefore update the destination faster than the mechanism can move
     // without building an unbounded queue of stale waypoints.
     if (m_pendingMotion != PendingMotion::NONE) {
         const PendingMotion pending = m_pendingMotion;
+        const bool jogReady = pending == PendingMotion::MANUAL_JOG &&
+            (state == PolarControl::IDLE || state == PolarControl::INITIALIZED ||
+             state == PolarControl::HOMING_FAILED);
+        if (state != PolarControl::IDLE && !jogReady) return;
+
         const float theta = m_pendingManualTheta;
         const float rho = m_pendingManualRho;
+        const float jogTheta = m_pendingJogTheta;
+        const float jogRho = m_pendingJogRho;
         m_pendingMotion = PendingMotion::NONE;
 
         bool started = false;
         switch (pending) {
             case PendingMotion::MANUAL:
                 started = m_polarControl->moveTo(theta, rho);
+                m_activeMotion = MotionOwner::MANUAL;
+                break;
+            case PendingMotion::MANUAL_JOG:
+                started = m_polarControl->jogRelative(jogTheta, jogRho);
                 m_activeMotion = MotionOwner::MANUAL;
                 break;
             case PendingMotion::THETA_CONTINUOUS:
@@ -907,6 +922,9 @@ void SisyphusWebServer::processPatternQueue() {
         }
         return;
     }
+
+
+    if (state != PolarControl::IDLE) return;
 
     // Handle clearing completion for single pattern mode (not playlist)
     if (!m_playlistMode && m_runningClearing && m_pendingPattern.length() > 0) {
@@ -1051,6 +1069,16 @@ bool SisyphusWebServer::prepareReplacementLocked() {
         default:
             return false;
     }
+}
+
+bool SisyphusWebServer::prepareManualJogLocked() {
+    const auto state = m_polarControl->getState();
+    if (state == PolarControl::INITIALIZED ||
+        state == PolarControl::HOMING_FAILED) {
+        clearPlaybackLocked();
+        return true;
+    }
+    return prepareReplacementLocked();
 }
 
 bool SisyphusWebServer::queueTuningTestLocked(PendingMotion motion) {
@@ -1374,6 +1402,52 @@ void SisyphusWebServer::handleManualMove(AsyncWebServerRequest *request) {
     m_pendingMotion = PendingMotion::MANUAL;
     request->send(202, "application/json",
         "{\"success\":true,\"message\":\"Manual target queued\"}");
+}
+
+void SisyphusWebServer::handleManualJog(AsyncWebServerRequest *request) {
+#ifdef SISYPHUS_THETA_COMMISSIONING
+    request->send(409, "application/json",
+        "{\"success\":false,\"message\":\"Manual motion is disabled in theta commissioning mode\"}");
+    return;
+#endif
+    if (!request->hasParam("axis", true) ||
+        !request->hasParam("amount", true)) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Missing axis or amount\"}");
+        return;
+    }
+
+    const String axis = request->getParam("axis", true)->value();
+    float amount = 0.0f;
+    if (!parseStrictFloat(request->getParam("amount", true)->value(), amount) ||
+        (axis != "theta" && axis != "rho") ||
+        (fabsf(amount) != 1.0f && fabsf(amount) != 10.0f &&
+         fabsf(amount) != 100.0f)) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Jog must be +/-1, 10, or 100 on theta or rho\"}");
+        return;
+    }
+
+    const DriverAvailability drivers = m_polarControl->getDriverAvailability();
+    if ((axis == "theta" && !drivers.thetaAxis()) ||
+        (axis == "rho" && !drivers.rhoAxis())) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"That motor driver is disconnected\"}");
+        return;
+    }
+
+    SemaphoreGuard stateLock(m_stateMutex);
+    if (!prepareManualJogLocked()) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"Manual jog is unavailable while homing or awaiting confirmation\"}");
+        return;
+    }
+
+    m_pendingJogTheta = axis == "theta" ? amount * PI / 180.0f : 0.0f;
+    m_pendingJogRho = axis == "rho" ? amount : 0.0f;
+    m_pendingMotion = PendingMotion::MANUAL_JOG;
+    request->send(202, "application/json",
+        "{\"success\":true,\"message\":\"Manual jog queued\"}");
 }
 
 void SisyphusWebServer::handleHome(AsyncWebServerRequest *request) {

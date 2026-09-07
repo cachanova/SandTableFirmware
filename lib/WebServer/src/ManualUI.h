@@ -70,7 +70,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
     <section class="card">
         <div class="status-row"><div class="status"><span id="stateDot" class="dot"></span><strong id="state">Connecting</strong></div><div class="status" id="sendState">Waiting</div></div>
         <div class="stage"><canvas id="table" aria-label="Manual table position control"></canvas></div>
-        <p class="hint">Click or drag anywhere inside the circle. The gold ring is the latest target; the green ball is the table's reported position.</p>
+        <p class="hint">The jog buttons work before homing; their moves are relative and the displayed absolute position is unconfirmed. The canvas unlocks after homing.</p>
         <div class="readouts">
             <div class="readout"><div class="label">Current</div><div class="value" id="current">—</div></div>
             <div class="readout"><div class="label">Target</div><div class="value" id="target">—</div></div>
@@ -117,7 +117,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
     const dot = document.getElementById('stateDot');
     const errorEl = document.getElementById('error');
     const sendEl = document.getElementById('sendState');
-    let current = null, target = null, maxRho = 0, geometryReady = false, enabled = false, canvasEnabled = false, dragging = false;
+    let current = null, target = null, maxRho = 0, geometryReady = false, enabled = false, jogEnabled = false, canvasEnabled = false, dragging = false;
     let axes = {theta:false,rho:false};
     let queued = null, sending = false, sendTimer = 0, lastSentAt = 0, sendController = null;
     let commandGeneration = 0, stopInProgress = false;
@@ -158,15 +158,10 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
         target=value; queued=value; document.getElementById('target').textContent=`ρ ${value.rho.toFixed(1)} mm · θ ${(value.theta*180/Math.PI).toFixed(1)}°`;
         draw(); scheduleSend(immediate);
     }
-    function targetFromPolar(theta,rho) {
-        const radius=maxRho>0 ? rho/maxRho*.5 : 0;
-        return {x:.5+Math.cos(theta)*radius,y:.5+Math.sin(theta)*radius,rho,theta};
-    }
-    function wrapAngle(theta) { return Math.atan2(Math.sin(theta),Math.cos(theta)); }
     function updateControls() {
         canvasEnabled=enabled && axes.theta && axes.rho;
         document.querySelectorAll('.jog').forEach(button => {
-            button.disabled=!enabled || !axes[button.dataset.axis];
+            button.disabled=!jogEnabled || !axes[button.dataset.axis];
         });
         draw();
     }
@@ -174,17 +169,18 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
         const el=document.getElementById(id); el.classList.toggle('connected',connected);
         el.textContent=`${label} ${connected?'connected':'disconnected'}`;
     }
-    function jog(axis,delta) {
-        if (!enabled || !axes[axis] || !current) return;
-        const base=target || current;
-        let theta=base.theta, rho=base.rho;
-        if (axis==='theta') theta=wrapAngle(theta+delta*Math.PI/180);
-        else rho=Math.max(0,Math.min(maxRho,rho+delta));
-        if (Math.abs(theta-base.theta)<1e-8 && Math.abs(rho-base.rho)<.001) {
-            errorEl.textContent=delta<0?'Already at the inner limit':'Already at the outer limit';
-            return;
-        }
-        setTarget(targetFromPolar(theta,rho),true);
+    async function jog(axis,amount) {
+        if (!jogEnabled || !axes[axis]) return;
+        sendEl.textContent='Queuing jog…'; errorEl.textContent=''; target=null; draw();
+        const unit=axis==='theta'?'°':' mm';
+        document.getElementById('target').textContent=`${axis==='theta'?'θ':'ρ'} ${amount>0?'+':''}${amount}${unit} relative`;
+        const body=new URLSearchParams({axis,amount:String(amount)});
+        try {
+            const response=await fetch('/api/manual/jog',{method:'POST',body});
+            const data=await response.json().catch(()=>({}));
+            if (!response.ok) throw new Error(data.message || `Request failed (${response.status})`);
+            sendEl.textContent='Jog accepted';
+        } catch (err) { errorEl.textContent=err.message; sendEl.textContent='Not sent'; }
     }
     function sameTarget(a,b) {
         return a && b && Math.abs(a.rho-b.rho)<.001 && Math.abs(a.theta-b.theta)<.000001;
@@ -222,7 +218,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
     canvas.addEventListener('pointercancel', () => { dragging=false; });
     document.querySelectorAll('.jog').forEach(button => button.addEventListener('click',() => jog(button.dataset.axis,Number(button.dataset.delta))));
     document.getElementById('stop').addEventListener('click', async () => {
-        commandGeneration++; queued=null; clearTimeout(sendTimer); dragging=false; stopInProgress=true; enabled=false; updateControls();
+        commandGeneration++; queued=null; clearTimeout(sendTimer); dragging=false; stopInProgress=true; enabled=false; jogEnabled=false; updateControls();
         if (sendController) sendController.abort();
         try { const r=await fetch('/api/motion/stop',{method:'POST'}); if(!r.ok) throw new Error('Stop request failed'); errorEl.textContent=''; sendEl.textContent='Stopped'; }
         catch(err) { errorEl.textContent=err.message; }
@@ -238,20 +234,21 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
         try {
             const r=await fetch('/api/status'); if(!r.ok) throw new Error(); const data=await r.json();
             const allowed=['IDLE','RUNNING','PAUSED','STOPPING','CLEARING','PREPARING']; enabled=!stopInProgress && geometryReady && allowed.includes(data.state);
+            const jogAllowed=[...allowed,'INITIALIZED','HOMING_FAILED']; jogEnabled=!stopInProgress && jogAllowed.includes(data.state);
             const drivers=data.drivers || {};
             axes={theta:drivers.thetaAxis===true,rho:drivers.rhoAxis===true};
             setDriverState('driverTheta','Theta',drivers.theta===true);
             setDriverState('driverRho','Rho',drivers.rho===true);
             setDriverState('driverRhoCompanion','Rho companion',drivers.rhoCompanion===true);
             stateEl.textContent=data.state.replaceAll('_',' '); dot.className='dot '+(enabled?'ready':'blocked'); updateControls();
-        } catch (_) { enabled=false; axes={theta:false,rho:false}; stateEl.textContent='Offline'; dot.className='dot blocked'; updateControls(); }
+        } catch (_) { enabled=false; jogEnabled=false; axes={theta:false,rho:false}; stateEl.textContent='Offline'; dot.className='dot blocked'; updateControls(); }
     }
     async function initialPosition() {
         try {
             const r=await fetch('/api/position'); if(!r.ok) throw new Error(); const data=await r.json();
             const radius=Number(data.maxRho); if(!Number.isFinite(radius) || radius<=0) throw new Error();
             maxRho=radius; geometryReady=true; updatePosition(data.current); refreshStatus();
-        } catch (_) { geometryReady=false; enabled=false; updateControls(); }
+        } catch (_) { geometryReady=false; enabled=false; jogEnabled=false; updateControls(); }
     }
     const events=new EventSource('/api/stream'); events.addEventListener('pos',ev=>{ try { updatePosition(JSON.parse(ev.data)); } catch (_) {} });
     window.addEventListener('resize',resize); resize(); initialPosition(); refreshStatus(); setInterval(refreshStatus,1000); setInterval(()=>{ if(!geometryReady) initialPosition(); },2000);

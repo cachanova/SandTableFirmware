@@ -141,6 +141,10 @@ public:
   // as patterns. The supplied angle may be wrapped; the shortest equivalent
   // theta move is selected from the current position.
   bool moveTo(float theta, float rho);
+  // Relative single-axis jogs are also allowed before homing. Unhomed rho
+  // moves use a temporary logical midpoint so both directions remain usable;
+  // completing the jog does not promote the controller to IDLE/homed.
+  bool jogRelative(float thetaDelta, float rhoDelta);
   bool startClearing(std::unique_ptr<PosGen> posGen);
   bool loadAndRunFile(String filePath);
   bool loadAndRunFile(String filePath, float maxRho);
@@ -255,6 +259,7 @@ private:
   std::atomic<uint32_t> m_lastFileSize{0};
 
   std::atomic<State_t> m_state{UNINITIALIZED};
+  std::atomic<State_t> m_motionCompletionState{IDLE};
   std::atomic<bool> m_driverBusInitialized{false};
   std::atomic<bool> m_thetaDriverConnected{false};
   std::atomic<bool> m_rhoDriverConnected{false};

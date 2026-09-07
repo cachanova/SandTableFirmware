@@ -939,6 +939,7 @@ bool PolarControl::start(std::unique_ptr<PosGen> posGen) {
     // Start the motion planner
     m_planner.start();
 
+    m_motionCompletionState.store(IDLE);
     m_state = RUNNING;
     xSemaphoreGive(m_mutex);
     return true;
@@ -959,6 +960,66 @@ bool PolarControl::moveTo(float theta, float rho) {
     }
 
     return start(std_patch::make_unique<SingleTargetGen>(targetTheta, rho));
+}
+
+bool PolarControl::jogRelative(float thetaDelta, float rhoDelta) {
+    constexpr float kMinimumDelta = 0.000001f;
+    const bool jogTheta = std::isfinite(thetaDelta) &&
+        fabsf(thetaDelta) > kMinimumDelta;
+    const bool jogRho = std::isfinite(rhoDelta) &&
+        fabsf(rhoDelta) > kMinimumDelta;
+    if (jogTheta == jogRho ||
+        (jogTheta && fabsf(thetaDelta) > 100.0f * PI / 180.0f + kMinimumDelta) ||
+        (jogRho && fabsf(rhoDelta) > 100.0f + kMinimumDelta)) {
+        return false;
+    }
+
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    const State_t entryState = m_state.load();
+    if (entryState != IDLE && entryState != INITIALIZED &&
+        entryState != HOMING_FAILED) {
+        xSemaphoreGive(m_mutex);
+        return false;
+    }
+    if ((jogTheta && !m_thetaDriverConnected.load()) ||
+        (jogRho && !m_rhoDriverConnected.load() &&
+         !m_rhoCompanionDriverConnected.load())) {
+        xSemaphoreGive(m_mutex);
+        return false;
+    }
+
+    float currentTheta = 0.0f;
+    float currentRho = 0.0f;
+    m_planner.getCurrentPosition(currentTheta, currentRho);
+    if (entryState != IDLE && jogRho) {
+        // Rho's absolute position is unknown before homing. Re-center only the
+        // logical coordinate before every relative jog so +/-100 mm remains
+        // representable without claiming a physical absolute position.
+        currentRho = R_MAX * 0.5f;
+        m_planner.resetPosition(currentTheta, currentRho);
+    }
+
+    const float targetTheta = currentTheta + (jogTheta ? thetaDelta : 0.0f);
+    const float targetRho = std::max(0.0f, std::min(
+        R_MAX, currentRho + (jogRho ? rhoDelta : 0.0f)));
+    if ((jogTheta && fabsf(targetTheta - currentTheta) <= kMinimumDelta) ||
+        (jogRho && fabsf(targetRho - currentRho) <= kMinimumDelta)) {
+        xSemaphoreGive(m_mutex);
+        return false;
+    }
+
+    m_posGen = std_patch::make_unique<SingleTargetGen>(targetTheta, targetRho);
+    m_planner.stop();
+    m_planner.resetCompletedCount();
+    feedPlanner();
+    m_planner.start();
+    m_motionCompletionState.store(entryState);
+    m_state.store(RUNNING);
+    xSemaphoreGive(m_mutex);
+    LOG("Manual %s jog started while %s\r\n",
+        jogTheta ? "theta" : "rho",
+        entryState == IDLE ? "homed" : "unhomed");
+    return true;
 }
 
 bool PolarControl::startClearing(std::unique_ptr<PosGen> posGen) {
@@ -994,6 +1055,7 @@ bool PolarControl::startClearing(std::unique_ptr<PosGen> posGen) {
     // Start the motion planner
     m_planner.start();
 
+    m_motionCompletionState.store(IDLE);
     m_state = CLEARING;
     xSemaphoreGive(m_mutex);
     return true;
@@ -1057,6 +1119,7 @@ bool PolarControl::loadAndRunFile(String filePath, float maxRho) {
     feedPlanner();
 
     m_state = PREPARING;
+    m_motionCompletionState.store(IDLE);
     xSemaphoreGive(m_mutex);
     return true;
 }
@@ -1412,7 +1475,7 @@ bool PolarControl::processNextMove() {
                 m_state = PAUSED;
                 LOG("Paused after controlled deceleration\r\n");
             } else {
-                m_state = IDLE;
+                m_state = m_motionCompletionState.exchange(IDLE);
                 LOG("Stopped after controlled deceleration\r\n");
             }
         }
@@ -1435,7 +1498,7 @@ bool PolarControl::processNextMove() {
                 updateSpeedSettings();
             }
             m_posGen.reset();
-            m_state = IDLE;
+            m_state = m_motionCompletionState.exchange(IDLE);
             LOG("Pattern Complete (idle state detected in processNextMove)\r\n");
             xSemaphoreGive(m_mutex);
             return false;
