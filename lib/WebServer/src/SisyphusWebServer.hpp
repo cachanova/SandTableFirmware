@@ -72,6 +72,7 @@ private:
     void handlePatternResume(AsyncWebServerRequest *request);
     void handleManualMove(AsyncWebServerRequest *request);
     void handleManualJog(AsyncWebServerRequest *request);
+    void handlePlaybackStop(AsyncWebServerRequest *request);
     void handleMotionStop(AsyncWebServerRequest *request);
     void handleMotionTelemetry(AsyncWebServerRequest *request);
     void handleHome(AsyncWebServerRequest *request);

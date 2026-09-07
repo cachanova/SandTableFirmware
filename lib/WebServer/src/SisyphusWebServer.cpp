@@ -1273,7 +1273,21 @@ void SisyphusWebServer::handlePatternStart(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handlePatternStop(AsyncWebServerRequest *request) {
-    handleMotionStop(request);
+    handlePlaybackStop(request);
+}
+
+void SisyphusWebServer::handlePlaybackStop(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
+    clearPlaybackLocked();
+    m_activeMotion = MotionOwner::NONE;
+    const auto state = m_polarControl->getState();
+    const bool alreadyStopped = state == PolarControl::UNINITIALIZED ||
+        state == PolarControl::INITIALIZED || state == PolarControl::IDLE ||
+        state == PolarControl::HOMING_REVIEW || state == PolarControl::HOMING_FAILED;
+    const bool success = alreadyStopped || m_polarControl->stop();
+    request->send(success ? 200 : 500, "application/json",
+        success ? "{\"success\":true}" :
+                  "{\"success\":false,\"message\":\"Failed to stop playback\"}");
 }
 
 void SisyphusWebServer::handleMotionStop(AsyncWebServerRequest *request) {
@@ -1281,19 +1295,21 @@ void SisyphusWebServer::handleMotionStop(AsyncWebServerRequest *request) {
     clearPlaybackLocked();
     m_activeMotion = MotionOwner::NONE;
     const auto state = m_polarControl->getState();
-    // Stop is intentionally idempotent. A fresh/unhomed controller and a
-    // controller waiting for homing review are already stationary.
-    const bool alreadyStopped = state == PolarControl::UNINITIALIZED ||
-        state == PolarControl::INITIALIZED || state == PolarControl::IDLE ||
-        state == PolarControl::HOMING_REVIEW || state == PolarControl::HOMING_FAILED;
-    const bool success = alreadyStopped || m_polarControl->stop();
-
-    if (success) {
-        request->send(200, "application/json", "{\"success\":true}");
-    } else {
-        request->send(500, "application/json",
-            "{\"success\":false,\"message\":\"Failed to stop\"}");
+    const bool activeMotion = state == PolarControl::RUNNING ||
+        state == PolarControl::PAUSED || state == PolarControl::STOPPING ||
+        state == PolarControl::CLEARING || state == PolarControl::PREPARING ||
+        state == PolarControl::HOMING;
+    if (activeMotion) {
+        // This endpoint backs the explicitly named "Stop all motion" button.
+        // It must also stop UART velocity-mode homing, which stop() cannot do,
+        // and must discard already-generated planner events immediately.
+        m_polarControl->emergencyStop();
     }
+
+    request->send(200, "application/json",
+        activeMotion
+            ? "{\"success\":true,\"emergency\":true,\"requiresHoming\":true}"
+            : "{\"success\":true,\"emergency\":false}");
 }
 
 void SisyphusWebServer::handleMotionTelemetry(AsyncWebServerRequest *request) {
@@ -1887,7 +1903,7 @@ void SisyphusWebServer::handlePlaylistStart(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handlePlaylistStop(AsyncWebServerRequest *request) {
-    handleMotionStop(request);
+    handlePlaybackStop(request);
 }
 
 void SisyphusWebServer::handlePlaylistLoop(AsyncWebServerRequest *request) {

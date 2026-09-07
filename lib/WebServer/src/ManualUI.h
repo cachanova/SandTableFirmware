@@ -220,7 +220,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
     document.getElementById('stop').addEventListener('click', async () => {
         commandGeneration++; queued=null; clearTimeout(sendTimer); dragging=false; stopInProgress=true; enabled=false; jogEnabled=false; updateControls();
         if (sendController) sendController.abort();
-        try { const r=await fetch('/api/motion/stop',{method:'POST'}); if(!r.ok) throw new Error('Stop request failed'); errorEl.textContent=''; sendEl.textContent='Stopped'; }
+        try { const r=await fetch('/api/motion/stop',{method:'POST'}); const data=await r.json().catch(()=>({})); if(!r.ok) throw new Error(data.message || 'Stop request failed'); errorEl.textContent=''; sendEl.textContent=data.requiresHoming?'Emergency stopped · home required':'Already stopped'; }
         catch(err) { errorEl.textContent=err.message; }
         finally { stopInProgress=false; refreshStatus(); }
     });
