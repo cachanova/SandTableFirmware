@@ -73,11 +73,17 @@ struct DriverSettings {
 
 struct HomingStatus {
   uint32_t cycle = 0;
+  // Primary rho results (legacy field names retained for API compatibility).
   uint32_t fastApproachMs = 0;
   uint32_t slowApproachMs = 0;
   uint16_t baseline = 0;
   uint16_t trigger = 0;
+  uint32_t companionFastApproachMs = 0;
+  uint32_t companionSlowApproachMs = 0;
+  uint16_t companionBaseline = 0;
+  uint16_t companionTrigger = 0;
   uint8_t failure = 0;
+  uint8_t failedAxis = 0;  // 0=none, 1=rho, 2=rho-companion
 };
 
 struct HomingSettings {
@@ -254,7 +260,12 @@ private:
   std::atomic<uint32_t> m_homingSlowApproachMs{0};
   std::atomic<uint16_t> m_homingBaseline{0};
   std::atomic<uint16_t> m_homingTrigger{0};
+  std::atomic<uint32_t> m_homingCompanionFastApproachMs{0};
+  std::atomic<uint32_t> m_homingCompanionSlowApproachMs{0};
+  std::atomic<uint16_t> m_homingCompanionBaseline{0};
+  std::atomic<uint16_t> m_homingCompanionTrigger{0};
   std::atomic<uint8_t> m_homingFailure{0};
+  std::atomic<uint8_t> m_homingFailedAxis{0};
   TaskHandle_t m_homingTaskHandle = NULL;
   std::unique_ptr<PosGen> m_posGen;
 
@@ -276,17 +287,41 @@ private:
   // Driver setup and homing
   bool applyDriverSettings(TMC2209 &driver, const DriverSettings &settings,
                            uint8_t driverAddress, const char* driverName);
+  // Requires m_mutex. Attempts to disable both rho stages and verifies every
+  // driver that still answers on UART. A false result is still fail-closed to
+  // the extent allowed by the available UART links.
+  bool disableRhoDriversLocked();
   struct HomingAttempt {
     bool success = false;
     bool communicationError = false;
     uint32_t elapsedMs = 0;
+    uint32_t steps = 0;
     uint16_t baseline = 0;
     uint16_t trigger = 0;
+    uint16_t threshold = 0;
   };
-  HomingAttempt homeDriver(TMC2209 &driver, int speed,
-                           uint32_t ignoreMs, uint32_t timeoutMs,
-                           uint8_t requiredSamples, float triggerRatio);
-  bool rampDriverVelocity(TMC2209 &driver, int32_t targetVelocity,
-                          uint32_t rampMs);
-  bool homeDriver(TMC2209 &driver);
+  struct HomingMove {
+    bool success = false;
+    bool communicationError = false;
+    bool loadRecovered = false;
+    uint32_t elapsedMs = 0;
+    uint32_t steps = 0;
+    uint16_t peakStallGuard = 0;
+  };
+  bool rampRhoStepRate(int8_t direction, uint32_t targetStepsPerSecond,
+                       uint32_t maxSteps, uint32_t rampMs);
+  HomingAttempt approachHome(uint8_t driverAddress,
+                             uint32_t stepsPerSecond, uint32_t maxSteps,
+                             uint32_t ignoreMs, uint8_t requiredSamples,
+                             float triggerRatio);
+  HomingMove moveRhoBySteps(uint8_t driverAddress, int8_t direction,
+                            uint32_t stepsPerSecond, uint32_t stepCount,
+                            uint16_t recoveryThreshold = 0);
+  bool restoreDisabledDriverPhase(TMC2209& driver, uint8_t driverAddress,
+                                  uint16_t targetPhase, const char* driverName);
+  bool homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
+                const char* activeName, TMC2209& inactiveDriver,
+                uint8_t inactiveAddress, const char* inactiveName,
+                bool companionAxis);
+  bool homeDrivers();
 };
