@@ -24,13 +24,26 @@ private:
     PolarControl *m_polarControl;
     LEDController *m_ledController;
 
+    enum class MotionOwner : uint8_t { NONE, PATTERN, MANUAL, TUNING };
+    enum class PendingMotion : uint8_t {
+        NONE,
+        MANUAL,
+        THETA_CONTINUOUS,
+        THETA_STRESS,
+        RHO_CONTINUOUS,
+        RHO_STRESS
+    };
+    MotionOwner m_activeMotion = MotionOwner::NONE;
+    PendingMotion m_pendingMotion = PendingMotion::NONE;
+    float m_pendingManualTheta = 0.0f;
+    float m_pendingManualRho = 0.0f;
+
     // Pattern queue management
     String m_queuedPattern;
     String m_currentPattern;  // Currently running pattern filename
     bool m_hasQueuedPattern;
     bool m_singlePatternClearing;     // Run clearing before single pattern
     ClearingPattern m_selectedClearing; // Selected clearing pattern type
-    unsigned long m_lastUploadTime;
 
     // Playlist management
     PlaylistManager m_playlist;
@@ -40,19 +53,25 @@ private:
     String m_pendingPattern;      // Pattern to run after clearing completes
     ClearingPattern m_activeClearingPattern;
 
-    // File upload handling
-    File m_uploadFile;
+    std::atomic<uint32_t> m_uploadSequence{0};
 
     // Route handlers
     void handlePosition(AsyncWebServerRequest *request);
     void handleStatus(AsyncWebServerRequest *request);
     void handleErrors(AsyncWebServerRequest *request);
     void handleErrorsClear(AsyncWebServerRequest *request);
+    void handleLogs(AsyncWebServerRequest *request);
+    void handleLogsText(AsyncWebServerRequest *request);
+    void handleLogsClear(AsyncWebServerRequest *request);
     void handlePatternStart(AsyncWebServerRequest *request);
     void handlePatternStop(AsyncWebServerRequest *request);
     void handlePatternPause(AsyncWebServerRequest *request);
     void handlePatternResume(AsyncWebServerRequest *request);
+    void handleManualMove(AsyncWebServerRequest *request);
+    void handleMotionStop(AsyncWebServerRequest *request);
+    void handleMotionTelemetry(AsyncWebServerRequest *request);
     void handleHome(AsyncWebServerRequest *request);
+    void handleHomeConfirm(AsyncWebServerRequest *request);
     void handleFileList(AsyncWebServerRequest *request);
     void handleFileUpload(AsyncWebServerRequest *request, String filename,
                          size_t index, uint8_t *data, size_t len, bool final);
@@ -88,6 +107,7 @@ private:
     void handleTuningMotionSet(AsyncWebServerRequest *request);
     void handleTuningThetaDriverSet(AsyncWebServerRequest *request);
     void handleTuningRhoDriverSet(AsyncWebServerRequest *request);
+    void handleTuningHomingSet(AsyncWebServerRequest *request);
     void handleTuningTestThetaContinuous(AsyncWebServerRequest *request);
     void handleTuningTestThetaStress(AsyncWebServerRequest *request);
     void handleTuningTestRhoContinuous(AsyncWebServerRequest *request);
@@ -95,6 +115,9 @@ private:
 
     // Helper methods
     void processPatternQueue();
+    void clearPlaybackLocked();
+    bool prepareReplacementLocked();
+    bool queueTuningTestLocked(PendingMotion motion);
     void broadcastPosition(); // New streaming method
     void broadcastSinglePosition(AsyncEventSourceClient *client = nullptr);
     void writeStatusJSON(Print& out);
@@ -132,6 +155,7 @@ private:
     std::vector<FileEntry> m_fileCache;
     std::vector<FileIndexEntry> m_fileIndex;
     SemaphoreHandle_t m_cacheMutex = nullptr;
+    SemaphoreHandle_t m_stateMutex = nullptr;
     unsigned long m_lastFileCacheUpdate = 0;
 
     String m_statusCache;

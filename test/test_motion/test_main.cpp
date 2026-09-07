@@ -4,6 +4,7 @@
 
 #include <iostream>
 #include <iomanip>
+#include <limits>
 #include <string>
 #include <cmath>
 #include <vector>
@@ -12,6 +13,7 @@
 #include "esp32_mock.hpp"
 #include "thr_reader.hpp"
 #include "profile_validator.hpp"
+#include "StallGuardDetector.hpp"
 
 // Directly include implementations for native build to resolve linker errors
 // This mimics a unity build
@@ -36,6 +38,179 @@ static constexpr float R_MAX_JERK = 100.0f;      // mm/s³
 static constexpr float T_MAX_VEL = 0.25f;        // rad/s
 static constexpr float T_MAX_ACCEL = 1.0f;       // rad/s²
 static constexpr float T_MAX_JERK = 10.0f;       // rad/s³
+
+bool testStallGuardFiltering() {
+    std::cout << "\n=== Test: StallGuard Homing Filter ===" << std::endl;
+    StallGuardDetector detector(200, 12, 0.65f);
+    bool triggered = false;
+
+    for (uint32_t ms = 0; ms < 250; ms += 10) {
+        triggered |= detector.update(100, ms);
+    }
+    // A short stiff spot must not look like a hard stop.
+    for (uint32_t ms = 250; ms < 330; ms += 10) {
+        triggered |= detector.update(55, ms);
+    }
+    triggered |= detector.update(100, 330);
+    if (triggered) {
+        std::cout << "FAIL: transient load triggered homing" << std::endl;
+        return false;
+    }
+
+    // A sustained low SG_RESULT should trigger only after the configured run.
+    for (uint32_t ms = 340; ms < 450; ms += 10) {
+        if (detector.update(40, ms)) {
+            std::cout << "FAIL: sustained event triggered too early" << std::endl;
+            return false;
+        }
+    }
+    if (!detector.update(40, 450)) {
+        std::cout << "FAIL: sustained hard stop was not detected" << std::endl;
+        return false;
+    }
+
+    std::cout << "PASS" << std::endl;
+    return true;
+}
+
+bool testSynchronizedBoundaryVelocity() {
+    std::cout << "\n=== Test: Synchronized Boundary Velocity ===" << std::endl;
+    MotionPlanner planner;
+    planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
+                 R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
+                 T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
+    planner.addSegment(0.5f, 1.0f);
+    planner.addSegment(1.0f, 120.0f);
+    planner.addSegment(1.5f, 121.0f);
+    planner.addSegment(2.0f, 240.0f);
+    planner.setEndOfPattern(true);
+    planner.recalculate();
+    const float jump = planner.getMaxBoundaryVelocityDiscontinuity();
+    const bool passed = jump <= 0.001f;
+    std::cout << (passed ? "PASS" : "FAIL") << ": max velocity jump=" << jump << std::endl;
+    return passed;
+}
+
+bool testMixedAxisBoundaryContinuityRegression() {
+    std::cout << "\n=== Test: Mixed-Axis Boundary Continuity Regression ===" << std::endl;
+    MotionPlanner planner;
+    planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
+                 R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
+                 T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
+    planner.addSegment(-0.222335f, 5.80746f);
+    planner.addSegment(1.89776f, 58.6902f);
+    planner.setEndOfPattern(true);
+    planner.recalculate();
+    const float jump = planner.getMaxBoundaryVelocityDiscontinuity();
+    const bool passed = jump <= 0.0001f;
+    std::cout << (passed ? "PASS" : "FAIL") << ": max velocity jump=" << jump << std::endl;
+    return passed;
+}
+
+bool testCoordinatedAxisArrival() {
+    std::cout << "\n=== Test: Coordinated Axis Arrival ===" << std::endl;
+    resetMock();
+    MotionPlanner planner;
+    planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
+                 R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
+                 T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
+
+    constexpr float targetTheta = 1.2f;
+    constexpr float targetRho = 180.0f;
+    const int32_t targetThetaSteps = static_cast<int32_t>(targetTheta * STEPS_PER_RAD_T);
+    const int32_t targetRhoSteps = static_cast<int32_t>(targetRho * STEPS_PER_MM_R);
+    planner.addSegment(targetTheta, targetRho);
+    planner.setEndOfPattern(true);
+    planner.recalculate();
+    planner.start();
+
+    uint64_t thetaArrival = 0;
+    uint64_t rhoArrival = 0;
+    int32_t rhoErrorAtThetaArrival = INT32_MAX;
+    int32_t thetaErrorAtRhoArrival = INT32_MAX;
+    for (int i = 0; i < 200000 && !planner.isIdle(); ++i) {
+        planner.process();
+        advanceMicros(STEP_TIMER_PERIOD_US);
+        float theta = 0.0f;
+        float rho = 0.0f;
+        planner.getCurrentPosition(theta, rho);
+        const int32_t thetaSteps = static_cast<int32_t>(lroundf(theta * STEPS_PER_RAD_T));
+        const int32_t rhoSteps = static_cast<int32_t>(lroundf(rho * STEPS_PER_MM_R));
+        if (thetaArrival == 0 && thetaSteps == targetThetaSteps) {
+            thetaArrival = micros64();
+            rhoErrorAtThetaArrival = std::abs(targetRhoSteps - rhoSteps);
+        }
+        if (rhoArrival == 0 && rhoSteps == targetRhoSteps) {
+            rhoArrival = micros64();
+            thetaErrorAtRhoArrival = std::abs(targetThetaSteps - thetaSteps);
+        }
+    }
+
+    const uint64_t arrivalDelta = thetaArrival > rhoArrival
+        ? thetaArrival - rhoArrival : rhoArrival - thetaArrival;
+    // Quantized steppers can take their final microstep at different times near
+    // a zero-velocity endpoint. At either exact arrival, the other axis must
+    // already be within a physically negligible final-error envelope.
+    const int32_t thetaToleranceSteps = static_cast<int32_t>(ceilf(0.001f * STEPS_PER_RAD_T));
+    const int32_t rhoToleranceSteps = static_cast<int32_t>(ceilf(0.1f * STEPS_PER_MM_R));
+    const bool passed = planner.isIdle() && thetaArrival != 0 && rhoArrival != 0 &&
+        rhoErrorAtThetaArrival <= rhoToleranceSteps &&
+        thetaErrorAtRhoArrival <= thetaToleranceSteps;
+    std::cout << (passed ? "PASS" : "FAIL") << ": arrival delta="
+              << arrivalDelta << " us, cross-axis errors=(theta "
+              << thetaErrorAtRhoArrival << " step, rho "
+              << rhoErrorAtThetaArrival << " step)" << std::endl;
+    return passed;
+}
+
+bool testInvalidMotionInputs() {
+    std::cout << "\n=== Test: Invalid Motion Inputs ===" << std::endl;
+    SCurve::Profile profile;
+    if (SCurve::calculate(1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, profile)) {
+        std::cout << "FAIL: zero velocity limit accepted" << std::endl;
+        return false;
+    }
+    MotionPlanner planner;
+    planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
+                 R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
+                 T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
+    if (planner.addSegment(std::nanf(""), 10.0f) ||
+        planner.addSegment(0.0f, std::numeric_limits<float>::infinity())) {
+        std::cout << "FAIL: non-finite target accepted" << std::endl;
+        return false;
+    }
+    std::cout << "PASS" << std::endl;
+    return true;
+}
+
+bool testGracefulStopAfterFullGeneration() {
+    std::cout << "\n=== Test: Graceful Stop After Full Generation ===" << std::endl;
+    resetMock();
+    MotionPlanner planner;
+    planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
+                 R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
+                 T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
+    planner.addSegment(0.0f, 0.01f);
+    planner.addSegment(0.0f, 0.02f);
+    planner.recalculate();
+    planner.start();
+    planner.process();
+    planner.stopGracefully();
+
+    int iterations = 0;
+    while (!planner.isIdle() && iterations++ < 10000) {
+        planner.process();
+        advanceMicros(1000);
+    }
+    const bool passed = planner.isIdle() && planner.getCompletedCount() == 2;
+    PlannerTelemetry telemetry;
+    planner.getTelemetry(telemetry);
+    std::cout << (passed ? "PASS" : "FAIL") << ": completed="
+              << planner.getCompletedCount() << ", idle=" << planner.isIdle()
+              << ", running=" << telemetry.running << ", queue=" << telemetry.queueDepth
+              << std::endl;
+    return passed;
+}
 
 // ============================================================================
 // Test: SCurve basic functionality
@@ -192,451 +367,489 @@ bool testMaxEntryVel() {
 }
 
 // ============================================================================
-// Test: MotionPlanner with synthetic data
+// Test: Acceleration Reachability (Forward Pass)
 // ============================================================================
 
-bool testMotionPlannerBasic() {
-    std::cout << "\n=== Test: MotionPlanner Basic ===" << std::endl;
-    resetMock();
+bool testAccelReachability() {
+    std::cout << "\n=== Test: Acceleration Reachability (Forward Pass) ===" << std::endl;
+    // Reproduction of issue where exit velocity is set higher than physically achievable
 
     MotionPlanner planner;
     planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
                  R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
                  T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
 
-    bool allPassed = true;
+    // Segment 1: Very short move, 0 -> ?
+    planner.addSegment(0.0f, 0.5f);
 
-    // Add some segments
-    std::cout << "\nAdding segments..." << std::endl;
+    // Segment 2: Long move, ? -> 0
+    planner.addSegment(0.0f, 20.0f);
 
-    // Simple spiral outward
-    float theta = 0.0f;
-    float rho = 0.0f;
-    int segCount = 0;
-
-    for (int i = 0; i < 10; i++) {
-        theta += (float)M_PI / 10.0f;  // 18 degrees
-        rho = std::min(R_MAX, rho + 20.0f);
-
-        if (!planner.addSegment(theta, rho)) {
-            std::cout << "Buffer full at segment " << i << std::endl;
-            break;
-        }
-        segCount++;
-    }
-    std::cout << "Added " << segCount << " segments" << std::endl;
-
-    // Mark end of pattern and recalculate
     planner.setEndOfPattern(true);
     planner.recalculate();
 
-    // Start the planner
-    planner.start();
-
-    // Simulate time progression - use larger time steps for faster completion
-    std::cout << "\nSimulating execution..." << std::endl;
-    setMicros(0);
-
-    int iterations = 0;
-    int maxIterations = 10000;  // Reduced iterations, larger time steps
-    uint32_t lastCompleted = 0;
-
-    while (planner.isRunning() && iterations < maxIterations) {
-        planner.process();
-        advanceMicros(50000);  // 50ms steps for faster simulation
-        iterations++;
-
-        uint32_t completed = planner.getCompletedCount();
-        if (completed != lastCompleted) {
-            std::cout << "  Segment completed at t=" << (g_mockMicros.load() / 1000000.0) << "s"
-                      << ", total=" << completed << "/" << segCount << std::endl;
-            lastCompleted = completed;
-        }
-    }
-
-    if (iterations >= maxIterations) {
-        std::cout << "FAIL: Did not complete in time (after " << iterations << " iterations)" << std::endl;
-        allPassed = false;
-    } else {
-        std::cout << "Completed in " << iterations << " iterations ("
-                  << (g_mockMicros.load() / 1000000.0) << " seconds)" << std::endl;
-    }
-
-    std::cout << "Segments completed: " << planner.getCompletedCount() << "/" << segCount << std::endl;
-    return allPassed && (planner.getCompletedCount() == (uint32_t)segCount);
-}
-
-// ============================================================================
-// Test: Direction reversal handling
-// ============================================================================
-
-bool testDirectionReversal() {
-    std::cout << "\n=== Test: Direction Reversal ===" << std::endl;
     resetMock();
-
-    MotionPlanner planner;
-    planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
-                 R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
-                 T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
-
-    // Pattern with direction reversals
-    // theta: forward, forward, reverse, reverse
-    // rho: outward, outward, outward, inward
-
-    planner.addSegment((float)M_PI / 4.0f, 100.0f);   // theta+, rho+
-    planner.addSegment((float)M_PI / 2.0f, 200.0f);   // theta+, rho+
-    planner.addSegment((float)M_PI / 4.0f, 300.0f);   // theta-, rho+  <- theta reversal
-    planner.addSegment(0.0f, 200.0f);                 // theta-, rho-  <- rho reversal
-
-    planner.setEndOfPattern(true);
-    planner.recalculate();
-    planner.start();
-
-    setMicros(0);
-    int iterations = 0;
-    int maxIterations = 50000;
-
-    while ((planner.isRunning() || !planner.isIdle()) && iterations < maxIterations) {
-        planner.process();
-        advanceMicros(20000);
-        iterations++;
-    }
-
-    bool passed = iterations < maxIterations && planner.getCompletedCount() == 4;
-    std::cout << "Completed: " << planner.getCompletedCount() << "/4 segments"
-              << (passed ? " PASS" : " FAIL") << std::endl;
-
-    return passed;
-}
-
-// ============================================================================
-// Test: Speed multiplier
-// ============================================================================
-
-bool testSpeedMultiplier() {
-    std::cout << "\n=== Test: Speed Multiplier ===" << std::endl;
-    resetMock();
-
-    MotionPlanner planner;
-    planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
-                 R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
-                 T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
-
-    // Add segments
-    for (int i = 0; i < 5; i++) {
-        planner.addSegment((i + 1) * (float)M_PI / 5.0f, (i + 1) * 50.0f);
-    }
-    planner.setEndOfPattern(true);
-    planner.recalculate();
-
-    // Run at full speed
-    planner.setSpeedMultiplier(1.0f);
     setMicros(0);
     planner.start();
 
-    int iterations = 0;
-    int maxIterations = 50000;
-    while (planner.isRunning() && iterations < maxIterations) {
-        planner.process();
-        advanceMicros(20000);
-        iterations++;
-    }
-    float fullSpeedTime = g_mockMicros.load() / 1000000.0f;
-    planner.stop();
-
-    if (iterations >= maxIterations) {
-        std::cout << "FAIL: Full speed run timeout" << std::endl;
-        return false;
-    }
-
-    // Reset and run at half speed
-    planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
-                 R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
-                 T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
-
-    for (int i = 0; i < 5; i++) {
-        planner.addSegment((i + 1) * (float)M_PI / 5.0f, (i + 1) * 50.0f);
-    }
-    planner.setEndOfPattern(true);
-    planner.setSpeedMultiplier(0.5f);
-    planner.recalculate();
-    setMicros(0);
-    planner.start();
-
-    iterations = 0;
-    while (planner.isRunning() && iterations < maxIterations) {
-        planner.process();
-        advanceMicros(20000);
-        iterations++;
-    }
-    float halfSpeedTime = g_mockMicros.load() / 1000000.0f;
-
-    if (iterations >= maxIterations) {
-        std::cout << "FAIL: Half speed run timeout" << std::endl;
-        return false;
-    }
-
-    std::cout << "Full speed time: " << fullSpeedTime << "s" << std::endl;
-    std::cout << "Half speed time: " << halfSpeedTime << "s" << std::endl;
-
-    // Half speed should take roughly twice as long (with some tolerance)
-    float ratio = halfSpeedTime / fullSpeedTime;
-    bool passed = ratio > 1.5 && ratio < 2.5;
-    std::cout << "Time ratio: " << ratio << (passed ? " PASS" : " FAIL") << std::endl;
-
-    return passed;
-}
-
-// ============================================================================
-// Test: Pattern file
-// ============================================================================
-
-// Helper to wait for ISR to reach a specific target with tolerance
-bool waitForTarget(const MotionPlanner& planner, int32_t targetT, int32_t targetR,
-                   int maxIters = 10000, int32_t toleranceT = 0, int32_t toleranceR = 0) {
+    // Execute and measure time for first segment
     int iters = 0;
-    while (iters < maxIters) {
-        float curT, curR;
-        planner.getCurrentPosition(curT, curR);
-
-        // Use exact same scaling as internal to avoid rounding diffs
-        int32_t sT = (int32_t)roundf(curT * STEPS_PER_RAD_T);
-        int32_t sR = (int32_t)roundf(curR * STEPS_PER_MM_R);
-
-        int32_t errT = std::abs(sT - targetT);
-        int32_t errR = std::abs(sR - targetR);
-
-        if (errT <= toleranceT && errR <= toleranceR) {
-            return true;
-        }
-
-        const_cast<MotionPlanner&>(planner).process();
-        advanceMicros(1000);
+    while (planner.getCompletedCount() == 0 && iters < 100000) {
+        planner.process();
+        advanceMicros(100);
         iters++;
     }
 
-    float curT, curR;
-    planner.getCurrentPosition(curT, curR);
-    int32_t sT = (int32_t)roundf(curT * STEPS_PER_RAD_T);
-    int32_t sR = (int32_t)roundf(curR * STEPS_PER_MM_R);
-    std::cout << "\nDEBUG: waitForTarget timeout! Target=(" << targetT << "," << targetR
-              << ") Got=(" << sT << "," << sR << ") err=(" << (sT-targetT) << "," << (sR-targetR) << ")" << std::endl;
+    float duration = g_mockMicros.load() / 1000000.0f;
+    std::cout << "Segment 1 duration: " << duration << "s" << std::endl;
 
-    return false;
-}
+    // For this short move the acceleration is triangular. Independently of
+    // the helper under test, d=j*t^3 and the total duration is 2*t.
+    const float jerkPhaseTime = cbrtf(0.5f / R_MAX_JERK);
+    const float expectedDuration = 2.0f * jerkPhaseTime;
+    const float expectedExitVelocity = R_MAX_JERK * jerkPhaseTime * jerkPhaseTime;
+    float maxExit = SCurve::maxAchievableExitVelocity(0.5f, 0.0f, 10.0f, 20.0f, 100.0f);
 
-// Helper to run a loaded pattern and return the total time
-// Verifies all segments complete and final position is correct
-float runPatternFileInternal(MotionPlanner& planner, ThrReader& reader,
-                             const std::vector<std::pair<int32_t, int32_t>>& expectedStepTargets) {
-    planner.start();
-
-    int iterations = 0;
-    int maxIterations = 2000000;
-    uint32_t totalSegments = expectedStepTargets.size();
-
-    // Run the pattern to completion
-    while ((planner.isRunning() || !planner.isIdle()) && iterations < maxIterations) {
-        planner.process();
-        advanceMicros(10000); // 10ms steps
-        iterations++;
-    }
-
-    if (planner.getCompletedCount() < totalSegments) {
-        std::cout << "DEBUG: segment count mismatch: completed=" << planner.getCompletedCount()
-                  << " total=" << totalSegments << std::endl;
-        return -1.0;
-    }
-
-    // Verify final position - tolerance scales with pattern size for float precision
-    if (!expectedStepTargets.empty()) {
-        int32_t finalTargetT = expectedStepTargets.back().first;
-        int32_t finalTargetR = expectedStepTargets.back().second;
-
-        int32_t finalToleranceT = std::max(5, (int)(totalSegments / 500));  // ~0.2%
-        int32_t finalToleranceR = std::max(3, (int)(totalSegments / 1000)); // ~0.1%
-
-        if (!waitForTarget(planner, finalTargetT, finalTargetR, 50000, finalToleranceT, finalToleranceR)) {
-            float curT, curR;
-            planner.getCurrentPosition(curT, curR);
-            int32_t actualT = (int32_t)roundf(curT * STEPS_PER_RAD_T);
-            int32_t actualR = (int32_t)roundf(curR * STEPS_PER_MM_R);
-            std::cout << "DEBUG: Final position mismatch! Target=(" << finalTargetT << "," << finalTargetR
-                      << ") Got=(" << actualT << "," << actualR
-                      << ") err=(" << (actualT - finalTargetT) << "," << (actualR - finalTargetR)
-                      << ") tolerance=(" << finalToleranceT << "," << finalToleranceR << ")" << std::endl;
-            return -1.0;
-        }
-    }
-
-    return g_mockMicros.load() / 1000000.0;
-}
-
-bool testPatternFile(const std::string& filepath) {
-    std::cout << "\n=== Test: Pattern File ===" << std::endl;
-    std::cout << "Loading: " << filepath << std::endl;
-    resetMock();
-
-    ThrReader reader;
-    reader.setMaxRho(R_MAX);
-
-    if (!reader.load(filepath)) {
-        std::cout << "Failed to load file" << std::endl;
-        return false;
-    }
-
-    // Capture all target steps first
-    std::vector<std::pair<int32_t, int32_t>> expectedStepTargets;
-    reader.reset();
-    float theta, rho;
-    while (reader.getNextPosition(theta, rho)) {
-        int32_t targetT = (int32_t)(theta * STEPS_PER_RAD_T);
-        int32_t targetR = (int32_t)(rho * STEPS_PER_MM_R);
-        expectedStepTargets.push_back({targetT, targetR});
-    }
-
-    auto runAtSpeed = [&](float speedMult) -> float {
-        resetMock();
-        MotionPlanner planner;
-        planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
-                     R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
-                     T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
-        planner.setSpeedMultiplier(speedMult);
-
-        reader.reset();
-        bool plannerStarted = false;
-        int added = 0;
-        while (reader.getNextPosition(theta, rho)) {
-            while (!planner.addSegment(theta, rho)) {
-                if (!plannerStarted) {
-                    planner.recalculate();
-                    planner.start();
-                    plannerStarted = true;
-                }
-                planner.process();
-                advanceMicros(10000);
-            }
-            added++;
-
-            // Periodically recalculate to keep motion smooth
-            if (added % 8 == 0) {
-                planner.recalculate();
-            }
-        }
-        planner.setEndOfPattern(true);
-        planner.recalculate();
-
-        if (!plannerStarted) {
-            planner.start();
-        }
-
-        return runPatternFileInternal(planner, reader, expectedStepTargets);
-    };
-
-    std::cout << "Running at full speed (1.0)..." << std::endl;
-    float time10 = runAtSpeed(1.0f);
-    if (time10 < 0) {
-        std::cout << "FAIL: Full speed run failed" << std::endl;
-        return false;
-    }
-    std::cout << "Time: " << time10 << "s" << std::endl;
-
-    // Skip half-speed test for large patterns (>3000 segments) to save time
-    // Speed multiplier is already validated in unit tests
-    if (expectedStepTargets.size() > 3000) {
-        std::cout << "PASS (skipped half-speed for large pattern)" << std::endl;
+    if (fabsf(duration - expectedDuration) < 0.01f &&
+        fabsf(maxExit - expectedExitVelocity) < 0.01f) {
+        std::cout << "PASS: Duration matches fixed behavior." << std::endl;
         return true;
-    }
-
-    std::cout << "Running at half speed (0.5)..." << std::endl;
-    float time05 = runAtSpeed(0.5f);
-    if (time05 < 0) {
-        std::cout << "FAIL: Half speed run failed" << std::endl;
+    } else {
+        std::cout << "FAIL: duration=" << duration << " expected=" << expectedDuration
+                  << ", exit=" << maxExit << " expectedExit=" << expectedExitVelocity << std::endl;
         return false;
     }
-    std::cout << "Time: " << time05 << "s" << std::endl;
-
-    float ratio = time05 / time10;
-    bool ratioPassed = ratio > 1.2; // Should be significantly slower
-    if (ratioPassed) {
-        std::cout << "PASS" << std::endl;
-    } else {
-        std::cout << "FAIL" << std::endl;
-    }
-
-    return ratioPassed;
 }
 
 // ============================================================================
-// Test: Slow Motion Startup (verifies Horizon start condition)
+// Test: Theta Continuous (Spin) with various limits
 // ============================================================================
 
-bool testSlowMotionStartup() {
-    std::cout << "\n=== Test: Slow Motion Startup ===" << std::endl;
-    resetMock();
+bool testThetaContinuous(float vel, float accel, float jerk, const char* desc) {
+    std::cout << "\n=== Test: Theta Continuous (" << desc << ") ===" << std::endl;
+    std::cout << "Limits: v=" << vel << ", a=" << accel << ", j=" << jerk << std::endl;
 
     MotionPlanner planner;
     planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
                  R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
-                 T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
+                 vel, accel, jerk);
+    planner.setSpeedMultiplier(1.0f); // Run at full configured speed
 
-    // Very slow move to hit horizon before queue full
-    // Max vel 10mm/s. Multiplier 0.001 -> 0.01 mm/s.
-    planner.setSpeedMultiplier(0.001f);
+    // Create a pattern similar to TestThetaContinuousGen
+    // 5 rotations forward, 5 rotations back
+    // 5 * 2pi = 10pi radians ~ 31.4159 rad
+    float totalRotations = 5.0f;
+    float totalRad = totalRotations * 2.0f * (float)M_PI;
 
-    // Move 10mm. Duration ~1000s.
-    if (!planner.addSegment(0.0f, 10.0f)) {
-        std::cout << "Failed to add segment" << std::endl;
-        return false;
-    }
+    // Segment 1: Spin forward
+    planner.addSegment(totalRad, 100.0f); // Rho fixed at 100
+    // Segment 2: Spin back
+    planner.addSegment(0.0f, 100.0f);
+
     planner.setEndOfPattern(true);
+    planner.recalculate();
+
+    resetMock();
+    setMicros(0);
     planner.start();
 
-    // Process once to trigger fill
-    planner.process();
+    // Calculate expected time
+    // Distance = totalRad.
+    // Time to accel to max vel: t_acc = vel / accel (assuming jerk is high enough, else simplified)
+    // Dist to accel: d_acc = 0.5 * accel * t_acc^2 = 0.5 * vel^2 / accel
+    // If d_acc * 2 < distance, we reach cruise.
 
-    PlannerTelemetry t;
-    planner.getTelemetry(t);
+    // Using SCurve::calculate to get precise expected time
+    SCurve::Profile p;
+    SCurve::calculate(totalRad, 0.0f, 0.0f, vel, accel, jerk, p);
+    float expectedTimePerMove = p.totalTime;
+    float expectedTotalTime = expectedTimePerMove * 2.0f;
 
-    std::cout << "Queue depth: " << t.queueDepth << std::endl;
-    std::cout << "Timer active: " << t.timerActive << std::endl;
+    std::cout << "Expected time per move: " << expectedTimePerMove << "s" << std::endl;
+    std::cout << "Expected total time: " << expectedTotalTime << "s" << std::endl;
 
-    // Check if running
-    bool passed = t.timerActive;
-    if (passed) {
-         std::cout << "PASS: Timer started" << std::endl;
-    } else {
-         std::cout << "FAIL: Timer did not start" << std::endl;
+    // Run simulation
+    int iters = 0;
+    // Cap at 2x expected time or 10s min
+    float timeoutS = std::max(10.0f, expectedTotalTime * 2.0f);
+    int maxIters = (int)(timeoutS * 100.0f); // 10ms steps
+
+    while ((planner.isRunning() || !planner.isIdle()) && iters < maxIters) {
+        planner.process();
+        advanceMicros(10000); // 10ms
+        iters++;
     }
-    return passed;
+
+    float actualTime = g_mockMicros.load() / 1000000.0f;
+    std::cout << "Actual time: " << actualTime << "s" << std::endl;
+
+    // Check if we completed
+    if (planner.getCompletedCount() != 2) {
+        std::cout << "FAIL: Did not complete all segments. Completed: " << planner.getCompletedCount() << std::endl;
+        return false;
+    }
+
+    // Check time tolerance (e.g. 5%)
+    float error = fabsf(actualTime - expectedTotalTime);
+    float tolerance = expectedTotalTime * 0.05f + 0.1f; // 5% + 100ms
+
+    if (error <= tolerance) {
+        std::cout << "PASS" << std::endl;
+        return true;
+    } else {
+        std::cout << "FAIL: Time mismatch. Error: " << error << "s (Tol: " << tolerance << "s)" << std::endl;
+        return false;
+    }
+}
+
+// ============================================================================
+// Test: Rho Continuous (In/Out) with various limits
+// ============================================================================
+
+bool testRhoContinuous(float vel, float accel, float jerk, const char* desc) {
+    std::cout << "\n=== Test: Rho Continuous (" << desc << ") ===" << std::endl;
+    std::cout << "Limits: v=" << vel << ", a=" << accel << ", j=" << jerk << std::endl;
+
+    MotionPlanner planner;
+    planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
+                 vel, accel, jerk,
+                 T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
+    planner.setSpeedMultiplier(1.0f);
+
+    // Create pattern: Out to max, then back to 20mm.
+    float startRho = 20.0f;
+    float endRho = R_MAX;
+
+    // Segment 1: Out
+    planner.addSegment(0.0f, endRho); // Theta fixed at 0
+    // Segment 2: In
+    planner.addSegment(0.0f, startRho);
+
+    planner.setEndOfPattern(true);
+
+    planner.recalculate();
+
+    resetMock();
+    setMicros(0);
+    planner.start();
+
+    // Calculate expected time using SCurve
+    SCurve::Profile outward;
+    SCurve::Profile inward;
+    SCurve::calculate(endRho, 0.0f, 0.0f, vel, accel, jerk, outward);
+    SCurve::calculate(endRho - startRho, 0.0f, 0.0f, vel, accel, jerk, inward);
+    float expectedTotalTime = outward.totalTime + inward.totalTime;
+
+    std::cout << "Expected total time: " << expectedTotalTime << "s" << std::endl;
+
+    int iters = 0;
+    float timeoutS = std::max(10.0f, expectedTotalTime * 2.0f);
+    int maxIters = (int)(timeoutS * 100.0f);
+
+    while ((planner.isRunning() || !planner.isIdle()) && iters < maxIters) {
+        planner.process();
+        advanceMicros(10000);
+        iters++;
+    }
+
+    float actualTime = g_mockMicros.load() / 1000000.0f;
+    std::cout << "Actual time: " << actualTime << "s" << std::endl;
+
+    if (planner.getCompletedCount() != 2) {
+        std::cout << "FAIL: Did not complete all segments. Completed: " << planner.getCompletedCount() << std::endl;
+        return false;
+    }
+
+    float actualTheta = 0.0f;
+    float actualRho = 0.0f;
+    planner.getCurrentPosition(actualTheta, actualRho);
+    if (fabsf(actualRho - startRho) > (2.0f / STEPS_PER_MM_R)) {
+        std::cout << "FAIL: Final rho mismatch: " << actualRho << std::endl;
+        return false;
+    }
+
+    float error = fabsf(actualTime - expectedTotalTime);
+    float tolerance = expectedTotalTime * 0.05f + 0.1f;
+
+    if (error <= tolerance) {
+        std::cout << "PASS" << std::endl;
+        return true;
+    } else {
+        std::cout << "FAIL: Time mismatch. Error: " << error << "s (Tol: " << tolerance << "s)" << std::endl;
+        return false;
+    }
+}
+
+// ============================================================================
+// Test: Stop Gracefully
+// ============================================================================
+
+bool testStopGracefully() {
+    std::cout << "\n=== Test: Stop Gracefully ===" << std::endl;
+
+    // Setup planner with slow deceleration to make it measurable
+    MotionPlanner planner;
+    planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
+                 R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
+                 1.0f, 0.5f, 5.0f); // 1.0 rad/s, 0.5 rad/s^2 accel
+    planner.setSpeedMultiplier(1.0f);
+
+    // Start a long continuous move
+    planner.addSegment(100.0f, 100.0f); // Long theta move
+
+    // Important: recalculate to set velocities
+    planner.recalculate();
+
+    // Reset time BEFORE start so start time is 0
+    resetMock();
+    setMicros(0);
+
+    planner.start();
+
+    // Run for a bit to get up to speed
+
+    // Max speed is 1.0 rad/s. Accel 0.5. Reach max in ~2s.
+    // Run for 3s.
+    int iters = 0;
+    while (iters < 300) { // 3s
+        planner.process();
+        advanceMicros(10000);
+        iters++;
+    }
+
+    float vTheta, vRho;
+    float pTheta, pRho;
+    planner.getCurrentVelocity(vTheta, vRho);
+    planner.getCurrentPosition(pTheta, pRho);
+
+    std::cout << "Time: " << (g_mockMicros.load()/1000000.0f) << "s" << std::endl;
+    std::cout << "Pos: T=" << pTheta << " R=" << pRho << std::endl;
+    std::cout << "Velocity before stop: " << vTheta << " rad/s" << std::endl;
+
+    if (fabsf(vTheta) < 0.9f) {
+        std::cout << "FAIL: Did not reach cruising speed." << std::endl;
+        return false;
+    }
+
+    // Now trigger graceful stop
+    std::cout << "Triggering stopGracefully()..." << std::endl;
+    planner.stopGracefully();
+
+    // If abrupt stop: velocity becomes 0 immediately or very quickly (next step).
+    // If graceful stop: velocity ramps down.
+    // Decel time from 1.0 rad/s at 0.5 rad/s^2 is ~2s.
+
+    float tStopTrigger = g_mockMicros.load() / 1000000.0f;
+
+    // Run for another 0.5s and check both the overall deceleration and every
+    // sampled transition. A quantized braking target once caused the solver to
+    // fall back to a rest-to-rest profile, producing 1 -> 0 -> rising speed.
+    // The old endpoint-only assertion missed that discontinuity.
+    float previousVelocity = vTheta;
+    bool stopVelocityContinuous = true;
+    iters = 0;
+    while (iters < 50) { // 0.5s
+        planner.process();
+        advanceMicros(10000);
+        float sampledTheta = 0.0f;
+        float sampledRho = 0.0f;
+        planner.getCurrentVelocity(sampledTheta, sampledRho);
+        if (sampledTheta > previousVelocity + 0.02f ||
+            previousVelocity - sampledTheta > 0.05f) {
+            std::cout << "FAIL: Discontinuous stop velocity: " << previousVelocity
+                      << " -> " << sampledTheta << std::endl;
+            stopVelocityContinuous = false;
+            break;
+        }
+        previousVelocity = sampledTheta;
+        iters++;
+    }
+
+    if (!stopVelocityContinuous) return false;
+
+    planner.getCurrentVelocity(vTheta, vRho);
+    // std::cout << "Velocity 0.5s after stop: " << vTheta << " rad/s" << std::endl;
+
+    bool decreasing = (vTheta < 0.9f) && (vTheta > 0.1f);
+    if (!decreasing) {
+        std::cout << "FAIL: Velocity not ramping down correctly. Got " << vTheta << std::endl;
+        return false;
+    } else {
+        std::cout << "PASS: Velocity is decreasing." << std::endl;
+    }
+
+    // Run to completion
+    iters = 0;
+    while ((planner.isRunning() || !planner.isIdle()) && iters < 500) {
+        planner.process();
+        advanceMicros(10000);
+        iters++;
+    }
+
+    float tEnd = g_mockMicros.load() / 1000000.0f;
+    float stopDuration = tEnd - tStopTrigger;
+
+    std::cout << "Stop duration: " << stopDuration << "s" << std::endl;
+
+    // The synchronized brake may lengthen the faster axis so both axes retain
+    // a continuous boundary. It should still stop within a tight bounded
+    // window rather than running the original long move.
+    if (stopDuration > 1.5f && stopDuration < 3.5f) {
+        std::cout << "PASS: Stop duration within expected range." << std::endl;
+        return true;
+    } else {
+        std::cout << "FAIL: Stop duration unexpected." << std::endl;
+        return false;
+    }
 }
 
 // ============================================================================
 // Main
 // ============================================================================
 
+bool testPatternFile(const std::string& filepath) {
+    std::cout << "\n=== Test: Pattern File " << filepath << " ===" << std::endl;
+    resetMock();
+
+    ThrReader reader;
+    reader.setMaxRho(R_MAX);
+    if (!reader.load(filepath)) return false;
+
+    MotionPlanner planner;
+    planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
+                 R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
+                 T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
+
+    float theta = 0.0f;
+    float rho = 0.0f;
+    float finalTheta = 0.0f;
+    float finalRho = 0.0f;
+    bool sourceDone = false;
+    bool started = false;
+    size_t accepted = 0;
+    size_t planned = 0;
+    int32_t lastThetaSteps = 0;
+    int32_t lastRhoSteps = 0;
+    float maxBoundaryJump = 0.0f;
+    const int kMaxIterations = std::max<int>(2000000,
+        static_cast<int>(reader.size() * 10000));
+
+    for (int iteration = 0; iteration < kMaxIterations; ++iteration) {
+        bool added = false;
+        while (!sourceDone && planner.hasSpace()) {
+            if (!reader.getNextPosition(theta, rho)) {
+                sourceDone = true;
+                planner.setEndOfPattern(true);
+                break;
+            }
+            if (!planner.addSegment(theta, rho)) {
+                std::cerr << "Planner rejected finite pattern point " << accepted << std::endl;
+                return false;
+            }
+            const int32_t targetThetaSteps = static_cast<int32_t>(theta * STEPS_PER_RAD_T);
+            const int32_t targetRhoSteps = static_cast<int32_t>(rho * STEPS_PER_MM_R);
+            if (targetThetaSteps != lastThetaSteps || targetRhoSteps != lastRhoSteps) {
+                ++planned;
+                lastThetaSteps = targetThetaSteps;
+                lastRhoSteps = targetRhoSteps;
+            }
+            finalTheta = theta;
+            finalRho = rho;
+            ++accepted;
+            added = true;
+        }
+        if (added || sourceDone) {
+            planner.recalculate();
+            const float boundaryJump = planner.getMaxBoundaryVelocityDiscontinuity();
+            if (boundaryJump > maxBoundaryJump) {
+                maxBoundaryJump = boundaryJump;
+                if (maxBoundaryJump > 0.0001f) {
+                    std::cout << "Boundary diagnostic: jump=" << maxBoundaryJump
+                              << " after " << accepted << " inputs, completed="
+                              << planner.getCompletedCount() << std::endl;
+                }
+            }
+        }
+        if (!started && accepted > 0) {
+            planner.start();
+            started = true;
+        }
+        planner.process();
+        advanceMicros(10000);
+
+        if (sourceDone && planner.isIdle()) {
+            float actualTheta = 0.0f;
+            float actualRho = 0.0f;
+            planner.getCurrentPosition(actualTheta, actualRho);
+            const int32_t thetaError = std::abs(
+                static_cast<int32_t>(std::lround(actualTheta * STEPS_PER_RAD_T)) -
+                static_cast<int32_t>(finalTheta * STEPS_PER_RAD_T));
+            const int32_t rhoError = std::abs(
+                static_cast<int32_t>(std::lround(actualRho * STEPS_PER_MM_R)) -
+                static_cast<int32_t>(finalRho * STEPS_PER_MM_R));
+            PlannerTelemetry telemetry;
+            planner.getTelemetry(telemetry);
+            const bool passed = accepted == reader.size() &&
+                planner.getCompletedCount() == planned && thetaError <= 2 && rhoError <= 2 &&
+                maxBoundaryJump <= 0.0001f && telemetry.underruns == 0;
+            std::cout << (passed ? "PASS" : "FAIL") << ": " << accepted
+                      << " points (" << planned << " planned), final step error=("
+                      << thetaError << "," << rhoError << "), max boundary jump="
+                      << maxBoundaryJump << ", underruns=" << telemetry.underruns
+                      << std::endl;
+            return passed;
+        }
+    }
+
+    PlannerTelemetry telemetry;
+    planner.getTelemetry(telemetry);
+    std::cerr << "Pattern simulation timed out: accepted=" << accepted
+              << ", total=" << reader.size()
+              << ", completed=" << planner.getCompletedCount()
+              << ", running=" << telemetry.running
+              << ", queue=" << telemetry.queueDepth << std::endl;
+    return false;
+}
+
 int main(int argc, char* argv[]) {
     std::cout << "========================================" << std::endl;
     std::cout << "MotionPlanner Desktop Test Harness" << std::endl;
     std::cout << "========================================" << std::endl;
 
+    if (argc > 1) {
+        return testPatternFile(argv[1]) ? 0 : 1;
+    }
+
     bool allPassed = true;
 
     // Run S-curve tests
+    allPassed &= testStallGuardFiltering();
+    allPassed &= testSynchronizedBoundaryVelocity();
+    allPassed &= testMixedAxisBoundaryContinuityRegression();
+    allPassed &= testCoordinatedAxisArrival();
+    allPassed &= testInvalidMotionInputs();
+    allPassed &= testGracefulStopAfterFullGeneration();
     allPassed &= testSCurveBasic();
     allPassed &= testDecelDistance();
     allPassed &= testMaxEntryVel();
+    allPassed &= testAccelReachability();
 
-    // Run MotionPlanner tests
-    allPassed &= testMotionPlannerBasic();
-    allPassed &= testDirectionReversal();
-    allPassed &= testSpeedMultiplier();
-    allPassed &= testSlowMotionStartup();
+    // Run Theta Continuous Tests
+    // 1. Standard config
+    allPassed &= testThetaContinuous(0.5f, 0.5f, 5.0f, "Standard");
+    // 2. Low Acceleration (should take long to spin up)
+    allPassed &= testThetaContinuous(0.5f, 0.01f, 5.0f, "Low Accel");
+    // 3. High Speed, Low Accel
+    allPassed &= testThetaContinuous(2.0f, 0.05f, 10.0f, "High Speed Low Accel");
 
-    // If a pattern file was provided, test it
-    if (argc > 1) {
-        allPassed &= testPatternFile(argv[1]);
-    }
+    // Run Rho Continuous Tests
+    // 1. Standard config
+    allPassed &= testRhoContinuous(10.0f, 20.0f, 100.0f, "Standard");
+    // 2. Low Accel
+    allPassed &= testRhoContinuous(10.0f, 1.0f, 100.0f, "Low Accel");
+
+    // Test Stop Gracefully
+    allPassed &= testStopGracefully();
 
     std::cout << "\n========================================" << std::endl;
     if (allPassed) {

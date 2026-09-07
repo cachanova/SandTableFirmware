@@ -234,7 +234,8 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
         </div>
 
         <nav class="navbar">
-            <a href="/" class="nav-link">Dashboard</a>
+            <a href="/" class="nav-link">Patterns</a>
+            <a href="/manual" class="nav-link">Manual</a>
             <a href="/files" class="nav-link active">Files</a>
             <a href="/tuning" class="nav-link">Tuning</a>
         </nav>
@@ -257,12 +258,23 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
 
     <script>
         const apiBase = '/api';
+        let storageAvailable = true;
 
         async function loadFileList() {
             const response = await fetch(apiBase + '/files');
             const data = await response.json();
             const fileList = document.getElementById('file-list');
             fileList.innerHTML = '';
+            storageAvailable = data.storageAvailable !== false;
+            const uploadArea = document.getElementById('upload-area');
+            uploadArea.style.pointerEvents = storageAvailable ? '' : 'none';
+            uploadArea.style.opacity = storageAvailable ? '' : '0.5';
+
+            if (!storageAvailable) {
+                uploadArea.querySelector('.upload-text').textContent = 'SD card not detected — uploads unavailable';
+                fileList.innerHTML = '<div class="empty-state">SD card not detected — patterns unavailable</div>';
+                return;
+            }
 
             if (data.files && data.files.length > 0) {
                 data.files.forEach(file => {
@@ -270,13 +282,22 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
                     const thumbUrl = apiBase + '/pattern/image?file=' + encodeURIComponent(displayName);
                     const fileItem = document.createElement('div');
                     fileItem.className = 'file-item';
-                    fileItem.innerHTML = `
-                        <div class="file-info">
-                            <div class="file-name">${displayName}</div>
-                            <div class="file-size">${file.size > 0 ? (file.size / 1024).toFixed(1) + ' KB' : ''}</div>
-                        </div>
-                        <button class="btn-delete" onclick="deleteFile('${file.name}')">Delete</button>
-                    `;
+                    const info = document.createElement('div');
+                    info.className = 'file-info';
+                    const name = document.createElement('div');
+                    name.className = 'file-name';
+                    name.textContent = displayName;
+                    const size = document.createElement('div');
+                    size.className = 'file-size';
+                    size.textContent = file.size > 0 ? (file.size / 1024).toFixed(1) + ' KB' : '';
+                    const remove = document.createElement('button');
+                    remove.className = 'btn-delete';
+                    remove.textContent = 'Delete';
+                    remove.addEventListener('click', () => deleteFile(file.name));
+                    info.appendChild(name);
+                    info.appendChild(size);
+                    fileItem.appendChild(info);
+                    fileItem.appendChild(remove);
                     fileList.appendChild(fileItem);
                 });
             } else {
@@ -293,6 +314,10 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
         }
 
         async function uploadFile(file) {
+            if (!storageAvailable) {
+                alert('Insert an SD card before uploading patterns.');
+                return;
+            }
             if (!file) return;
             if (!file.name.endsWith('.thr')) {
                 alert('Only .thr files are allowed');
@@ -321,7 +346,8 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
                 // Upload pattern
                 const fdPattern = new FormData();
                 fdPattern.append('file', patternFile);
-                await fetch(apiBase + '/files/upload', { method: 'POST', body: fdPattern });
+                const patternResponse = await fetch(apiBase + '/files/upload', { method: 'POST', body: fdPattern });
+                if (!patternResponse.ok) throw new Error((await patternResponse.json()).message || 'Pattern upload failed');
 
                 // Upload image if present
                 if (imageFile) {
@@ -330,7 +356,8 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
                     if (basename.endsWith('.thr')) basename = basename.substring(0, basename.length - 4);
                     const imageName = basename + '.png';
                     fdImage.append('file', imageFile, imageName);
-                    await fetch(apiBase + '/files/upload', { method: 'POST', body: fdImage });
+                    const imageResponse = await fetch(apiBase + '/files/upload', { method: 'POST', body: fdImage });
+                    if (!imageResponse.ok) throw new Error((await imageResponse.json()).message || 'Image upload failed');
                 }
 
                 await loadFileList();

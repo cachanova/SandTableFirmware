@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <cstddef>
 #include <atomic>
 #include "SCurve.hpp"
 #include "FastGPIO.hpp"
@@ -32,7 +33,14 @@
 static constexpr int SEGMENT_BUFFER_SIZE = 32;
 static constexpr int STEP_QUEUE_SIZE = 512;
 static constexpr float MIN_SEGMENT_DURATION = 0.010f;  // 10ms minimum
-static constexpr uint32_t STEP_TIMER_PERIOD_US = 50;  // 20kHz ISR
+#ifdef NATIVE_BUILD
+// Native tests use limits below 1,000 steps/s. A 4kHz callback preserves every
+// possible test step while avoiding billions of empty callbacks for patterns
+// representing many hours of table motion.
+static constexpr uint32_t STEP_TIMER_PERIOD_US = 250;
+#else
+static constexpr uint32_t STEP_TIMER_PERIOD_US = 50;  // 20kHz timer callback
+#endif
 static constexpr uint32_t STEP_QUEUE_HORIZON_US = 250000;  // 250ms lookahead
 static constexpr uint32_t STEP_QUEUE_MAX_PROCESS_US = 20000;
 
@@ -84,7 +92,7 @@ struct Segment {
     int32_t lastGenRhoSteps = 0;
 };
 
-// Step event for the ISR queue
+// Step event for the timer-task queue
 struct StepEvent {
     uint32_t executeTime;      // Microsecond timestamp (relative to segment start)
     uint8_t stepMask;          // bit 0 = theta, bit 1 = rho
@@ -155,6 +163,14 @@ public:
     // Reset theta to zero (current position becomes new origin)
     void resetTheta();
 
+    // Reset both logical axes after a separately controlled homing move.
+    // This must only be called while the planner is stopped.
+    void resetPosition(float theta = 0.0f, float rho = 0.0f);
+
+    // Copy targets that have not yet been fully generated. Used to resume a
+    // pattern after inserting a controlled braking segment.
+    size_t copyPendingTargets(float* theta, float* rho, size_t capacity) const;
+
     // Set speed multiplier (0.1 to 1.0, scales velocity only)
     void setSpeedMultiplier(float mult);
 
@@ -179,6 +195,9 @@ public:
 
     // Get extended telemetry (resets min/max queue depth and max consecutive underruns)
     void getTelemetry(PlannerTelemetry& out);
+
+    // Largest commanded axis-velocity jump between calculated segments.
+    float getMaxBoundaryVelocityDiscontinuity() const;
 
 private:
     // Physical parameters
@@ -221,8 +240,8 @@ private:
 
     // Step event queue (circular buffer)
     StepEvent m_stepQueue[STEP_QUEUE_SIZE];
-    volatile int m_stepQueueHead;    // Next position to write
-    volatile int m_stepQueueTail;    // Next position to read (ISR)
+    std::atomic<int> m_stepQueueHead; // Next position to write
+    std::atomic<int> m_stepQueueTail; // Next position to read (timer task)
     std::atomic<uint32_t> m_underrunCount{0}; // Track queue underruns
 
     std::atomic<uint32_t> m_consecutiveUnderruns{0};
@@ -236,8 +255,8 @@ private:
     float m_segmentElapsed;          // Time elapsed in current segment
 
     // State
-    bool m_running;
-    bool m_timerActive = false;
+    std::atomic<bool> m_running;
+    std::atomic<bool> m_timerActive{false};
     bool m_endOfPattern;
     bool m_stopEventQueued = false;
     uint32_t m_completedCount;

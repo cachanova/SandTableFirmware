@@ -77,6 +77,16 @@ public:
         float jMax
     );
 
+    // Calculate maximum achievable exit velocity given distance, entry velocity, and limits
+    // Returns the highest vEnd that can be reached from vStart within the given distance
+    static float maxAchievableExitVelocity(
+        float distance,
+        float vStart,
+        float vMax,
+        float aMax,
+        float jMax
+    );
+
     // Calculate distance required to decelerate from vStart to vEnd
     static float decelerationDistance(
         float vStart,

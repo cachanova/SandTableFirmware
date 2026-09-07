@@ -178,6 +178,10 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
         .status-paused { background: var(--warning); color: #000; }
         .status-clearing { background: #a78bfa; color: #000; }
         .status-stopping { background: var(--danger); color: #000; }
+        .status-initialized, .status-homing { background: var(--warning); color: #000; }
+        .status-homing_review { background: var(--warning); color: #000; }
+        .status-homing_failed { background: var(--danger); color: #000; }
+        .status-uninitialized { background: var(--danger); color: #000; }
 
         /* Canvas Viewer */
         .viewer-wrapper {
@@ -898,7 +902,8 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
         </div>
 
         <nav class="navbar">
-            <a href="/" class="nav-link active">Dashboard</a>
+            <a href="/" class="nav-link active">Patterns</a>
+            <a href="/manual" class="nav-link">Manual</a>
             <a href="/files" class="nav-link">Files</a>
             <a href="/tuning" class="nav-link">Tuning</a>
         </nav>
@@ -930,6 +935,17 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     <div class="status-label">Uptime</div>
                     <div class="status-value" id="uptime">0s</div>
                 </div>
+            </div>
+        </div>
+
+        <div class="card" id="homing-card" style="display: none; border-color: var(--warning);">
+            <div class="card-title">Home Position Check</div>
+            <p id="homing-message" style="color: var(--text-secondary); line-height: 1.5; margin-bottom: 12px;"></p>
+            <div id="homing-details" style="font-size: 0.8em; color: var(--text-muted); margin-bottom: 12px;"></div>
+            <div class="button-row">
+                <button class="btn-primary" id="btn-home-confirm" style="display: none;">Yes, It Reached Home</button>
+                <button class="btn-danger" id="btn-home-reject" style="display: none;">No, It Stopped Early</button>
+                <button class="btn-secondary" id="btn-home-retry" style="display: none;">Run Homing</button>
             </div>
         </div>
 
@@ -1099,6 +1115,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 this.lastPatternName = '';
                 this.selectedPattern = null;
                 this.files = [];
+                this.storageAvailable = true;
                 this.fileTimes = {};
                 this.fileImageTimes = {};
                 this.fileHasImage = {};
@@ -1114,13 +1131,11 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 this.setupEventListeners();
                 this.setupUploadHandlers();
                 this.connectStream();
-                await this.loadFileList();
-                const systemInfo = await this.loadSystemInfo();
-                const status = await this.getStatus();
-                this.updateUI(status);
-                const errors = await this.getErrors();
-                this.updateErrorUI(errors);
-                await this.loadPlaylistStatus();
+                try { await this.loadFileList(); } catch (error) { console.error('File list unavailable:', error); }
+                try { await this.loadSystemInfo(); } catch (error) { console.error('System info unavailable:', error); }
+                try { this.updateUI(await this.getStatus()); } catch (error) { console.error('Status unavailable:', error); }
+                try { this.updateErrorUI(await this.getErrors()); } catch (error) { console.error('Error log unavailable:', error); }
+                try { await this.loadPlaylistStatus(); } catch (error) { console.error('Playlist unavailable:', error); }
                 this.startStatusPolling();
                 this.startErrorPolling();
             }
@@ -1131,6 +1146,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 const fileImage = document.getElementById('upload-image');
 
                 btnUpload.addEventListener('click', () => {
+                    if (!this.storageAvailable) return;
                     filePattern.value = ''; // Reset
                     filePattern.click();
                 });
@@ -1157,6 +1173,10 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             }
 
             async performUpload(patternFile, imageFile) {
+                if (!this.storageAvailable) {
+                    alert('Insert an SD card before uploading patterns.');
+                    return;
+                }
                 const statusBadge = document.getElementById('state-badge');
                 const originalText = statusBadge.textContent;
                 statusBadge.textContent = "UPLOADING...";
@@ -1166,7 +1186,8 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     // Upload pattern
                     const fdPattern = new FormData();
                     fdPattern.append('file', patternFile);
-                    await fetch(this.apiBase + '/files/upload', { method: 'POST', body: fdPattern });
+                    const patternResponse = await fetch(this.apiBase + '/files/upload', { method: 'POST', body: fdPattern });
+                    if (!patternResponse.ok) throw new Error((await patternResponse.json()).message || 'Pattern upload failed');
 
                     // Upload image if present
                     if (imageFile) {
@@ -1177,7 +1198,8 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                         const imageName = basename + '.png';
                         
                         fdImage.append('file', imageFile, imageName);
-                        await fetch(this.apiBase + '/files/upload', { method: 'POST', body: fdImage });
+                        const imageResponse = await fetch(this.apiBase + '/files/upload', { method: 'POST', body: fdImage });
+                        if (!imageResponse.ok) throw new Error((await imageResponse.json()).message || 'Image upload failed');
                     }
 
                     alert('Upload complete!');
@@ -1199,10 +1221,6 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
 
             connectStream() {
                 this.eventSource = new EventSource('/api/stream');
-
-                this.eventSource.onerror = () => {
-                    setTimeout(() => this.connectStream(), 2000);
-                };
 
                 this.eventSource.addEventListener('pos', (e) => {
                     try {
@@ -1254,7 +1272,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 if (this.lastX !== undefined) {
                     const ctx = this.ctxPath;
                     ctx.strokeStyle = 'rgba(42, 37, 32, 0.8)';
-                    ctx.lineWidth = 5;
+                    ctx.lineWidth = 3;
                     ctx.lineCap = 'round';
                     ctx.beginPath();
                     ctx.moveTo(this.lastX, this.lastY);
@@ -1321,6 +1339,9 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 document.getElementById('btn-pause').addEventListener('click', () => this.pausePattern());
                 document.getElementById('btn-stop').addEventListener('click', () => this.stopPattern());
                 document.getElementById('btn-home').addEventListener('click', () => { this.clearPath(); this.homeDevice(); });
+                document.getElementById('btn-home-confirm').addEventListener('click', () => this.confirmHome(true));
+                document.getElementById('btn-home-reject').addEventListener('click', () => this.confirmHome(false));
+                document.getElementById('btn-home-retry').addEventListener('click', () => { this.clearPath(); this.homeDevice(); });
 
                 document.getElementById('btn-add-to-playlist').addEventListener('click', () => this.addToPlaylist());
                 document.getElementById('btn-add-all-to-playlist').addEventListener('click', () => this.addAllToPlaylist());
@@ -1388,11 +1409,21 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             async pausePattern() { await fetch(this.apiBase + '/pattern/pause', { method: 'POST' }); }
 
             async homeDevice() {
-                if (!confirm('Home device? This will reset position to center.')) return;
+                if (!confirm('Run sensorless homing? Keep clear of the mechanism and watch the carriage. You will be asked to verify the result.')) return;
                 const response = await fetch(this.apiBase + '/home', { method: 'POST' });
                 const result = await response.json();
-                if (result.success) alert('Homed successfully');
-                else alert('Failed: ' + (result.message || 'Unknown error'));
+                if (!result.success) alert('Failed: ' + (result.message || 'Unknown error'));
+            }
+
+            async confirmHome(successful) {
+                const formData = new FormData();
+                formData.append('successful', successful ? 'true' : 'false');
+                const response = await fetch(this.apiBase + '/home/confirm', { method: 'POST', body: formData });
+                const result = await response.json();
+                if (!result.success) {
+                    alert('Failed: ' + (result.message || 'Unknown error'));
+                }
+                await this.pollStatusOnce();
             }
 
             async setBrightness(value) {
@@ -1411,6 +1442,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 try {
                     const response = await fetch(this.apiBase + '/files');
                     const data = await response.json();
+                    this.storageAvailable = data.storageAvailable !== false;
                     this.files = data.files || [];
                     this.fileTimes = {};
                     this.fileImageTimes = {};
@@ -1429,6 +1461,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                         }
                     });
                     this.renderPatternList();
+                    this.updateStorageControls();
                 } catch (error) {
                     console.error('Error loading files:', error);
                 }
@@ -1436,12 +1469,16 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
 
             renderPatternList() {
                 const container = document.getElementById('pattern-list-container');
+                if (!this.storageAvailable) {
+                    container.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--warning);">SD card not detected — patterns are unavailable</div>';
+                    return;
+                }
                 if (this.files.length === 0) {
                     container.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--text-muted);">No patterns found</div>';
                     return;
                 }
 
-                container.innerHTML = this.files.map(file => {
+                container.innerHTML = this.files.map((file, index) => {
                     const isSelected = this.selectedPattern === file.name;
                     const displayName = file.name.replace('.thr', '');
                     const hasImage = !!file.hasImage;
@@ -1451,20 +1488,33 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                         : '';
                     
                     return `
-                    <div class="pattern-list-item ${isSelected ? 'selected' : ''}" data-name="${file.name}" onclick="controller.selectPattern('${file.name}')">
+                    <div class="pattern-list-item ${isSelected ? 'selected' : ''}" data-index="${index}">
                         <div class="pattern-info">
-                            <div class="pattern-name">${displayName}</div>
+                            <div class="pattern-name">${this.escapeHtml(displayName)}</div>
                             <div class="pattern-size">${file.size > 0 ? Math.round(file.size / 1024) + ' KB' : ''}</div>
                         </div>
                     </div>`;
                 }).join('');
+                container.querySelectorAll('.pattern-list-item').forEach(item => {
+                    item.addEventListener('click', () => {
+                        const file = this.files[Number(item.dataset.index)];
+                        if (file) this.selectPattern(file.name);
+                    });
+                });
+            }
+
+            escapeHtml(value) {
+                const div = document.createElement('div');
+                div.textContent = value;
+                return div.innerHTML;
             }
 
             selectPattern(filename) {
                 this.selectedPattern = filename;
                 const items = document.querySelectorAll('.pattern-list-item');
                 items.forEach(item => {
-                    item.classList.toggle('selected', item.getAttribute('data-name') === filename);
+                    const file = this.files[Number(item.dataset.index)];
+                    item.classList.toggle('selected', !!file && file.name === filename);
                 });
                 this.preloadPatternImage(filename);
             }
@@ -1576,6 +1626,50 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 const stateBadge = document.getElementById('state-badge');
                 stateBadge.textContent = status.state;
                 stateBadge.className = 'status-badge status-' + status.state.toLowerCase();
+
+                const homingCard = document.getElementById('homing-card');
+                const homingMessage = document.getElementById('homing-message');
+                const homingDetails = document.getElementById('homing-details');
+                const confirmButton = document.getElementById('btn-home-confirm');
+                const rejectButton = document.getElementById('btn-home-reject');
+                const retryButton = document.getElementById('btn-home-retry');
+                if (status.storageAvailable !== undefined) {
+                    this.storageAvailable = status.storageAvailable;
+                    this.updateStorageControls();
+                }
+                const homeState = ['UNINITIALIZED', 'INITIALIZED', 'HOMING', 'HOMING_REVIEW', 'HOMING_FAILED'].includes(status.state);
+                homingCard.style.display = homeState ? 'block' : 'none';
+                confirmButton.style.display = status.state === 'HOMING_REVIEW' ? 'block' : 'none';
+                rejectButton.style.display = status.state === 'HOMING_REVIEW' ? 'block' : 'none';
+                retryButton.style.display = (status.state === 'INITIALIZED' || status.state === 'HOMING_FAILED') ? 'block' : 'none';
+                if (status.state === 'UNINITIALIZED') {
+                    homingMessage.textContent = 'Motor drivers are offline or disabled. Homing and pattern motion are locked out.';
+                } else if (status.state === 'INITIALIZED') {
+                    homingMessage.textContent = 'Homing is required before a pattern can run.';
+                } else if (status.state === 'HOMING') {
+                    homingMessage.textContent = 'Homing is in progress. Keep clear and watch for an incorrect stop in a stiff part of the path.';
+                } else if (status.state === 'HOMING_REVIEW') {
+                    homingMessage.textContent = 'Visually verify that the carriage reached the physical center stop. Confirm only if it did; patterns remain locked out until then.';
+                } else if (status.state === 'HOMING_FAILED') {
+                    const failures = {
+                        1: 'The rho driver is not communicating.',
+                        2: 'The coarse approach did not find a sustained stall before its timeout.',
+                        3: 'The precision approach did not find a sustained stall before its timeout.',
+                        4: 'The precision return distance did not match the backoff move.',
+                        5: 'The controller could not start the homing task.',
+                        6: 'The observed home position was rejected.',
+                        7: 'TMC2209 UART replies failed validation during homing.'
+                    };
+                    const reason = failures[(status.homing || {}).failure] || 'The automatic result was not trustworthy.';
+                    homingMessage.textContent = reason + ' Inspect the mechanism and retry; pattern motion is locked out.';
+                }
+                const homing = status.homing || {};
+                homingDetails.textContent = homing.slowApproachMs
+                    ? `Precision pass: ${homing.slowApproachMs} ms, StallGuard ${homing.trigger}/${homing.baseline}`
+                    : '';
+
+                document.getElementById('btn-home').disabled = !['INITIALIZED', 'HOMING_FAILED'].includes(status.state);
+                document.getElementById('btn-start').disabled = status.state !== 'IDLE' || !this.storageAvailable;
 
                 const currentPattern = status.currentPattern || 'None';
                 const clearingPattern = status.clearingPattern || '';
@@ -1726,16 +1820,41 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
 
             startStatusPolling() {
                 this.statusInterval = setInterval(async () => {
-                    const status = await this.getStatus();
-                    this.updateUI(status);
+                    try {
+                        const status = await this.getStatus();
+                        this.updateUI(status);
+                    } catch (error) {
+                        console.error('Status poll failed:', error);
+                    }
                 }, 500);
             }
 
             startErrorPolling() {
                 this.errorsInterval = setInterval(async () => {
-                    const errors = await this.getErrors();
-                    this.updateErrorUI(errors);
+                    try {
+                        const errors = await this.getErrors();
+                        this.updateErrorUI(errors);
+                    } catch (error) {
+                        console.error('Error poll failed:', error);
+                    }
                 }, 1000);
+            }
+
+            updateStorageControls() {
+                const disabled = !this.storageAvailable;
+                ['btn-upload-new', 'btn-start', 'btn-add-to-playlist',
+                 'btn-add-all-to-playlist', 'btn-playlist-start',
+                 'btn-save-playlist', 'btn-load-playlist'].forEach(id => {
+                    const element = document.getElementById(id);
+                    if (element) element.disabled = disabled || element.disabled;
+                });
+                if (!disabled) {
+                    document.getElementById('btn-upload-new').disabled = false;
+                    document.getElementById('btn-add-to-playlist').disabled = false;
+                    document.getElementById('btn-add-all-to-playlist').disabled = false;
+                    document.getElementById('btn-save-playlist').disabled = false;
+                    document.getElementById('btn-load-playlist').disabled = false;
+                }
             }
 
             // Playlist methods
@@ -1846,7 +1965,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                         return `
                         <div class="playlist-item ${isCurrent ? 'current' : ''}" onclick="controller.playlistSkipTo(${index})">
                             <div class="playlist-num">${isCurrent ? '▶' : index + 1}</div>
-                            <div class="playlist-name">${item.filename.replace('.thr', '')}</div>
+                            <div class="playlist-name">${this.escapeHtml(item.filename.replace('.thr', ''))}</div>
                             <div class="playlist-actions" onclick="event.stopPropagation()">
                                 <button class="playlist-action-btn" onclick="controller.playlistMoveUp(${index})" ${index === 0 ? 'disabled' : ''}>▲</button>
                                 <button class="playlist-action-btn" onclick="controller.playlistMoveDown(${index})" ${index === data.items.length - 1 ? 'disabled' : ''}>▼</button>

@@ -2,4 +2,8 @@ compile_commands.json
 .cache
 .claude
 .pio
+tuning-recordings/
+__pycache__/
 .platformio-home
+tmp_capture/*.log
+tmp_capture/*.jsonl

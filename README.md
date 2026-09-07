@@ -33,6 +33,11 @@ At a high level the firmware is organized around three FreeRTOS tasks pinned acr
    pio run -t uploadfs
    ```
 5. Connect to the device IP and open the Web UI.
+6. Run homing from the dashboard and visually confirm that the carriage reached
+   the physical center stop. Pattern motion remains locked until confirmation.
+
+Automatic homing is disabled by default (`Config::kAutoHomeOnBoot = false`) so
+firmware can be developed with the mechanism disconnected.
 
 ## Configuration
 Key settings in `lib/Config/src/Config.h`:
@@ -65,6 +70,8 @@ Core endpoints (see `lib/WebServer/src/SisyphusWebServer.cpp`):
 - `GET|POST /api/led/brightness` LED control
 - `GET|POST /api/speed` speed control
 - `GET /api/tuning/*` driver and motion tuning
+- `POST /api/home` start sensorless homing
+- `POST /api/home/confirm` accept or reject the observed home position
 
 ## Pattern Format (.thr)
 Text file of polar coordinates in radians and normalized radius:
@@ -89,6 +96,25 @@ The Web UI accepts `.thr` plus optional `.png` uploads with the same base name. 
 ## Motion Planning
 - S-curve profiles per axis with synchronized segment durations.
 - Lookahead step generation into a queue to avoid underruns.
+- Pause and stop use controlled deceleration; pause preserves planner targets
+  that have not yet been generated.
+
+Loaded theta commissioning, acoustic acceptance, known resonances, selected
+defaults, and the repeatable retuning procedure are documented in the
+[theta acoustic tuning playbook](docs/THETA_ACOUSTIC_TUNING.md).
+
+## Sensorless Homing
+
+Homing uses two StallGuard approaches: a coarse search, then a backoff and slow
+precision search. Initial samples are ignored, low readings must persist for a
+configured number of samples, both approaches have timeouts, and the slow
+return distance must be plausible. The automatic result is still not treated
+as proof: the dashboard requires visual confirmation before entering `IDLE`.
+
+The Tuning page exposes the three values useful for rejecting stiff-path false
+positives: trigger percentage, consecutive low samples, and ignored initial
+travel. See [hardware validation](docs/HARDWARE_VALIDATION.md) before connecting
+the mechanism.
 
 ## Logging and Diagnostics
 - Serial logs include queue depth, underruns, timing stats, and state changes.
@@ -99,3 +125,9 @@ Native motion planner tests:
 ```bash
 pio run -e native
 ./run_all_tests.sh
+```
+
+The pattern suite actually loads and simulates each `.thr` file, verifies the
+completed segment count and final step position, and rejects malformed inputs.
+There is intentionally no CI requirement for this hobby project; run the native
+suite and the ESP32 build locally before flashing.

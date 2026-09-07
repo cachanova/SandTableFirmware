@@ -8,6 +8,7 @@
 #include <freertos/task.h>
 #include <memory>
 #include <atomic>
+#include <vector>
 
 #ifndef NATIVE_BUILD
 #include <Config.h>
@@ -41,9 +42,11 @@ struct MotionSettings {
   float rMaxVelocity = 10.0f;   // mm/s
   float rMaxAccel = 20.0f;      // mm/s²
   float rMaxJerk = 30.0f;       // mm/s³
-  float tMaxVelocity = 0.25f;   // rad/s
-  float tMaxAccel = 1.0f;       // rad/s²
-  float tMaxJerk = 5.0f;        // rad/s³
+  // Operator-selected loaded theta profile (2026-09-07). Commissioning builds
+  // override this with their quiet-first boot envelope.
+  float tMaxVelocity = 0.48f;   // rad/s
+  float tMaxAccel = 2.0f;       // rad/s²
+  float tMaxJerk = 10.0f;       // rad/s³
 };
 
 struct DriverSettings {
@@ -68,6 +71,29 @@ struct DriverSettings {
   uint32_t coolStepThreshold = 0;     // Velocity threshold for CoolStep
 };
 
+struct HomingStatus {
+  uint32_t cycle = 0;
+  uint32_t fastApproachMs = 0;
+  uint32_t slowApproachMs = 0;
+  uint16_t baseline = 0;
+  uint16_t trigger = 0;
+  uint8_t failure = 0;
+};
+
+struct HomingSettings {
+  // Lower percentages require a larger SG_RESULT drop and are less sensitive.
+  uint8_t triggerPercent = 65;
+  uint8_t consecutiveSamples = 18;
+  uint16_t minimumTravelMs = 600;
+};
+
+enum class TuningUpdateResult : uint8_t {
+  UPDATED,
+  REJECTED,
+  DRIVER_VERIFY_FAILED,
+  SAVE_FAILED
+};
+
 class PolarControl {
 public:
   enum State_t : uint8_t {
@@ -78,25 +104,40 @@ public:
     PAUSED,
     STOPPING,
     CLEARING,
-    PREPARING
+    PREPARING,
+    HOMING,
+    HOMING_REVIEW,
+    HOMING_FAILED
   };
 
   PolarControl();
   ~PolarControl();
 
   // Lifecycle
-  void begin();
-  void setupDrivers();
-  void home();
+  bool begin();
+  bool setupDrivers();
+  bool home();
+  bool confirmHome(bool successful);
+  HomingStatus getHomingStatus() const;
+#if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING)
+  // Bench-only escape hatch: establish a logical origin without moving the
+  // mechanism. This must never be present in a production build.
+  void assumeBenchTestOrigin();
+#endif
 
   // Pattern control
   bool start(std::unique_ptr<PosGen> posGen);
+  // Move directly to one polar coordinate using the same coordinated planner
+  // as patterns. The supplied angle may be wrapped; the shortest equivalent
+  // theta move is selected from the current position.
+  bool moveTo(float theta, float rho);
   bool startClearing(std::unique_ptr<PosGen> posGen);
   bool loadAndRunFile(String filePath);
   bool loadAndRunFile(String filePath, float maxRho);
   bool pause();
   bool resume();
   bool stop();
+  void emergencyStop();
 
   // Main processing loop - call from motor task
   bool processNextMove();
@@ -104,17 +145,17 @@ public:
   // Getters/Setters
   State_t getState();
   void setSpeed(uint8_t speed);
-  uint8_t getSpeed() const { return m_speed; }
+  uint8_t getSpeed() const { return m_speed.load(); }
   PolarCord_t getCurrentPosition() const;
   PolarCord_t getActualPosition();
   PolarVelocity_t getActualVelocity();
-  uint32_t getSegmentsCompleted() const { return m_planner.getCompletedCount(); }
+  uint32_t getSegmentsCompleted() const;
   float getMaxRho() const { return R_MAX; }
   int getProgressPercent() const;
 
-  void getDiagnostics(uint32_t& queueDepth, uint32_t& underruns) const { m_planner.getDiagnostics(queueDepth, underruns); }
-  void getProfileData(uint32_t& maxProcessUs, uint32_t& maxIntervalUs, uint32_t& avgGenUs) { m_planner.getProfileData(maxProcessUs, maxIntervalUs, avgGenUs); }
-  void getTelemetry(PlannerTelemetry& telemetry) { m_planner.getTelemetry(telemetry); }
+  void getDiagnostics(uint32_t& queueDepth, uint32_t& underruns) const;
+  void getProfileData(uint32_t& maxProcessUs, uint32_t& maxIntervalUs, uint32_t& avgGenUs);
+  void getTelemetry(PlannerTelemetry& telemetry);
   void getMutexWaitProfile(uint32_t& maxWaitUs, uint32_t& avgWaitUs) {
     maxWaitUs = m_mutexWaitProfiler.getMax();
     avgWaitUs = m_mutexWaitProfiler.getAvg();
@@ -130,27 +171,34 @@ public:
   void resetTheta();
 
   // Tuning getters/setters
-  const MotionSettings& getMotionSettings() const { return m_motionSettings; }
-  void setMotionSettings(const MotionSettings& settings);
+  MotionSettings getMotionSettings() const;
 
-  const DriverSettings& getThetaDriverSettings() const { return m_tDriverSettings; }
-  const DriverSettings& getRhoDriverSettings() const { return m_rDriverSettings; }
-  void setThetaDriverSettings(const DriverSettings& settings);
-  void setRhoDriverSettings(const DriverSettings& settings);
+  DriverSettings getThetaDriverSettings() const;
+  DriverSettings getRhoDriverSettings() const;
+  HomingSettings getHomingSettings() const;
+
+  // Validate and atomically persist a settings group. Driver updates are
+  // UART-verified first and rolled back if verification or flash commit fails.
+  TuningUpdateResult saveMotionSettings(const MotionSettings& settings);
+  TuningUpdateResult saveThetaDriverSettings(const DriverSettings& settings);
+  TuningUpdateResult saveRhoDriverSettings(const DriverSettings& settings);
+  TuningUpdateResult saveHomingSettings(const HomingSettings& settings);
 
   // Settings persistence
   bool saveTuningSettings();
   bool loadTuningSettings();
+  bool tuningPersistenceAvailable() const { return m_tuningStorageReady.load(); }
 
   // Motor stress tests (blocking calls - run from main task)
-  void testThetaContinuous();
-  void testThetaStress();
-  void testRhoContinuous();
-  void testRhoStress();
+  bool testThetaContinuous();
+  bool testThetaStress();
+  bool testRhoContinuous();
+  bool testRhoStress();
 
   // Driver diagnostics
   void writeThetaDriverSettings(Print& out);
   void writeRhoDriverSettings(Print& out);
+  void writeRhoCompanionDriverSettings(Print& out);
 
 private:
   struct FileCommand {
@@ -164,7 +212,6 @@ private:
 
   // Physical constants
   static constexpr float R_MAX = 450.0f;
-  static constexpr float R_SENSE = 0.12f;  // Sense resistor in ohms
 
   // These are calculated based on current microstep settings
   inline int getStepsPerMm() const { return 50 * m_rDriverSettings.microsteps; }
@@ -174,6 +221,8 @@ private:
   MotionSettings m_motionSettings;
   DriverSettings m_tDriverSettings;  // Theta driver
   DriverSettings m_rDriverSettings;  // Rho driver
+  HomingSettings m_homingSettings;
+  std::atomic<bool> m_tuningStorageReady{false};
 
   // Motion planner with lookahead and S-curves
   MotionPlanner m_planner;
@@ -183,32 +232,61 @@ private:
   TMC2209 m_rDriver;
   TMC2209 m_rCDriver;
 
-  SemaphoreHandle_t m_mutex = NULL;
+  mutable SemaphoreHandle_t m_mutex = NULL;
   Profiler m_mutexWaitProfiler;
   
   // Async File Reading
   QueueHandle_t m_coordQueue = NULL;
   QueueHandle_t m_cmdQueue = NULL;
   TaskHandle_t m_fileTaskHandle = NULL;
-  volatile bool m_fileLoading = false;
+  std::atomic<bool> m_fileLoading{false};
   std::atomic<uint32_t> m_lastFileLine{0};
   std::atomic<uint32_t> m_lastFilePos{0};
   std::atomic<uint32_t> m_lastFileSize{0};
 
   std::atomic<State_t> m_state{UNINITIALIZED};
+  std::atomic<bool> m_driverBusInitialized{false};
+#ifdef SISYPHUS_THETA_COMMISSIONING
+  std::atomic<bool> m_thetaCommissioningStartPermit{false};
+#endif
+  std::atomic<uint32_t> m_homingCycle{0};
+  std::atomic<uint32_t> m_homingFastApproachMs{0};
+  std::atomic<uint32_t> m_homingSlowApproachMs{0};
+  std::atomic<uint16_t> m_homingBaseline{0};
+  std::atomic<uint16_t> m_homingTrigger{0};
+  std::atomic<uint8_t> m_homingFailure{0};
+  TaskHandle_t m_homingTaskHandle = NULL;
   std::unique_ptr<PosGen> m_posGen;
 
   // Speed setting: 1-10
-  uint8_t m_speed = 5;
+  std::atomic<uint8_t> m_speed{5};
   bool m_clearingSpeedActive = false;
+  bool m_pauseAfterStop = false;
+  std::vector<PolarCord_t> m_resumePoints;
+  size_t m_resumePointIndex = 0;
 
   // Helpers
-  void forceStop();
   void updateSpeedSettings();
   void feedPlanner();
+  bool writeTuningSettingsLocked(const MotionSettings& motionSettings,
+                                 const DriverSettings& thetaSettings,
+                                 const DriverSettings& rhoSettings,
+                                 const HomingSettings& homingSettings);
 
   // Driver setup and homing
-  void applyDriverSettings(TMC2209 &driver, const DriverSettings &settings);
-  void homeDriver(TMC2209 &driver, int speed);
-  void homeDriver(TMC2209 &driver);
+  bool applyDriverSettings(TMC2209 &driver, const DriverSettings &settings,
+                           uint8_t driverAddress, const char* driverName);
+  struct HomingAttempt {
+    bool success = false;
+    bool communicationError = false;
+    uint32_t elapsedMs = 0;
+    uint16_t baseline = 0;
+    uint16_t trigger = 0;
+  };
+  HomingAttempt homeDriver(TMC2209 &driver, int speed,
+                           uint32_t ignoreMs, uint32_t timeoutMs,
+                           uint8_t requiredSamples, float triggerRatio);
+  bool rampDriverVelocity(TMC2209 &driver, int32_t targetVelocity,
+                          uint32_t rampMs);
+  bool homeDriver(TMC2209 &driver);
 };

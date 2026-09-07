@@ -14,7 +14,7 @@
 
 PolarControl polarControl;
 SisyphusWebServer webServer(Config::kWebServerPort);
-LEDController ledController(Config::kLedCount);
+LEDController ledController(Config::kLedPin);
 
 TaskHandle_t motorTaskHandle = NULL;
 TaskHandle_t webTaskHandle = NULL;
@@ -107,7 +107,9 @@ void webTask(void *parameter) {
     while (true) {
         uint32_t startUs = micros();
         webServer.loop();
+#ifndef SISYPHUS_SKIP_OTA
         ArduinoOTA.handle();
+#endif
         uint32_t loopUs = micros() - startUs;
         totalLoopUs += loopUs;
         loopCount++;
@@ -151,25 +153,36 @@ void webTask(void *parameter) {
 
 void setup() {
     // ... (rest of setup unchanged until task creation)
+#ifdef SISYPHUS_SKIP_MOTOR_HARDWARE
+    // Reduce peak current during electronics-only bring-up. This is especially
+    // useful when the ESP32 and attached driver logic share a USB supply.
+    setCpuFrequencyMhz(80);
+#endif
     Serial.begin(115200);
     delay(500);
 
     LOG("\n\n=== Sisyphus Table Starting ===\r\n");
 
     // Initialize SD Card
+#ifdef SISYPHUS_SKIP_SD_HARDWARE
+    LOG("DIAGNOSTIC: SD bus initialization is disabled.\r\n");
+#else
     if (!initSDCard()) {
         LOG("WARNING: Running without SD card storage!\r\n");
-        ErrorLog::instance().log("ERROR", "SD", "MOUNT_FAILED",
-                                 "SD card mount failed", "Running without SD storage");
     } else {
         listSDFiles();
     }
+#endif
 
     // WiFi Setup
     LOG("Setting up WiFi...\r\n");
     WiFi.mode(WIFI_STA);
+#ifdef SISYPHUS_SKIP_MOTOR_HARDWARE
+    WiFi.setTxPower(WIFI_POWER_MINUS_1dBm);
+#endif
     WiFiManager wm;
     wm.setConfigPortalTimeout(Config::kWifiPortalTimeoutSec);
+    wm.preloadWiFi(Config::kWifiSsid, Config::kWifiPassword);
 
     // Configure static IP
     wm.setSTAStaticIPConfig(Config::kStaticIpBase, Config::kStaticGateway, Config::kStaticSubnet, Config::kStaticDns);
@@ -187,23 +200,30 @@ void setup() {
     LOG("SSID: %s\r\n", WiFi.SSID().c_str());
 
     // Setup OTA updates
+#ifdef SISYPHUS_SKIP_OTA
+    LOG("DIAGNOSTIC: OTA initialization is disabled.\r\n");
+#else
     ArduinoOTA.setHostname(Config::kOtaHostname);
     ArduinoOTA.setPassword(Config::kOtaPassword);
     ArduinoOTA.onStart([]() {
         String type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
         LOG("OTA Start: %s\r\n", type.c_str());
         // Stop motors during OTA update
-        polarControl.stop();
+        polarControl.emergencyStop();
     });
     ArduinoOTA.onEnd([]() {
         LOG("\nOTA End - Rebooting...\r\n");
     });
     ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-        Serial.printf("OTA Progress: %u%%\r", (progress / (total / 100)));
-        // Don't LOG progress to web, too much traffic
+        static unsigned int lastReported = 101;
+        const unsigned int percent = total ? (progress * 100U / total) : 0U;
+        if (lastReported == 101 || percent >= lastReported + 5 || percent == 100) {
+            lastReported = percent;
+            LOG("OTA Progress: %u%%\r\n", percent);
+        }
     });
     ArduinoOTA.onError([](ota_error_t error) {
-        Serial.printf("OTA Error[%u]: ", error); // Keep Serial for errors if web logger fails
+        LOG("OTA Error[%u]: ", error);
         if (error == OTA_AUTH_ERROR) {
             LOG("OTA Auth Failed\r\n");
             ErrorLog::instance().log("ERROR", "OTA", "AUTH_FAILED", "OTA auth failed");
@@ -223,12 +243,35 @@ void setup() {
     });
     ArduinoOTA.begin();
     LOG("OTA updates enabled\r\n");
+#endif
 
     // Initialize hardware
     LOG("Initializing motors...\r\n");
-    polarControl.begin();
-    polarControl.setupDrivers();
-    polarControl.home();
+    bool motorSubsystemReady = polarControl.begin();
+#ifdef SISYPHUS_SKIP_MOTOR_HARDWARE
+    motorSubsystemReady = false;
+    LOG("DIAGNOSTIC: Motor UART and driver initialization are disabled.\r\n");
+#else
+    motorSubsystemReady = motorSubsystemReady && polarControl.setupDrivers();
+#endif
+    if (!motorSubsystemReady) {
+        LOG("Motor subsystem failed to initialize; pattern motion is locked out.\r\n");
+    } else {
+#if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING)
+        polarControl.assumeBenchTestOrigin();
+#ifdef SISYPHUS_THETA_COMMISSIONING
+        LOG("WARNING: THETA-ONLY COMMISSIONING firmware is active.\r\n");
+#else
+        LOG("WARNING: BENCH MOTION TEST firmware is active; physical position is not known.\r\n");
+#endif
+#else
+        if (Config::kAutoHomeOnBoot) {
+            polarControl.home();
+        } else {
+            LOG("Automatic homing disabled; use the UI to home and confirm position.\r\n");
+        }
+#endif
+    }
 
     // Initialize LED controller
     LOG("Initializing LED controller...\r\n");
@@ -243,7 +286,7 @@ void setup() {
 
     // Create motor task on Core 1
     LOG("Starting motor task on Core 1...\r\n");
-    xTaskCreatePinnedToCore(
+    const BaseType_t motorTaskCreated = xTaskCreatePinnedToCore(
         motorTask,
         "MotorTask",
         4096,
@@ -255,7 +298,7 @@ void setup() {
 
     // Create web logic task on Core 0
     LOG("Starting web logic task on Core 0...\r\n");
-    xTaskCreatePinnedToCore(
+    const BaseType_t webTaskCreated = xTaskCreatePinnedToCore(
         webTask,
         "WebTask",
         8192,
@@ -264,6 +307,16 @@ void setup() {
         &webTaskHandle,
         Config::kWebCore
     );
+    if (motorTaskCreated != pdPASS) {
+        motorTaskHandle = NULL;
+        ErrorLog::instance().log("ERROR", "SYSTEM", "MOTOR_TASK_CREATE_FAILED",
+                                 "Could not create motor processing task");
+    }
+    if (webTaskCreated != pdPASS) {
+        webTaskHandle = NULL;
+        ErrorLog::instance().log("ERROR", "SYSTEM", "WEB_TASK_CREATE_FAILED",
+                                 "Could not create web processing task");
+    }
 
     // Initial speed
     polarControl.setSpeed(5);

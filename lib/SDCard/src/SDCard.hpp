@@ -3,6 +3,7 @@
 #include <FS.h>
 #include <SD.h>
 #include <SPI.h>
+#include <atomic>
 #include "Logger.hpp"
 #include "ErrorLog.hpp"
 
@@ -12,8 +13,19 @@
 #define SD_CLK_PIN  18
 #define SD_MISO_PIN 19
 
+inline std::atomic<bool>& sdCardReadyFlag() {
+    static std::atomic<bool> ready{false};
+    return ready;
+}
+
+inline bool isSDCardReady() {
+    return sdCardReadyFlag().load();
+}
+
 // Initialize SD card - call once in setup()
 inline bool initSDCard() {
+    sdCardReadyFlag().store(false);
+
     // Explicitly initialize SPI with defined pins
     SPI.begin(SD_CLK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
 
@@ -21,6 +33,7 @@ inline bool initSDCard() {
     if (!SD.begin(SD_CS_PIN, SPI, 40000000)) {
         LOG("ERROR: SD card mount failed!\r\n");
         ErrorLog::instance().log("ERROR", "SD", "MOUNT_FAILED", "SD card mount failed");
+        SD.end();
         return false;
     }
 
@@ -28,6 +41,7 @@ inline bool initSDCard() {
     if (cardType == CARD_NONE) {
         LOG("No SD card attached\r\n");
         ErrorLog::instance().log("ERROR", "SD", "NO_CARD", "No SD card attached");
+        SD.end();
         return false;
     }
 
@@ -43,13 +57,24 @@ inline bool initSDCard() {
     // Ensure directory structure exists
     if (!SD.exists("/patterns")) {
         LOG("Creating /patterns directory\r\n");
-        SD.mkdir("/patterns");
+        if (!SD.mkdir("/patterns")) {
+            ErrorLog::instance().log("ERROR", "SD", "DIRECTORY_FAILED",
+                                     "Could not create directory", "/patterns");
+            SD.end();
+            return false;
+        }
     }
     if (!SD.exists("/playlists")) {
         LOG("Creating /playlists directory\r\n");
-        SD.mkdir("/playlists");
+        if (!SD.mkdir("/playlists")) {
+            ErrorLog::instance().log("ERROR", "SD", "DIRECTORY_FAILED",
+                                     "Could not create directory", "/playlists");
+            SD.end();
+            return false;
+        }
     }
 
+    sdCardReadyFlag().store(true);
     return true;
 }
 

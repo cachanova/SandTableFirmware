@@ -1,6 +1,7 @@
 #include "WiFi.h"
 #include "SisyphusWebServer.hpp"
 #include "WebUI.h"
+#include "ManualUI.h"
 #include "TuningUI.h"
 #include "FileUI.h"
 #include "JsonHelpers.hpp"
@@ -10,12 +11,37 @@
 #include <ClearingPatternGen.hpp>
 #include <ErrorLog.hpp>
 #include <algorithm>
+#include <cerrno>
+#include <climits>
 #include <cmath>
+#include <cstdlib>
 
 static constexpr size_t kResponseBufferSize = 256;
 static constexpr unsigned long kStatusCacheMs = 300;
 static constexpr unsigned long kErrorsCacheMs = 1000;
 static constexpr unsigned long kFileCacheThrottleMs = 500;
+
+struct UploadContext {
+    char finalPath[160];
+    char tempPath[160];
+    size_t maxBytes;
+    size_t received;
+    int status;
+};
+
+class SemaphoreGuard {
+public:
+    explicit SemaphoreGuard(SemaphoreHandle_t mutex) : m_mutex(mutex) {
+        if (m_mutex) xSemaphoreTake(m_mutex, portMAX_DELAY);
+    }
+    ~SemaphoreGuard() {
+        if (m_mutex) xSemaphoreGive(m_mutex);
+    }
+    SemaphoreGuard(const SemaphoreGuard&) = delete;
+    SemaphoreGuard& operator=(const SemaphoreGuard&) = delete;
+private:
+    SemaphoreHandle_t m_mutex;
+};
 
 class StringPrint : public Print {
 public:
@@ -58,11 +84,89 @@ static void writeJsonString(Print& out, const String& value) {
     out.print('"');
 }
 
+static bool validSimpleFilename(const String& filename, const char* extension) {
+    if (filename.length() < 5 || filename.length() > 80 ||
+        filename.indexOf('/') >= 0 || filename.indexOf('\\') >= 0 ||
+        filename.indexOf("..") >= 0 || !filename.endsWith(extension)) {
+        return false;
+    }
+    for (size_t i = 0; i < filename.length(); ++i) {
+        const char c = filename.charAt(i);
+        const bool allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == ' ';
+        if (!allowed) return false;
+    }
+    return true;
+}
+
+static bool parseStrictInt(const String& text, int& value) {
+    if (text.length() == 0) return false;
+    char* end = nullptr;
+    errno = 0;
+    const long parsed = strtol(text.c_str(), &end, 10);
+    if (errno != 0 || end == text.c_str() || *end != '\0' ||
+        parsed < INT_MIN || parsed > INT_MAX) {
+        return false;
+    }
+    value = static_cast<int>(parsed);
+    return true;
+}
+
+static bool parseStrictUint32(const String& text, uint32_t& value) {
+    if (text.length() == 0 || text.charAt(0) == '-') return false;
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long parsed = strtoul(text.c_str(), &end, 10);
+    if (errno != 0 || end == text.c_str() || *end != '\0' || parsed > UINT32_MAX) {
+        return false;
+    }
+    value = static_cast<uint32_t>(parsed);
+    return true;
+}
+
+static bool parseStrictFloat(const String& text, float& value) {
+    if (text.length() == 0) return false;
+    char* end = nullptr;
+    errno = 0;
+    const float parsed = strtof(text.c_str(), &end);
+    if (errno != 0 || end == text.c_str() || *end != '\0' || !std::isfinite(parsed)) {
+        return false;
+    }
+    value = parsed;
+    return true;
+}
+
+static bool parseStrictBool(const String& text, bool& value) {
+    if (text == "true" || text == "1") {
+        value = true;
+        return true;
+    }
+    if (text == "false" || text == "0") {
+        value = false;
+        return true;
+    }
+    return false;
+}
+
+static bool requirePatternStorage(AsyncWebServerRequest* request) {
+    if (isSDCardReady()) return true;
+    request->send(503, "application/json",
+        "{\"success\":false,\"message\":\"SD card storage is unavailable\"}");
+    return false;
+}
+
 // Helper to resolve pattern file path
 static String resolvePatternPath(const String& filename) {
+    if (!isSDCardReady()) return "";
+    if (!validSimpleFilename(filename, ".thr")) return "";
     String basename = filename;
     if (basename.endsWith(".thr")) basename = basename.substring(0, basename.length() - 4);
-    return "/patterns/" + basename + "/" + filename;
+
+    String nestedPath = "/patterns/" + basename + "/" + filename;
+    if (SD.exists(nestedPath)) {
+        return nestedPath;
+    }
+    return "/patterns/" + filename;
 }
 
 static constexpr bool kEnablePatternImages = true;
@@ -92,9 +196,9 @@ SisyphusWebServer::SisyphusWebServer(uint16_t port)
       m_runningClearing(false),
       m_firstPointCleared(false),
       m_activeClearingPattern(CLEARING_NONE),
-      m_lastUploadTime(0),
       m_fileListDirty(true) {
     m_cacheMutex = xSemaphoreCreateMutex();
+    m_stateMutex = xSemaphoreCreateMutex();
 }
 
 void SisyphusWebServer::getRequestStats(uint32_t& total, uint32_t& inflight) const {
@@ -143,6 +247,13 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
                       sizeof(TUNING_UI_HTML) - 1);
     });
 
+    m_server.on("/manual", HTTP_GET, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        request->send(200, "text/html",
+                      reinterpret_cast<const uint8_t *>(MANUAL_UI_HTML),
+                      sizeof(MANUAL_UI_HTML) - 1);
+    });
+
     m_server.on("/files", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         request->send(200, "text/html",
@@ -165,6 +276,21 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
         handleErrorsClear(request);
     });
 
+    m_server.on(AsyncURIMatcher::exact("/api/logs"), HTTP_GET, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handleLogs(request);
+    });
+
+    m_server.on("/api/logs/text", HTTP_GET, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handleLogsText(request);
+    });
+
+    m_server.on("/api/logs/clear", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handleLogsClear(request);
+    });
+
     m_server.on("/api/pattern/start", HTTP_POST, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handlePatternStart(request);
@@ -185,9 +311,29 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
         handlePatternResume(request);
     });
 
+    m_server.on("/api/manual/move", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handleManualMove(request);
+    });
+
+    m_server.on("/api/motion/stop", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handleMotionStop(request);
+    });
+
+    m_server.on("/api/motion/telemetry", HTTP_GET, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handleMotionTelemetry(request);
+    });
+
     m_server.on("/api/home", HTTP_POST, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handleHome(request);
+    });
+
+    m_server.on("/api/home/confirm", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handleHomeConfirm(request);
     });
 
     m_server.on("/api/position", HTTP_GET, [this](AsyncWebServerRequest *request) {
@@ -203,7 +349,9 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
     if (kEnablePatternImages) {
         m_server.on("/api/pattern/image", HTTP_GET, [this](AsyncWebServerRequest *request) {
             noteRequest(request);
-            
+
+            if (!requirePatternStorage(request)) return;
+
             // Limit concurrent file operations to prevent FD exhaustion (FATFS limit is low)
             if (m_requestInflight > 3) {
                 request->send(503);
@@ -241,7 +389,6 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
                     response->addHeader("Retry-After", "1");
                     request->send(response);
                 } else {
-                    m_fileListDirty = true;
                     request->send(404);
                 }
                 return;
@@ -259,14 +406,14 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
                 }
                 AsyncWebServerResponse *response = request->beginResponse(SD, pngPath, "image/png");
                 response->addHeader("Cache-Control", "public, max-age=31536000, immutable");
-                
+
                 if (imgTime > 0) {
                     char timeStr[32];
                     struct tm * tmstruct = gmtime((time_t*)&imgTime);
                     strftime(timeStr, sizeof(timeStr), "%a, %d %b %Y %H:%M:%S GMT", tmstruct);
                     response->addHeader("Last-Modified", timeStr);
                 }
-                
+
                 request->send(response);
             } else {
                 request->send(404);
@@ -282,7 +429,18 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
     m_server.on("/api/files/upload", HTTP_POST,
         [this](AsyncWebServerRequest *request) {
             noteRequest(request);
-            request->send(200);
+            UploadContext* upload = static_cast<UploadContext*>(request->_tempObject);
+            const int status = upload == nullptr ? 400 : upload->status;
+            request->_tempObject = nullptr;
+            if (upload != nullptr) free(upload);
+            if (status != 0) {
+                request->send(status, "application/json",
+                    status == 503
+                        ? "{\"success\":false,\"message\":\"SD card storage is unavailable\"}"
+                        : "{\"success\":false,\"message\":\"Upload failed\"}");
+                return;
+            }
+            request->send(200, "application/json", "{\"success\":true}");
         },
         [this](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
             handleFileUpload(request, filename, index, data, len, final);
@@ -340,7 +498,9 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
         handlePlaylistClear(request);
     });
 
-    m_server.on("/api/playlist", HTTP_GET, [this](AsyncWebServerRequest *request) {
+    // ESPAsyncWebServer's plain-string matcher also matches child paths, so
+    // keep this collection route from swallowing /api/playlist/list.
+    m_server.on(AsyncURIMatcher::exact("/api/playlist"), HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handlePlaylistGet(request);
     });
@@ -406,7 +566,9 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
     });
 
     // Tuning routes
-    m_server.on("/api/tuning", HTTP_GET, [this](AsyncWebServerRequest *request) {
+    // Use an exact matcher so the parent does not intercept the driver dump
+    // endpoints below (for example /api/tuning/dump/theta).
+    m_server.on(AsyncURIMatcher::exact("/api/tuning"), HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handleTuningGet(request);
     });
@@ -424,6 +586,11 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
     m_server.on("/api/tuning/rho", HTTP_POST, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handleTuningRhoDriverSet(request);
+    });
+
+    m_server.on("/api/tuning/homing", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handleTuningHomingSet(request);
     });
 
     m_server.on("/api/tuning/test/theta/continuous", HTTP_POST, [this](AsyncWebServerRequest *request) {
@@ -461,6 +628,13 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
         request->send(response);
     });
 
+    m_server.on("/api/tuning/dump/rho-companion", HTTP_GET, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
+        m_polarControl->writeRhoCompanionDriverSettings(*response);
+        request->send(response);
+    });
+
     // SSE for position stream
     m_events.onConnect([this](AsyncEventSourceClient *client) {
         this->broadcastSinglePosition(client); // Send initial position
@@ -468,21 +642,41 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
     m_server.addHandler(&m_events);
 
     m_server.begin();
-    Serial.println("Web server started on port 80");
+    LOG("Web server started on port 80\r\n");
 }
 
 void SisyphusWebServer::updateFileListCache() {
-    Serial.println("Updating file list cache in memory...");
-    
+    LOG("Updating file list cache in memory...\r\n");
+
     std::vector<FileEntry> newCache;
     std::vector<FileIndexEntry> newIndex;
-    
+
+    if (!isSDCardReady()) {
+        if (m_cacheMutex) {
+            xSemaphoreTake(m_cacheMutex, portMAX_DELAY);
+            m_fileCache.clear();
+            m_fileIndex.clear();
+            xSemaphoreGive(m_cacheMutex);
+        }
+        m_fileListDirty.store(false);
+        m_lastFileCacheUpdate = millis();
+        LOG("Pattern storage unavailable; file cache left empty\r\n");
+        return;
+    }
+
     File root = SD.open("/patterns");
     if (!root) {
-        Serial.println("ERROR: Failed to open patterns directory");
+        LOG("ERROR: Failed to open patterns directory\r\n");
         ErrorLog::instance().log("ERROR", "SD", "OPEN_DIR_FAILED",
                                  "Failed to open patterns directory", "/patterns");
+        if (m_cacheMutex) {
+            xSemaphoreTake(m_cacheMutex, portMAX_DELAY);
+            m_fileCache.clear();
+            m_fileIndex.clear();
+            xSemaphoreGive(m_cacheMutex);
+        }
         m_fileListDirty = false; // Prevent infinite retry loop if SD fails
+        m_lastFileCacheUpdate = millis();
         return;
     }
 
@@ -502,7 +696,7 @@ void SisyphusWebServer::updateFileListCache() {
                     String pngPath = "/patterns/" + name + "/" + name + ".png";
                     bool hasImg = false;
                     time_t imgTime = 0;
-                    
+
                     if (SD.exists(pngPath)) {
                         hasImg = true;
                         File img = SD.open(pngPath);
@@ -511,7 +705,7 @@ void SisyphusWebServer::updateFileListCache() {
                             img.close();
                         }
                     }
-                    
+
                     FileEntry entry{patternFile, name, innerFile.size(), innerFile.getLastWrite(),
                                     hasImg, imgTime, true, hasImg ? pngPath : ""};
                     newIndex.push_back({entry.baseName, newCache.size()});
@@ -540,7 +734,7 @@ void SisyphusWebServer::updateFileListCache() {
         file = root.openNextFile();
     }
     root.close();
-    
+
     if (m_cacheMutex) {
         xSemaphoreTake(m_cacheMutex, portMAX_DELAY);
         m_fileCache = std::move(newCache);
@@ -551,10 +745,10 @@ void SisyphusWebServer::updateFileListCache() {
                   });
         xSemaphoreGive(m_cacheMutex);
     }
-    
+
     m_fileListDirty = false;
     m_lastFileCacheUpdate = millis();
-    Serial.printf("File list cache updated: %u files\n", m_fileCache.size());
+    LOG("File list cache updated: %u files\r\n", m_fileCache.size());
 }
 
 const SisyphusWebServer::FileEntry* SisyphusWebServer::findFileEntryByBase(const String& baseName) const {
@@ -603,7 +797,7 @@ void SisyphusWebServer::broadcastSinglePosition(AsyncEventSourceClient *client) 
 
     char buffer[196];
     snprintf(buffer, sizeof(buffer),
-             "{\"x\":%.4f,\"y\":%.4f,\"r\":%.1f,\"t\":%.2f,\"vr\":%.2f,\"vt\":%.3f,\"vc\":%.2f}", 
+             "{\"x\":%.4f,\"y\":%.4f,\"r\":%.1f,\"t\":%.2f,\"vr\":%.2f,\"vt\":%.3f,\"vc\":%.2f}",
              norm.x, norm.y, actualPos.rho, actualPos.theta, actualVel.rho, actualVel.theta, cartVel);
 
     try {
@@ -618,15 +812,6 @@ void SisyphusWebServer::broadcastSinglePosition(AsyncEventSourceClient *client) 
 }
 
 void SisyphusWebServer::broadcastPosition() {
-    // Check if we should broadcast based on machine state
-    auto state = m_polarControl->getState();
-    uint8_t stateValue = static_cast<uint8_t>(state);
-
-    // Only broadcast in RUNNING (3), STOPPING (5), or CLEARING (6) states
-    if (stateValue != 3 && stateValue != 5 && stateValue != 6) {
-        return;
-    }
-
     // Broadcast position check every ~66ms (~15Hz)
     unsigned long now = millis();
     if (now - m_lastPosBroadcast < 66) return;
@@ -664,7 +849,7 @@ void SisyphusWebServer::broadcastPosition() {
 
         char buffer[196];
         snprintf(buffer, sizeof(buffer),
-                 "{\"x\":%.4f,\"y\":%.4f,\"r\":%.1f,\"t\":%.2f,\"vr\":%.2f,\"vt\":%.3f,\"vc\":%.2f,\"clear\":1}", 
+                 "{\"x\":%.4f,\"y\":%.4f,\"r\":%.1f,\"t\":%.2f,\"vr\":%.2f,\"vt\":%.3f,\"vc\":%.2f,\"clear\":1}",
                  norm.x, norm.y, actualPos.rho, actualPos.theta, actualVel.rho, actualVel.theta, cartVel);
         try {
             m_events.send(buffer, "pos", millis());
@@ -677,19 +862,61 @@ void SisyphusWebServer::broadcastPosition() {
 }
 
 void SisyphusWebServer::processPatternQueue() {
+    SemaphoreGuard stateLock(m_stateMutex);
     auto state = m_polarControl->getState();
-    uint8_t stateValue = static_cast<uint8_t>(state);
+    if (state != PolarControl::IDLE) return;
 
-    if (stateValue != 2) return; // Only process when IDLE
+    // Non-pattern commands use a single replaceable slot. Pointer drags can
+    // therefore update the destination faster than the mechanism can move
+    // without building an unbounded queue of stale waypoints.
+    if (m_pendingMotion != PendingMotion::NONE) {
+        const PendingMotion pending = m_pendingMotion;
+        const float theta = m_pendingManualTheta;
+        const float rho = m_pendingManualRho;
+        m_pendingMotion = PendingMotion::NONE;
+
+        bool started = false;
+        switch (pending) {
+            case PendingMotion::MANUAL:
+                started = m_polarControl->moveTo(theta, rho);
+                m_activeMotion = MotionOwner::MANUAL;
+                break;
+            case PendingMotion::THETA_CONTINUOUS:
+                started = m_polarControl->testThetaContinuous();
+                m_activeMotion = MotionOwner::TUNING;
+                break;
+            case PendingMotion::THETA_STRESS:
+                started = m_polarControl->testThetaStress();
+                m_activeMotion = MotionOwner::TUNING;
+                break;
+            case PendingMotion::RHO_CONTINUOUS:
+                started = m_polarControl->testRhoContinuous();
+                m_activeMotion = MotionOwner::TUNING;
+                break;
+            case PendingMotion::RHO_STRESS:
+                started = m_polarControl->testRhoStress();
+                m_activeMotion = MotionOwner::TUNING;
+                break;
+            case PendingMotion::NONE:
+                break;
+        }
+        if (!started) {
+            m_activeMotion = MotionOwner::NONE;
+            ErrorLog::instance().log("ERROR", "MOTION", "START_FAILED",
+                                     "Queued motion could not be started");
+        }
+        return;
+    }
 
     // Handle clearing completion for single pattern mode (not playlist)
     if (!m_playlistMode && m_runningClearing && m_pendingPattern.length() > 0) {
-        Serial.printf("Single pattern: Starting %s after clearing\r\n", m_pendingPattern.c_str());
+        LOG("Single pattern: Starting %s after clearing\r\n", m_pendingPattern.c_str());
         m_polarControl->resetTheta();
         m_currentPattern = m_pendingPattern;
         m_firstPointCleared = false;
-        
+
         m_polarControl->loadAndRunFile(resolvePatternPath(m_pendingPattern));
+        m_activeMotion = MotionOwner::PATTERN;
         m_pendingPattern = "";
         m_runningClearing = false;
         m_singlePatternClearing = false;
@@ -700,7 +927,7 @@ void SisyphusWebServer::processPatternQueue() {
     // Handle single pattern queue
     if (m_hasQueuedPattern) {
         if (m_singlePatternClearing && m_selectedClearing != CLEARING_NONE) {
-            Serial.printf("Single pattern: Running clearing before %s\r\n", m_queuedPattern.c_str());
+            LOG("Single pattern: Running clearing before %s\r\n", m_queuedPattern.c_str());
             m_pendingPattern = m_queuedPattern;
             m_runningClearing = true;
             m_hasQueuedPattern = false;
@@ -710,16 +937,18 @@ void SisyphusWebServer::processPatternQueue() {
 
             ClearingPattern pattern = m_selectedClearing;
             if (pattern == CLEARING_RANDOM) pattern = getRandomClearingPattern();
-            
+
             if (!m_polarControl->startClearing(std_patch::make_unique<ClearingPatternGen>(pattern, m_polarControl->getMaxRho()))) {
                 m_runningClearing = false;
                 m_singlePatternClearing = false;
                 m_activeClearingPattern = CLEARING_NONE;
                 m_polarControl->loadAndRunFile(resolvePatternPath(m_pendingPattern));
+                m_activeMotion = MotionOwner::PATTERN;
                 m_currentPattern = m_pendingPattern;
                 m_pendingPattern = "";
             } else {
                 m_activeClearingPattern = pattern;
+                m_activeMotion = MotionOwner::PATTERN;
             }
             return;
         }
@@ -728,6 +957,7 @@ void SisyphusWebServer::processPatternQueue() {
         m_firstPointCleared = false;
         m_polarControl->resetTheta();
         m_polarControl->loadAndRunFile(resolvePatternPath(m_queuedPattern));
+        m_activeMotion = MotionOwner::PATTERN;
         m_hasQueuedPattern = false;
         m_queuedPattern = "";
         return;
@@ -741,6 +971,7 @@ void SisyphusWebServer::processPatternQueue() {
             m_currentPattern = m_pendingPattern;
             m_firstPointCleared = false;
             m_polarControl->loadAndRunFile(resolvePatternPath(m_pendingPattern));
+            m_activeMotion = MotionOwner::PATTERN;
             m_pendingPattern = "";
             m_runningClearing = false;
             m_activeClearingPattern = CLEARING_NONE;
@@ -757,13 +988,15 @@ void SisyphusWebServer::processPatternQueue() {
 
                     ClearingPattern pattern = next.clearingPattern;
                     if (pattern == CLEARING_RANDOM) pattern = getRandomClearingPattern();
-                    
+
                     if (!m_polarControl->startClearing(std_patch::make_unique<ClearingPatternGen>(pattern, m_polarControl->getMaxRho()))) {
                         m_runningClearing = false;
                         m_activeClearingPattern = CLEARING_NONE;
                         m_polarControl->loadAndRunFile(resolvePatternPath(next.filename));
+                        m_activeMotion = MotionOwner::PATTERN;
                     } else {
                         m_activeClearingPattern = pattern;
+                        m_activeMotion = MotionOwner::PATTERN;
                     }
                 } else {
                     LOG("Playlist: Starting pattern: %s\r\n", next.filename.c_str());
@@ -771,6 +1004,7 @@ void SisyphusWebServer::processPatternQueue() {
                     m_currentPattern = next.filename;
                     m_firstPointCleared = false;
                     m_polarControl->loadAndRunFile(resolvePatternPath(next.filename));
+                    m_activeMotion = MotionOwner::PATTERN;
                 }
             }
         } else {
@@ -779,8 +1013,50 @@ void SisyphusWebServer::processPatternQueue() {
             m_runningClearing = false;
             m_pendingPattern = "";
             m_activeClearingPattern = CLEARING_NONE;
+            m_activeMotion = MotionOwner::NONE;
         }
+    } else {
+        m_activeMotion = MotionOwner::NONE;
+        m_currentPattern = "";
     }
+}
+
+void SisyphusWebServer::clearPlaybackLocked() {
+    m_pendingMotion = PendingMotion::NONE;
+    m_hasQueuedPattern = false;
+    m_queuedPattern = "";
+    m_currentPattern = "";
+    m_pendingPattern = "";
+    m_runningClearing = false;
+    m_singlePatternClearing = false;
+    m_selectedClearing = CLEARING_NONE;
+    m_activeClearingPattern = CLEARING_NONE;
+    m_playlistMode = false;
+    m_firstPointCleared = false;
+}
+
+bool SisyphusWebServer::prepareReplacementLocked() {
+    const auto state = m_polarControl->getState();
+    switch (state) {
+        case PolarControl::IDLE:
+            clearPlaybackLocked();
+            return true;
+        case PolarControl::RUNNING:
+        case PolarControl::PAUSED:
+        case PolarControl::STOPPING:
+        case PolarControl::CLEARING:
+        case PolarControl::PREPARING:
+            clearPlaybackLocked();
+            return m_polarControl->stop();
+        default:
+            return false;
+    }
+}
+
+bool SisyphusWebServer::queueTuningTestLocked(PendingMotion motion) {
+    if (!prepareReplacementLocked()) return false;
+    m_pendingMotion = motion;
+    return true;
 }
 
 String SisyphusWebServer::getStateString() {
@@ -810,6 +1086,7 @@ void SisyphusWebServer::handleRoot(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handleStatus(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
     auto state = m_polarControl->getState();
     int progress = m_polarControl->getProgressPercent();
     unsigned long now = millis();
@@ -831,6 +1108,7 @@ void SisyphusWebServer::handleStatus(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handleErrors(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
     uint32_t total = ErrorLog::instance().totalCount();
     uint32_t dropped = ErrorLog::instance().droppedCount();
     uint32_t size = ErrorLog::instance().size();
@@ -854,6 +1132,7 @@ void SisyphusWebServer::handleErrors(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handleErrorsClear(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
     ErrorLog::instance().clear();
     m_errorsCache = "";
     m_errorsTotal = 0;
@@ -862,12 +1141,59 @@ void SisyphusWebServer::handleErrorsClear(AsyncWebServerRequest *request) {
     request->send(200, "application/json", "{\"success\":true}");
 }
 
-void SisyphusWebServer::handlePatternStart(AsyncWebServerRequest *request) {
-    auto state = m_polarControl->getState();
-    if (state != PolarControl::IDLE) {
-        request->send(409, "application/json", "{\"success\":false,\"message\":\"System not idle\"}");
+static bool parseLogQuery(AsyncWebServerRequest *request, uint32_t& since, size_t& limit) {
+    since = 0;
+    limit = 64;
+    if (request->hasParam("since") &&
+        !parseStrictUint32(request->getParam("since")->value(), since)) {
+        return false;
+    }
+    if (request->hasParam("limit")) {
+        int parsedLimit = 0;
+        if (!parseStrictInt(request->getParam("limit")->value(), parsedLimit) ||
+            parsedLimit < 1 || parsedLimit > 64) {
+            return false;
+        }
+        limit = static_cast<size_t>(parsedLimit);
+    }
+    return true;
+}
+
+void SisyphusWebServer::handleLogs(AsyncWebServerRequest *request) {
+    uint32_t since = 0;
+    size_t limit = 64;
+    if (!parseLogQuery(request, since, limit)) {
+        request->send(400, "application/json",
+                      "{\"success\":false,\"message\":\"Invalid since or limit\"}");
         return;
     }
+    AsyncResponseStream *response = request->beginResponseStream("application/json", 1024);
+    response->addHeader("Cache-Control", "no-store");
+    RuntimeLog::instance().writeJson(*response, since, limit);
+    request->send(response);
+}
+
+void SisyphusWebServer::handleLogsText(AsyncWebServerRequest *request) {
+    uint32_t since = 0;
+    size_t limit = 64;
+    if (!parseLogQuery(request, since, limit)) {
+        request->send(400, "text/plain", "Invalid since or limit\n");
+        return;
+    }
+    AsyncResponseStream *response = request->beginResponseStream("text/plain", 1024);
+    response->addHeader("Cache-Control", "no-store");
+    RuntimeLog::instance().writeText(*response, since, limit);
+    request->send(response);
+}
+
+void SisyphusWebServer::handleLogsClear(AsyncWebServerRequest *request) {
+    RuntimeLog::instance().clear();
+    request->send(200, "application/json", "{\"success\":true}");
+}
+
+void SisyphusWebServer::handlePatternStart(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
+    if (!requirePatternStorage(request)) return;
 
     if (!request->hasParam("file", true)) {
         request->send(400, "application/json", "{\"success\":false,\"message\":\"Missing parameters\"}");
@@ -877,36 +1203,62 @@ void SisyphusWebServer::handlePatternStart(AsyncWebServerRequest *request) {
     String file = request->getParam("file", true)->value();
     String filePath = resolvePatternPath(file);
 
+    if (filePath.length() == 0) {
+        request->send(400, "application/json", "{\"success\":false,\"message\":\"Invalid filename\"}");
+        return;
+    }
+
     if (!SD.exists(filePath)) {
         request->send(404, "application/json", "{\"success\":false,\"message\":\"File not found\"}");
         return;
     }
 
     // Check for clearing parameter
-    m_singlePatternClearing = false;
-    m_selectedClearing = CLEARING_NONE;
+    bool useClearing = false;
+    ClearingPattern selectedClearing = CLEARING_NONE;
     if (request->hasParam("clearing", true)) {
-        int clearingType = request->getParam("clearing", true)->value().toInt();
+        int clearingType = 0;
+        if (!parseStrictInt(request->getParam("clearing", true)->value(), clearingType) ||
+            clearingType < CLEARING_NONE || clearingType > CLEARING_RANDOM) {
+            request->send(400, "application/json",
+                "{\"success\":false,\"message\":\"Invalid clearing pattern\"}");
+            return;
+        }
         if (clearingType > 0) {
-            m_singlePatternClearing = true;
-            m_selectedClearing = static_cast<ClearingPattern>(clearingType);
+            useClearing = true;
+            selectedClearing = static_cast<ClearingPattern>(clearingType);
         }
     }
 
+    if (!prepareReplacementLocked()) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"Motion is unavailable until homing is complete\"}");
+        return;
+    }
+
+    m_singlePatternClearing = useClearing;
+    m_selectedClearing = selectedClearing;
     m_queuedPattern = file;
     m_hasQueuedPattern = true;
 
-    request->send(200, "application/json", "{\"success\":true,\"message\":\"Pattern started\"}");
+    request->send(202, "application/json", "{\"success\":true,\"message\":\"Pattern queued\"}");
 }
 
 void SisyphusWebServer::handlePatternStop(AsyncWebServerRequest *request) {
-    bool success = m_polarControl->stop();
-    m_hasQueuedPattern = false;
-    m_queuedPattern = "";
-    m_pendingPattern = "";
-    m_runningClearing = false;
-    m_singlePatternClearing = false;
-    m_activeClearingPattern = CLEARING_NONE;
+    handleMotionStop(request);
+}
+
+void SisyphusWebServer::handleMotionStop(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
+    clearPlaybackLocked();
+    m_activeMotion = MotionOwner::NONE;
+    const auto state = m_polarControl->getState();
+    // Stop is intentionally idempotent. A fresh/unhomed controller and a
+    // controller waiting for homing review are already stationary.
+    const bool alreadyStopped = state == PolarControl::UNINITIALIZED ||
+        state == PolarControl::INITIALIZED || state == PolarControl::IDLE ||
+        state == PolarControl::HOMING_REVIEW || state == PolarControl::HOMING_FAILED;
+    const bool success = alreadyStopped || m_polarControl->stop();
 
     if (success) {
         request->send(200, "application/json", "{\"success\":true}");
@@ -916,7 +1268,51 @@ void SisyphusWebServer::handlePatternStop(AsyncWebServerRequest *request) {
     }
 }
 
+void SisyphusWebServer::handleMotionTelemetry(AsyncWebServerRequest *request) {
+    const PolarCord_t position = m_polarControl->getActualPosition();
+    const PolarVelocity_t velocity = m_polarControl->getActualVelocity();
+    PlannerTelemetry telemetry;
+    m_polarControl->getTelemetry(telemetry);
+
+    AsyncResponseStream *response = request->beginResponseStream("application/json", 384);
+    response->print("{\"state\":\"");
+    response->print(getStateString());
+    response->printf(
+        "\",\"millis\":%lu,\"position\":{\"rho\":%.4f,\"theta\":%.6f},"
+        "\"velocity\":{\"rho\":%.4f,\"theta\":%.6f},"
+        "\"planner\":{\"queueDepth\":%lu,\"minQueueDepth\":%lu,"
+        "\"underruns\":%lu,\"maxConsecutiveUnderruns\":%lu,"
+        "\"completedCount\":%lu,\"timerActive\":%s,\"running\":%s}",
+        static_cast<unsigned long>(millis()), position.rho, position.theta,
+        velocity.rho, velocity.theta,
+        static_cast<unsigned long>(telemetry.queueDepth),
+        static_cast<unsigned long>(telemetry.minQueueDepth),
+        static_cast<unsigned long>(telemetry.underruns),
+        static_cast<unsigned long>(telemetry.maxConsecutiveUnderruns),
+        static_cast<unsigned long>(telemetry.completedCount),
+        telemetry.timerActive ? "true" : "false",
+        telemetry.running ? "true" : "false");
+#ifdef SISYPHUS_BENCH_MOTION_TEST
+    response->print(",\"benchMotionTest\":true");
+#else
+    response->print(",\"benchMotionTest\":false");
+#endif
+#ifdef SISYPHUS_THETA_COMMISSIONING
+    response->print(",\"commissioningAxis\":\"theta\"");
+#else
+    response->print(",\"commissioningAxis\":null");
+#endif
+    response->print("}");
+    request->send(response);
+}
+
 void SisyphusWebServer::handlePatternPause(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
+    if (m_activeMotion != MotionOwner::PATTERN) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"No pattern is running\"}");
+        return;
+    }
     bool success = m_polarControl->pause();
 
     if (success) {
@@ -928,6 +1324,12 @@ void SisyphusWebServer::handlePatternPause(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handlePatternResume(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
+    if (m_activeMotion != MotionOwner::PATTERN) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"No pattern is paused\"}");
+        return;
+    }
     bool success = m_polarControl->resume();
 
     if (success) {
@@ -938,25 +1340,104 @@ void SisyphusWebServer::handlePatternResume(AsyncWebServerRequest *request) {
     }
 }
 
-void SisyphusWebServer::handleHome(AsyncWebServerRequest *request) {
-    auto state = m_polarControl->getState();
-    uint8_t stateValue = static_cast<uint8_t>(state);
+void SisyphusWebServer::handleManualMove(AsyncWebServerRequest *request) {
+#ifdef SISYPHUS_THETA_COMMISSIONING
+    request->send(409, "application/json",
+        "{\"success\":false,\"message\":\"Manual motion is disabled in theta commissioning mode\"}");
+    return;
+#endif
+    if (!request->hasParam("theta", true) || !request->hasParam("rho", true)) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Missing theta or rho\"}");
+        return;
+    }
 
-    // Only allow homing when system is idle
-    if (stateValue != 2) { // 2 = IDLE
+    float theta = 0.0f;
+    float rho = 0.0f;
+    if (!parseStrictFloat(request->getParam("theta", true)->value(), theta) ||
+        !parseStrictFloat(request->getParam("rho", true)->value(), rho) ||
+        theta < -PI || theta > PI || rho < 0.0f || rho > m_polarControl->getMaxRho()) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Target is outside the table\"}");
+        return;
+    }
+
+    SemaphoreGuard stateLock(m_stateMutex);
+    if (!prepareReplacementLocked()) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"Manual motion is unavailable until homing is complete\"}");
+        return;
+    }
+
+    m_pendingManualTheta = theta;
+    m_pendingManualRho = rho;
+    m_pendingMotion = PendingMotion::MANUAL;
+    request->send(202, "application/json",
+        "{\"success\":true,\"message\":\"Manual target queued\"}");
+}
+
+void SisyphusWebServer::handleHome(AsyncWebServerRequest *request) {
+#ifdef SISYPHUS_THETA_COMMISSIONING
+    request->send(409, "application/json",
+        "{\"success\":false,\"message\":\"Homing is disabled in theta commissioning mode\"}");
+    return;
+#endif
+    SemaphoreGuard stateLock(m_stateMutex);
+    auto state = m_polarControl->getState();
+    if (state != PolarControl::IDLE && state != PolarControl::INITIALIZED &&
+        state != PolarControl::HOMING_FAILED) {
         request->send(409, "application/json",
             "{\"success\":false,\"message\":\"System must be idle to home\"}");
         return;
     }
 
-    Serial.println("Web request: Homing device...");
-    m_polarControl->home();
+    clearPlaybackLocked();
+    m_activeMotion = MotionOwner::NONE;
+    LOG("Web request: Homing device...\r\n");
+    if (!m_polarControl->home()) {
+        request->send(500, "application/json",
+            "{\"success\":false,\"message\":\"Could not start homing\"}");
+        return;
+    }
 
-    request->send(200, "application/json",
-        "{\"success\":true,\"message\":\"Homing complete\"}");
+    request->send(202, "application/json",
+        "{\"success\":true,\"message\":\"Homing started\"}");
+}
+
+void SisyphusWebServer::handleHomeConfirm(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
+    if (!request->hasParam("successful", true)) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Missing successful parameter\"}");
+        return;
+    }
+
+    const String value = request->getParam("successful", true)->value();
+    if (value != "true" && value != "false" && value != "1" && value != "0") {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Invalid successful parameter\"}");
+        return;
+    }
+
+    const bool successful = value == "true" || value == "1";
+    if (!m_polarControl->confirmHome(successful)) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"No homing result is awaiting review\"}");
+        return;
+    }
+
+    request->send(200, "application/json", successful
+        ? "{\"success\":true,\"message\":\"Home position confirmed\"}"
+        : "{\"success\":true,\"message\":\"Homing rejected; retry required\"}");
 }
 
 void SisyphusWebServer::handleFileList(AsyncWebServerRequest *request) {
+    if (!isSDCardReady()) {
+        request->send(200, "application/json",
+            "{\"storageAvailable\":false,\"files\":[]}");
+        return;
+    }
+
     bool isEmpty = true;
     if (m_cacheMutex) {
         xSemaphoreTake(m_cacheMutex, portMAX_DELAY);
@@ -973,20 +1454,23 @@ void SisyphusWebServer::handleFileList(AsyncWebServerRequest *request) {
     }
 
     AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
-    response->print("{\"files\":[");
-    
+    response->print("{\"storageAvailable\":");
+    response->print(isSDCardReady() ? "true" : "false");
+    response->print(",\"files\":[");
+
     if (m_cacheMutex) {
         xSemaphoreTake(m_cacheMutex, portMAX_DELAY);
         for (size_t i = 0; i < m_fileCache.size(); i++) {
             if (i > 0) response->print(",");
-            // Manual JSON construction for efficiency
-            response->printf("{\"name\":\"%s\",\"size\":%u,\"time\":%u,\"hasImage\":%s,\"imageTime\":%u}", 
-                m_fileCache[i].name.c_str(), m_fileCache[i].size, m_fileCache[i].time,
+            response->print("{\"name\":");
+            writeJsonString(*response, m_fileCache[i].name);
+            response->printf(",\"size\":%u,\"time\":%u,\"hasImage\":%s,\"imageTime\":%u}",
+                m_fileCache[i].size, m_fileCache[i].time,
                 m_fileCache[i].hasImage ? "true" : "false", m_fileCache[i].imageTime);
         }
         xSemaphoreGive(m_cacheMutex);
     }
-    
+
     response->print("]}");
     request->send(response);
 }
@@ -994,97 +1478,104 @@ void SisyphusWebServer::handleFileList(AsyncWebServerRequest *request) {
 void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String filename,
                                         size_t index, uint8_t *data, size_t len, bool final) {
     if (index == 0) {
-        unsigned long now = millis();
-        unsigned long sinceLastUpload = now - m_lastUploadTime;
-        // Allow burst uploads for pattern+image
-        if (sinceLastUpload < 100) { 
-            // Decrease timeout check to allow simultaneous uploads
-        }
-
-        // Determine directory name from filename (remove extension)
-        String basename = filename;
-        int lastDot = basename.lastIndexOf('.');
-        if (lastDot != -1) {
-            basename = basename.substring(0, lastDot);
-        }
-        
-        // Clean up basename (remove directories if sent in filename)
-        int lastSlash = basename.lastIndexOf('/');
-        if (lastSlash != -1) {
-            basename = basename.substring(lastSlash + 1);
-        }
-        
-        String dirPath = "/patterns/" + basename;
-        
-        // Delete existing directory only if this is a "new" upload session for this pattern
-        // (to avoid deleting it again when the companion image is uploaded right after)
-        if (SD.exists(dirPath)) {
-            if (sinceLastUpload > 2000) { 
-                Serial.print("Deleting existing pattern directory: ");
-                Serial.println(dirPath);
-                removeDirectoryRecursive(dirPath.c_str());
-                SD.mkdir(dirPath);
-            }
-        } else {
-            SD.mkdir(dirPath);
-        }
-
-        m_lastUploadTime = now;
-
-        Serial.print("Upload start: ");
-        Serial.println(filename);
-
-        String path = dirPath + "/" + filename;
-        // No need to SD.remove(path) here anymore if directory was recreated
-
-        m_uploadFile = SD.open(path.c_str(), FILE_WRITE);
-        if (!m_uploadFile) {
-            Serial.println("Failed to open file for writing");
-            ErrorLog::instance().log("ERROR", "SD", "OPEN_WRITE_FAILED",
-                                     "Failed to open file for writing", path.c_str());
-            request->send(500, "application/json",
-                "{\"success\":false,\"message\":\"Failed to create file\"}");
+        UploadContext* upload = static_cast<UploadContext*>(calloc(1, sizeof(UploadContext)));
+        request->_tempObject = upload;
+        if (upload == nullptr) {
             return;
         }
+
+        if (!isSDCardReady()) {
+            upload->status = 503;
+            return;
+        }
+
+        if (!validSimpleFilename(filename, ".thr") &&
+            !validSimpleFilename(filename, ".png")) {
+            upload->status = 400;
+            return;
+        }
+
+        const String basename = filename.substring(0, filename.length() - 4);
+        const String dirPath = "/patterns/" + basename;
+        const String finalPath = dirPath + "/" + filename;
+        const uint32_t sequence = m_uploadSequence.fetch_add(1) + 1;
+        const String tempPath = dirPath + "/.upload-" + String(sequence);
+        upload->maxBytes = filename.endsWith(".thr") ? 8U * 1024U * 1024U : 2U * 1024U * 1024U;
+        snprintf(upload->finalPath, sizeof(upload->finalPath), "%s", finalPath.c_str());
+        snprintf(upload->tempPath, sizeof(upload->tempPath), "%s", tempPath.c_str());
+
+        if (!SD.exists("/patterns") && !SD.mkdir("/patterns")) {
+            upload->status = 500;
+            return;
+        }
+        if (!SD.exists(dirPath) && !SD.mkdir(dirPath)) {
+            upload->status = 500;
+            return;
+        }
+
+        SD.remove(upload->tempPath);
+        request->_tempFile = SD.open(upload->tempPath, FILE_WRITE);
+        if (!request->_tempFile) {
+            upload->status = 500;
+            ErrorLog::instance().log("ERROR", "SD", "OPEN_WRITE_FAILED",
+                                     "Failed to open upload staging file", upload->tempPath);
+            return;
+        }
+        LOG("Upload start: %s\r\n", filename.c_str());
     }
 
-    if (m_uploadFile && len) {
-        m_uploadFile.write(data, len);
+    UploadContext* upload = static_cast<UploadContext*>(request->_tempObject);
+    if (upload == nullptr || upload->status != 0) return;
+
+    if (index != upload->received || len > upload->maxBytes - upload->received) {
+        upload->status = 413;
+        request->_tempFile.close();
+        SD.remove(upload->tempPath);
+        return;
     }
+
+    if (len > 0 && request->_tempFile.write(data, len) != len) {
+        upload->status = 507;
+        request->_tempFile.close();
+        SD.remove(upload->tempPath);
+        ErrorLog::instance().log("ERROR", "SD", "UPLOAD_WRITE_FAILED",
+                                 "Short write while staging an upload", upload->tempPath);
+        return;
+    }
+    upload->received += len;
 
     if (final) {
-        if (m_uploadFile) {
-            m_uploadFile.close();
-            Serial.print("Upload complete: ");
-            Serial.print(filename);
-            Serial.print(" (");
-            Serial.print(index + len);
-            Serial.println(" bytes)");
-            
-            m_fileListDirty = true;
-
-            AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
-            JsonDocument doc;
-            doc["success"] = true;
-            doc["filename"] = filename;
-            doc["size"] = index + len;
-            serializeJson(doc, *response);
-            request->send(response);
-        } else {
-            request->send(500, "application/json",
-                "{\"success\":false,\"message\":\"Upload failed\"}");
+        request->_tempFile.close();
+        const String backupPath = String(upload->finalPath) + ".bak";
+        SD.remove(backupPath);
+        const bool hadOriginal = SD.exists(upload->finalPath);
+        if (hadOriginal && !SD.rename(upload->finalPath, backupPath)) {
+            upload->status = 500;
+            SD.remove(upload->tempPath);
+            return;
         }
+        if (!SD.rename(upload->tempPath, upload->finalPath)) {
+            upload->status = 500;
+            if (hadOriginal) SD.rename(backupPath, upload->finalPath);
+            SD.remove(upload->tempPath);
+            return;
+        }
+        if (hadOriginal) SD.remove(backupPath);
+        m_fileListDirty.store(true);
+        LOG("Upload complete: %s (%u bytes)\r\n",
+            filename.c_str(), static_cast<unsigned>(upload->received));
     }
 }
 
 void SisyphusWebServer::handleFileDelete(AsyncWebServerRequest *request) {
+    if (!requirePatternStorage(request)) return;
     if (!request->hasParam("file", true)) {
         request->send(400, "application/json", "{\"success\":false,\"message\":\"Missing filename\"}");
         return;
     }
 
     String filename = request->getParam("file", true)->value();
-    if (filename.indexOf("..") != -1) {
+    if (!validSimpleFilename(filename, ".thr")) {
         request->send(400, "application/json", "{\"success\":false,\"message\":\"Invalid filename\"}");
         return;
     }
@@ -1132,9 +1623,9 @@ void SisyphusWebServer::handleLEDBrightnessSet(AsyncWebServerRequest *request) {
         return;
     }
 
-    int brightness = request->getParam("brightness", true)->value().toInt();
-
-    if (brightness < 0 || brightness > 100) {
+    int brightness = 0;
+    if (!parseStrictInt(request->getParam("brightness", true)->value(), brightness) ||
+        brightness < 0 || brightness > 100) {
         request->send(400, "application/json",
             "{\"success\":false,\"message\":\"Brightness must be 0-100\"}");
         return;
@@ -1143,11 +1634,8 @@ void SisyphusWebServer::handleLEDBrightnessSet(AsyncWebServerRequest *request) {
     uint8_t ledValue = map(brightness, 0, 100, 0, 255);
     m_ledController->setBrightness(ledValue);
 
-    Serial.print("LED brightness set to: ");
-    Serial.print(brightness);
-    Serial.print("% (");
-    Serial.print(ledValue);
-    Serial.println("/255)");
+    LOG("LED brightness set to: %d%% (%u/255)\r\n", brightness,
+        static_cast<unsigned>(ledValue));
 
     request->send(200, "application/json", "{\"success\":true}");
 }
@@ -1168,9 +1656,9 @@ void SisyphusWebServer::handleSpeedSet(AsyncWebServerRequest *request) {
         return;
     }
 
-    int speed = request->getParam("speed", true)->value().toInt();
-
-    if (speed < 1 || speed > 10) {
+    int speed = 0;
+    if (!parseStrictInt(request->getParam("speed", true)->value(), speed) ||
+        speed < 1 || speed > 10) {
         request->send(400, "application/json",
             "{\"success\":false,\"message\":\"Speed must be 1-10\"}");
         return;
@@ -1178,8 +1666,7 @@ void SisyphusWebServer::handleSpeedSet(AsyncWebServerRequest *request) {
 
     m_polarControl->setSpeed(speed);
 
-    Serial.print("Speed set to: ");
-    Serial.println(speed);
+    LOG("Speed set to: %d\r\n", speed);
 
     request->send(200, "application/json", "{\"success\":true}");
 }
@@ -1195,6 +1682,8 @@ void SisyphusWebServer::handleSystemInfo(AsyncWebServerRequest *request) {
 // ============================================================================
 
 void SisyphusWebServer::handlePlaylistAdd(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
+    if (!requirePatternStorage(request)) return;
     if (!request->hasParam("file", true)) {
         request->send(400, "application/json",
             "{\"success\":false,\"message\":\"Missing parameters\"}");
@@ -1202,12 +1691,19 @@ void SisyphusWebServer::handlePlaylistAdd(AsyncWebServerRequest *request) {
     }
 
     String file = request->getParam("file", true)->value();
-    m_playlist.addPattern(file);
+    const String path = resolvePatternPath(file);
+    if (path.length() == 0 || !SD.exists(path) || !m_playlist.addPattern(file)) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Invalid pattern\"}");
+        return;
+    }
 
     request->send(200, "application/json", "{\"success\":true}");
 }
 
 void SisyphusWebServer::handlePlaylistAddAll(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
+    if (!requirePatternStorage(request)) return;
     File root = SD.open("/patterns");
     if (!root) {
         ErrorLog::instance().log("ERROR", "SD", "OPEN_DIR_FAILED",
@@ -1219,13 +1715,18 @@ void SisyphusWebServer::handlePlaylistAddAll(AsyncWebServerRequest *request) {
     int count = 0;
     File file = root.openNextFile();
     while (file) {
-        if (!file.isDirectory()) {
-            String filename = String(file.name());
-            if (filename.startsWith("/")) filename = filename.substring(1);
+        String filename = String(file.name());
+        if (filename.startsWith("/")) filename = filename.substring(1);
 
+        if (file.isDirectory()) {
+            // Check for pattern inside directory: /patterns/<name>/<name>.thr
+            String nestedPath = "/patterns/" + filename + "/" + filename + ".thr";
+            if (SD.exists(nestedPath)) {
+                if (m_playlist.addPattern(filename + ".thr")) count++;
+            }
+        } else {
             if (filename.endsWith(".thr")) {
-                m_playlist.addPattern(filename);
-                count++;
+                if (m_playlist.addPattern(filename)) count++;
             }
         }
         file.close();
@@ -1239,24 +1740,32 @@ void SisyphusWebServer::handlePlaylistAddAll(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handlePlaylistRemove(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
     if (!request->hasParam("index", true)) {
         request->send(400, "application/json",
             "{\"success\":false,\"message\":\"Missing index\"}");
         return;
     }
 
-    int index = request->getParam("index", true)->value().toInt();
-    m_playlist.removePattern(index);
+    int index = 0;
+    if (!parseStrictInt(request->getParam("index", true)->value(), index) ||
+        !m_playlist.removePattern(index)) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Invalid playlist index\"}");
+        return;
+    }
 
     request->send(200, "application/json", "{\"success\":true}");
 }
 
 void SisyphusWebServer::handlePlaylistClear(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
     m_playlist.clear();
     request->send(200, "application/json", "{\"success\":true}");
 }
 
 void SisyphusWebServer::handlePlaylistGet(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
     AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
     response->print("{\"loop\":");
     response->print(m_playlist.isLoop() ? "true" : "false");
@@ -1283,44 +1792,44 @@ void SisyphusWebServer::handlePlaylistGet(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handlePlaylistStart(AsyncWebServerRequest *request) {
-    auto state = m_polarControl->getState();
-    uint8_t stateValue = static_cast<uint8_t>(state);
-
-    if (stateValue != 2) { // Not IDLE
-        request->send(409, "application/json",
-            "{\"success\":false,\"message\":\"System not idle\"}");
-        return;
-    }
-
+    SemaphoreGuard stateLock(m_stateMutex);
     if (m_playlist.count() == 0) {
         request->send(400, "application/json",
             "{\"success\":false,\"message\":\"Playlist is empty\"}");
         return;
     }
 
+    if (!prepareReplacementLocked()) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"Motion is unavailable until homing is complete\"}");
+        return;
+    }
+
     m_playlist.reset();
     m_playlistMode = true;
 
-    Serial.println("Playlist started");
-    request->send(200, "application/json", "{\"success\":true}");
+    LOG("Playlist started\r\n");
+    request->send(202, "application/json", "{\"success\":true}");
 }
 
 void SisyphusWebServer::handlePlaylistStop(AsyncWebServerRequest *request) {
-    m_playlistMode = false;
-    m_polarControl->stop();
-
-    request->send(200, "application/json", "{\"success\":true}");
+    handleMotionStop(request);
 }
 
 void SisyphusWebServer::handlePlaylistLoop(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
     if (!request->hasParam("enabled", true)) {
         request->send(400, "application/json",
             "{\"success\":false,\"message\":\"Missing enabled parameter\"}");
         return;
     }
 
-    String enabledStr = request->getParam("enabled", true)->value();
-    bool enabled = (enabledStr == "true" || enabledStr == "1");
+    bool enabled = false;
+    if (!parseStrictBool(request->getParam("enabled", true)->value(), enabled)) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Invalid enabled parameter\"}");
+        return;
+    }
 
     m_playlist.setLoop(enabled);
 
@@ -1328,11 +1837,14 @@ void SisyphusWebServer::handlePlaylistLoop(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handlePlaylistShuffle(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
     m_playlist.shuffle();
     request->send(200, "application/json", "{\"success\":true}");
 }
 
 void SisyphusWebServer::handlePlaylistSave(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
+    if (!requirePatternStorage(request)) return;
     if (!request->hasParam("name", true)) {
         request->send(400, "application/json",
             "{\"success\":false,\"message\":\"Missing name parameter\"}");
@@ -1352,6 +1864,8 @@ void SisyphusWebServer::handlePlaylistSave(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handlePlaylistLoad(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
+    if (!requirePatternStorage(request)) return;
     if (!request->hasParam("name", true)) {
         request->send(400, "application/json",
             "{\"success\":false,\"message\":\"Missing name parameter\"}");
@@ -1371,8 +1885,14 @@ void SisyphusWebServer::handlePlaylistLoad(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handlePlaylistList(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
+    if (!isSDCardReady()) {
+        request->send(200, "application/json",
+            "{\"storageAvailable\":false,\"playlists\":[]}");
+        return;
+    }
     AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
-    response->print("{\"playlists\":[");
+    response->print("{\"storageAvailable\":true,\"playlists\":[");
     bool first = true;
 
     // List all .json files in /playlists directory
@@ -1404,56 +1924,73 @@ void SisyphusWebServer::handlePlaylistList(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handlePlaylistClearing(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
     if (!request->hasParam("enabled", true)) {
         request->send(400, "application/json",
             "{\"success\":false,\"message\":\"Missing enabled parameter\"}");
         return;
     }
 
-    String enabledStr = request->getParam("enabled", true)->value();
-    bool enabled = (enabledStr == "true" || enabledStr == "1");
+    bool enabled = false;
+    if (!parseStrictBool(request->getParam("enabled", true)->value(), enabled)) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Invalid enabled parameter\"}");
+        return;
+    }
 
     m_playlist.setClearingEnabled(enabled);
 
-    Serial.print("Clearing patterns ");
-    Serial.println(enabled ? "enabled" : "disabled");
+    LOG("Clearing patterns %s\r\n", enabled ? "enabled" : "disabled");
 
     request->send(200, "application/json", "{\"success\":true}");
 }
 
 void SisyphusWebServer::handlePlaylistMove(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
     if (!request->hasParam("from", true) || !request->hasParam("to", true)) {
         request->send(400, "application/json",
             "{\"success\":false,\"message\":\"Missing from/to parameters\"}");
         return;
     }
 
-    int fromIndex = request->getParam("from", true)->value().toInt();
-    int toIndex = request->getParam("to", true)->value().toInt();
-
-    m_playlist.movePattern(fromIndex, toIndex);
+    int fromIndex = 0;
+    int toIndex = 0;
+    if (!parseStrictInt(request->getParam("from", true)->value(), fromIndex) ||
+        !parseStrictInt(request->getParam("to", true)->value(), toIndex) ||
+        !m_playlist.movePattern(fromIndex, toIndex)) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Invalid playlist indices\"}");
+        return;
+    }
 
     request->send(200, "application/json", "{\"success\":true}");
 }
 
 void SisyphusWebServer::handlePlaylistSkipTo(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
     if (!request->hasParam("index", true)) {
         request->send(400, "application/json",
             "{\"success\":false,\"message\":\"Missing index parameter\"}");
         return;
     }
 
-    int index = request->getParam("index", true)->value().toInt();
+    int index = 0;
+    if (!parseStrictInt(request->getParam("index", true)->value(), index) ||
+        !m_playlist.skipToIndex(index)) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Invalid playlist index\"}");
+        return;
+    }
 
     // Stop current pattern and skip to the requested one
     m_polarControl->stop();
-    m_playlist.skipToIndex(index);
 
     // If playlist mode is active, the next pattern will be picked up automatically
     request->send(200, "application/json", "{\"success\":true}");
 }
 
 void SisyphusWebServer::handlePlaylistNext(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
     if (m_playlist.count() == 0) {
         request->send(400, "application/json",
             "{\"success\":false,\"message\":\"Playlist is empty\"}");
@@ -1468,6 +2005,7 @@ void SisyphusWebServer::handlePlaylistNext(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handlePlaylistPrev(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
     if (m_playlist.count() == 0) {
         request->send(400, "application/json",
             "{\"success\":false,\"message\":\"Playlist is empty\"}");
@@ -1495,13 +2033,13 @@ void SisyphusWebServer::handlePosition(AsyncWebServerRequest *request) {
     static unsigned long lastLog = 0;
     if (millis() - lastLog > 5000) {
         lastLog = millis();
-        Serial.printf("API Position: rho=%.2f theta=%.2f\r\n", actualPos.rho, actualPos.theta);
+        LOG("API Position: rho=%.2f theta=%.2f\r\n", actualPos.rho, actualPos.theta);
     }
 
     AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
 
     if (isnan(actualPos.rho) || isnan(actualPos.theta)) {
-        response->print("{\"current\":null}");
+        response->printf("{\"current\":null,\"maxRho\":%.2f}", maxRho);
     } else {
         // Convert to normalized Cartesian coordinates (0-1 range)
         CartesianCord_t norm = PolarUtils::toNormalizedCartesian(actualPos, maxRho);
@@ -1514,8 +2052,8 @@ void SisyphusWebServer::handlePosition(AsyncWebServerRequest *request) {
         float cartVel = sqrtf(cartVelX * cartVelX + cartVelY * cartVelY);
 
         response->printf(
-            "{\"current\":{\"x\":%.4f,\"y\":%.4f,\"rho\":%.2f,\"theta\":%.2f,\"vr\":%.2f,\"vt\":%.3f,\"vc\":%.2f}}",
-            norm.x, norm.y, actualPos.rho, actualPos.theta, actualVel.rho, actualVel.theta, cartVel);
+            "{\"current\":{\"x\":%.4f,\"y\":%.4f,\"rho\":%.2f,\"theta\":%.2f,\"vr\":%.2f,\"vt\":%.3f,\"vc\":%.2f},\"maxRho\":%.2f}",
+            norm.x, norm.y, actualPos.rho, actualPos.theta, actualVel.rho, actualVel.theta, cartVel, maxRho);
     }
 
     request->send(response);
@@ -1548,39 +2086,108 @@ static void driverSettingsToJson(JsonObject& obj, const DriverSettings& settings
     obj["coolStepThreshold"] = settings.coolStepThreshold;
 }
 
-// Helper to parse DriverSettings from request
-static void parseDriverSettings(AsyncWebServerRequest *request, DriverSettings& settings) {
-    // Current settings (mA)
-    if (request->hasParam("runCurrent", true))
-        settings.runCurrent = request->getParam("runCurrent", true)->value().toInt();
-    if (request->hasParam("holdCurrent", true))
-        settings.holdCurrent = request->getParam("holdCurrent", true)->value().toInt();
-    if (request->hasParam("holdDelay", true))
-        settings.holdDelay = request->getParam("holdDelay", true)->value().toInt();
+static bool parseUnsignedParam(AsyncWebServerRequest *request, const char* name,
+                               uint32_t& value) {
+    if (!request->hasParam(name, true)) return true;
+    const String text = request->getParam(name, true)->value();
+    if (text.length() == 0 || text.charAt(0) == '-') return false;
+    char* end = nullptr;
+    errno = 0;
+    unsigned long parsed = strtoul(text.c_str(), &end, 10);
+    if (errno != 0 || end == text.c_str() || *end != '\0') return false;
+    value = static_cast<uint32_t>(parsed);
+    return true;
+}
 
-    // Microstepping
-    if (request->hasParam("microsteps", true))
-        settings.microsteps = request->getParam("microsteps", true)->value().toInt();
+static bool parseFloatParam(AsyncWebServerRequest *request, const char* name,
+                            float& value) {
+    if (!request->hasParam(name, true)) return true;
+    const String text = request->getParam(name, true)->value();
+    char* end = nullptr;
+    errno = 0;
+    float parsed = strtof(text.c_str(), &end);
+    if (errno != 0 || end == text.c_str() || *end != '\0' || !std::isfinite(parsed)) {
+        return false;
+    }
+    value = parsed;
+    return true;
+}
 
-    // StealthChop settings
-    if (request->hasParam("stealthChopEnabled", true))
-        settings.stealthChopEnabled = request->getParam("stealthChopEnabled", true)->value() == "true";
-    if (request->hasParam("stealthChopThreshold", true))
-        settings.stealthChopThreshold = request->getParam("stealthChopThreshold", true)->value().toInt();
+static bool parseBoolParam(AsyncWebServerRequest *request, const char* name,
+                           bool& value) {
+    if (!request->hasParam(name, true)) return true;
+    const String text = request->getParam(name, true)->value();
+    if (text == "true" || text == "1") {
+        value = true;
+        return true;
+    }
+    if (text == "false" || text == "0") {
+        value = false;
+        return true;
+    }
+    return false;
+}
 
-    // CoolStep settings
-    if (request->hasParam("coolStepEnabled", true))
-        settings.coolStepEnabled = request->getParam("coolStepEnabled", true)->value() == "true";
-    if (request->hasParam("coolStepLowerThreshold", true))
-        settings.coolStepLowerThreshold = request->getParam("coolStepLowerThreshold", true)->value().toInt();
-    if (request->hasParam("coolStepUpperThreshold", true))
-        settings.coolStepUpperThreshold = request->getParam("coolStepUpperThreshold", true)->value().toInt();
-    if (request->hasParam("coolStepCurrentIncrement", true))
-        settings.coolStepCurrentIncrement = request->getParam("coolStepCurrentIncrement", true)->value().toInt();
-    if (request->hasParam("coolStepMeasurementCount", true))
-        settings.coolStepMeasurementCount = request->getParam("coolStepMeasurementCount", true)->value().toInt();
-    if (request->hasParam("coolStepThreshold", true))
-        settings.coolStepThreshold = request->getParam("coolStepThreshold", true)->value().toInt();
+// Parse into wide temporary values before narrowing to the driver fields.
+static bool parseDriverSettings(AsyncWebServerRequest *request, DriverSettings& settings) {
+    uint32_t runCurrent = settings.runCurrent;
+    uint32_t holdCurrent = settings.holdCurrent;
+    uint32_t holdDelay = settings.holdDelay;
+    uint32_t microsteps = settings.microsteps;
+    uint32_t stealthThreshold = settings.stealthChopThreshold;
+    uint32_t coolLower = settings.coolStepLowerThreshold;
+    uint32_t coolUpper = settings.coolStepUpperThreshold;
+    uint32_t coolIncrement = settings.coolStepCurrentIncrement;
+    uint32_t coolCount = settings.coolStepMeasurementCount;
+    uint32_t coolThreshold = settings.coolStepThreshold;
+
+    if (!parseUnsignedParam(request, "runCurrent", runCurrent) || runCurrent > UINT16_MAX ||
+        !parseUnsignedParam(request, "holdCurrent", holdCurrent) || holdCurrent > UINT16_MAX ||
+        !parseUnsignedParam(request, "holdDelay", holdDelay) || holdDelay > UINT8_MAX ||
+        !parseUnsignedParam(request, "microsteps", microsteps) || microsteps > UINT16_MAX ||
+        !parseUnsignedParam(request, "stealthChopThreshold", stealthThreshold) ||
+        !parseUnsignedParam(request, "coolStepLowerThreshold", coolLower) || coolLower > UINT8_MAX ||
+        !parseUnsignedParam(request, "coolStepUpperThreshold", coolUpper) || coolUpper > UINT8_MAX ||
+        !parseUnsignedParam(request, "coolStepCurrentIncrement", coolIncrement) || coolIncrement > UINT8_MAX ||
+        !parseUnsignedParam(request, "coolStepMeasurementCount", coolCount) || coolCount > UINT8_MAX ||
+        !parseUnsignedParam(request, "coolStepThreshold", coolThreshold) ||
+        !parseBoolParam(request, "stealthChopEnabled", settings.stealthChopEnabled) ||
+        !parseBoolParam(request, "coolStepEnabled", settings.coolStepEnabled)) {
+        return false;
+    }
+
+    settings.runCurrent = static_cast<uint16_t>(runCurrent);
+    settings.holdCurrent = static_cast<uint16_t>(holdCurrent);
+    settings.holdDelay = static_cast<uint8_t>(holdDelay);
+    settings.microsteps = static_cast<uint16_t>(microsteps);
+    settings.stealthChopThreshold = stealthThreshold;
+    settings.coolStepLowerThreshold = static_cast<uint8_t>(coolLower);
+    settings.coolStepUpperThreshold = static_cast<uint8_t>(coolUpper);
+    settings.coolStepCurrentIncrement = static_cast<uint8_t>(coolIncrement);
+    settings.coolStepMeasurementCount = static_cast<uint8_t>(coolCount);
+    settings.coolStepThreshold = coolThreshold;
+    return true;
+}
+
+static void sendTuningUpdateResult(AsyncWebServerRequest* request,
+                                   TuningUpdateResult result) {
+    switch (result) {
+        case TuningUpdateResult::UPDATED:
+            request->send(200, "application/json", "{\"success\":true}");
+            return;
+        case TuningUpdateResult::REJECTED:
+            request->send(409, "application/json",
+                "{\"success\":false,\"message\":\"Settings are unsafe or the system is busy\"}");
+            return;
+        case TuningUpdateResult::DRIVER_VERIFY_FAILED:
+            request->send(502, "application/json",
+                "{\"success\":false,\"message\":\"Driver UART verification failed; update was not committed\"}");
+            return;
+        case TuningUpdateResult::SAVE_FAILED:
+            request->send(500, "application/json",
+                "{\"success\":false,\"message\":\"Settings were not changed because flash storage failed\"}");
+            return;
+    }
 }
 
 void SisyphusWebServer::handleTuningGet(AsyncWebServerRequest *request) {
@@ -1605,6 +2212,17 @@ void SisyphusWebServer::handleTuningGet(AsyncWebServerRequest *request) {
     JsonObject rhoObj = doc["rhoDriver"].to<JsonObject>();
     driverSettingsToJson(rhoObj, rho);
 
+    HomingSettings homing = m_polarControl->getHomingSettings();
+    JsonObject homingObj = doc["homing"].to<JsonObject>();
+    homingObj["triggerPercent"] = homing.triggerPercent;
+    homingObj["consecutiveSamples"] = homing.consecutiveSamples;
+    homingObj["minimumTravelMs"] = homing.minimumTravelMs;
+
+    JsonObject limitsObj = doc["limits"].to<JsonObject>();
+    limitsObj["thetaMaxRunCurrentMa"] = Config::kThetaMaxRunCurrentMa;
+    limitsObj["rhoMaxRunCurrentMa"] = Config::kRhoMaxRunCurrentMa;
+    doc["persistenceAvailable"] = m_polarControl->tuningPersistenceAvailable();
+
     AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
     serializeJson(doc, *response);
     request->send(response);
@@ -1613,85 +2231,104 @@ void SisyphusWebServer::handleTuningGet(AsyncWebServerRequest *request) {
 void SisyphusWebServer::handleTuningMotionSet(AsyncWebServerRequest *request) {
     MotionSettings settings = m_polarControl->getMotionSettings();
 
-    if (request->hasParam("rMaxVelocity", true))
-        settings.rMaxVelocity = request->getParam("rMaxVelocity", true)->value().toFloat();
-    if (request->hasParam("rMaxAccel", true))
-        settings.rMaxAccel = request->getParam("rMaxAccel", true)->value().toFloat();
-    if (request->hasParam("rMaxJerk", true))
-        settings.rMaxJerk = request->getParam("rMaxJerk", true)->value().toFloat();
-    if (request->hasParam("tMaxVelocity", true))
-        settings.tMaxVelocity = request->getParam("tMaxVelocity", true)->value().toFloat();
-    if (request->hasParam("tMaxAccel", true))
-        settings.tMaxAccel = request->getParam("tMaxAccel", true)->value().toFloat();
-    if (request->hasParam("tMaxJerk", true))
-        settings.tMaxJerk = request->getParam("tMaxJerk", true)->value().toFloat();
+    if (!parseFloatParam(request, "rMaxVelocity", settings.rMaxVelocity) ||
+        !parseFloatParam(request, "rMaxAccel", settings.rMaxAccel) ||
+        !parseFloatParam(request, "rMaxJerk", settings.rMaxJerk) ||
+        !parseFloatParam(request, "tMaxVelocity", settings.tMaxVelocity) ||
+        !parseFloatParam(request, "tMaxAccel", settings.tMaxAccel) ||
+        !parseFloatParam(request, "tMaxJerk", settings.tMaxJerk)) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Malformed numeric setting\"}");
+        return;
+    }
 
-    m_polarControl->setMotionSettings(settings);
-    m_polarControl->saveTuningSettings();
-
-    request->send(200, "application/json", "{\"success\":true}");
+    sendTuningUpdateResult(request,
+        m_polarControl->saveMotionSettings(settings));
 }
 
 void SisyphusWebServer::handleTuningThetaDriverSet(AsyncWebServerRequest *request) {
     DriverSettings settings = m_polarControl->getThetaDriverSettings();
-    parseDriverSettings(request, settings);
-
-    m_polarControl->setThetaDriverSettings(settings);
-    m_polarControl->saveTuningSettings();
-
-    request->send(200, "application/json", "{\"success\":true}");
+    if (!parseDriverSettings(request, settings)) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Malformed driver setting\"}");
+        return;
+    }
+    sendTuningUpdateResult(request,
+        m_polarControl->saveThetaDriverSettings(settings));
 }
 
 void SisyphusWebServer::handleTuningRhoDriverSet(AsyncWebServerRequest *request) {
     DriverSettings settings = m_polarControl->getRhoDriverSettings();
-    parseDriverSettings(request, settings);
+    if (!parseDriverSettings(request, settings)) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Malformed driver setting\"}");
+        return;
+    }
+    sendTuningUpdateResult(request,
+        m_polarControl->saveRhoDriverSettings(settings));
+}
 
-    m_polarControl->setRhoDriverSettings(settings);
-    m_polarControl->saveTuningSettings();
-
-    request->send(200, "application/json", "{\"success\":true}");
+void SisyphusWebServer::handleTuningHomingSet(AsyncWebServerRequest *request) {
+    HomingSettings settings = m_polarControl->getHomingSettings();
+    uint32_t triggerPercent = settings.triggerPercent;
+    uint32_t consecutiveSamples = settings.consecutiveSamples;
+    uint32_t minimumTravelMs = settings.minimumTravelMs;
+    if (!parseUnsignedParam(request, "triggerPercent", triggerPercent) || triggerPercent > UINT8_MAX ||
+        !parseUnsignedParam(request, "consecutiveSamples", consecutiveSamples) || consecutiveSamples > UINT8_MAX ||
+        !parseUnsignedParam(request, "minimumTravelMs", minimumTravelMs) || minimumTravelMs > UINT16_MAX) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Malformed homing setting\"}");
+        return;
+    }
+    settings.triggerPercent = static_cast<uint8_t>(triggerPercent);
+    settings.consecutiveSamples = static_cast<uint8_t>(consecutiveSamples);
+    settings.minimumTravelMs = static_cast<uint16_t>(minimumTravelMs);
+    sendTuningUpdateResult(request,
+        m_polarControl->saveHomingSettings(settings));
 }
 
 void SisyphusWebServer::handleTuningTestThetaContinuous(AsyncWebServerRequest *request) {
-    auto state = m_polarControl->getState();
-    if (state != PolarControl::IDLE) {
-        request->send(409, "application/json", "{\"success\":false,\"message\":\"System must be idle\"}");
+    SemaphoreGuard stateLock(m_stateMutex);
+    if (!queueTuningTestLocked(PendingMotion::THETA_CONTINUOUS)) {
+        request->send(409, "application/json", "{\"success\":false,\"message\":\"Motion is unavailable until homing is complete\"}");
         return;
     }
-    m_currentPattern = "";
-    request->send(200, "application/json", "{\"success\":true,\"message\":\"Test started\"}");
-    m_polarControl->testThetaContinuous();
+    request->send(202, "application/json", "{\"success\":true,\"message\":\"Test queued\"}");
 }
 
 void SisyphusWebServer::handleTuningTestThetaStress(AsyncWebServerRequest *request) {
-    auto state = m_polarControl->getState();
-    if (state != PolarControl::IDLE) {
-        request->send(409, "application/json", "{\"success\":false,\"message\":\"System must be idle\"}");
+    SemaphoreGuard stateLock(m_stateMutex);
+    if (!queueTuningTestLocked(PendingMotion::THETA_STRESS)) {
+        request->send(409, "application/json", "{\"success\":false,\"message\":\"Motion is unavailable until homing is complete\"}");
         return;
     }
-    m_currentPattern = "";
-    request->send(200, "application/json", "{\"success\":true,\"message\":\"Test started\"}");
-    m_polarControl->testThetaStress();
+    request->send(202, "application/json", "{\"success\":true,\"message\":\"Test queued\"}");
 }
 
 void SisyphusWebServer::handleTuningTestRhoContinuous(AsyncWebServerRequest *request) {
-    auto state = m_polarControl->getState();
-    if (state != PolarControl::IDLE) {
-        request->send(409, "application/json", "{\"success\":false,\"message\":\"System must be idle\"}");
+#ifdef SISYPHUS_THETA_COMMISSIONING
+    request->send(409, "application/json",
+        "{\"success\":false,\"message\":\"Rho motion is disabled in theta commissioning mode\"}");
+    return;
+#endif
+    SemaphoreGuard stateLock(m_stateMutex);
+    if (!queueTuningTestLocked(PendingMotion::RHO_CONTINUOUS)) {
+        request->send(409, "application/json", "{\"success\":false,\"message\":\"Motion is unavailable until homing is complete\"}");
         return;
     }
-    m_currentPattern = "";
-    request->send(200, "application/json", "{\"success\":true,\"message\":\"Test started\"}");
-    m_polarControl->testRhoContinuous();
+    request->send(202, "application/json", "{\"success\":true,\"message\":\"Test queued\"}");
 }
 
 void SisyphusWebServer::handleTuningTestRhoStress(AsyncWebServerRequest *request) {
-    auto state = m_polarControl->getState();
-    if (state != PolarControl::IDLE) {
-        request->send(409, "application/json", "{\"success\":false,\"message\":\"System must be idle\"}");
+#ifdef SISYPHUS_THETA_COMMISSIONING
+    request->send(409, "application/json",
+        "{\"success\":false,\"message\":\"Rho motion is disabled in theta commissioning mode\"}");
+    return;
+#endif
+    SemaphoreGuard stateLock(m_stateMutex);
+    if (!queueTuningTestLocked(PendingMotion::RHO_STRESS)) {
+        request->send(409, "application/json", "{\"success\":false,\"message\":\"Motion is unavailable until homing is complete\"}");
         return;
     }
-    m_currentPattern = "";
-    request->send(200, "application/json", "{\"success\":true,\"message\":\"Test started\"}");
-    m_polarControl->testRhoStress();
+    request->send(202, "application/json", "{\"success\":true,\"message\":\"Test queued\"}");
 }

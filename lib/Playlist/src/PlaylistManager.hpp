@@ -23,13 +23,13 @@ class PlaylistManager {
 public:
   PlaylistManager();
 
-  void addPattern(String filename);
-  void removePattern(int index);
+  bool addPattern(const String& filename);
+  bool removePattern(int index);
   void clear();
-  void movePattern(int fromIndex, int toIndex);
+  bool movePattern(int fromIndex, int toIndex);
   void shuffle(); // Randomize the list in-place
 
-  int count() const { return m_playlist.size(); }
+  int count() const { return static_cast<int>(m_playlist.size()); }
   const PlaylistItem& getItem(int index) const { return m_playlist[index]; }
 
   void setLoop(bool enabled) { m_loop = enabled; }
@@ -41,12 +41,13 @@ public:
 
   // Playlist control
   void reset();
-      bool hasNext();
-      NextPatternResult getNextPattern();  int getCurrentIndex() const { return m_currentIndex; }
+  bool hasNext();
+  NextPatternResult getNextPattern();
+  int getCurrentIndex() const { return m_currentIndex; }
   void setCurrentIndex(int index);
 
   // Skip controls
-  void skipToIndex(int index);
+  bool skipToIndex(int index);
   void skipNext();
   void skipPrevious();
 

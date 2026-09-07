@@ -71,7 +71,8 @@ int ClearingPatternGen::getProgressPercent() const {
             if (m_circleIndex >= NUM_CIRCLES) {
                 return 100;
             }
-            float thetaFrac = (CIRCLE_THETA_MAX > 0.0f) ? (m_currentTheta / CIRCLE_THETA_MAX) : 0.0f;
+            const float localTheta = m_currentTheta - m_circleIndex * CIRCLE_THETA_MAX;
+            float thetaFrac = (CIRCLE_THETA_MAX > 0.0f) ? (localTheta / CIRCLE_THETA_MAX) : 0.0f;
             thetaFrac = std::min(1.0f, std::max(0.0f, thetaFrac));
             float progress = (static_cast<float>(m_circleIndex) + thetaFrac) / NUM_CIRCLES;
             progress = std::min(1.0f, std::max(0.0f, progress));
@@ -113,7 +114,8 @@ int ClearingPatternGen::getProgressPercent() const {
             if (m_circleIndex >= NUM_PASSES) {
                 return 100;
             }
-            float thetaFrac = (PASS_THETA_MAX > 0.0f) ? (m_currentTheta / PASS_THETA_MAX) : 0.0f;
+            const float localTheta = m_currentTheta - m_circleIndex * PASS_THETA_MAX;
+            float thetaFrac = (PASS_THETA_MAX > 0.0f) ? (localTheta / PASS_THETA_MAX) : 0.0f;
             thetaFrac = std::min(1.0f, std::max(0.0f, thetaFrac));
             float progress = (static_cast<float>(m_circleIndex) + thetaFrac) / NUM_PASSES;
             progress = std::min(1.0f, std::max(0.0f, progress));
@@ -198,11 +200,12 @@ PolarCord_t ClearingPatternGen::generateConcentricCircles() {
         rho = m_maxRho * (LAST_CIRCLE_INDEX - m_circleIndex) / static_cast<float>(LAST_CIRCLE_INDEX);
     }
 
-    // Generate points around the circle
-    if (m_currentTheta >= CIRCLE_THETA_MAX) {
+    const float circleStart = m_circleIndex * CIRCLE_THETA_MAX;
+    // Generate points around the circle without wrapping theta back to zero.
+    if (m_currentTheta - circleStart >= CIRCLE_THETA_MAX) {
         // Move to next circle
         m_circleIndex++;
-        m_currentTheta = 0.0;
+        m_currentTheta = m_circleIndex * CIRCLE_THETA_MAX;
 
         // Return to the start of the next circle
         if (m_circleIndex < NUM_CIRCLES) {
@@ -210,7 +213,7 @@ PolarCord_t ClearingPatternGen::generateConcentricCircles() {
             if (LAST_CIRCLE_INDEX > 0) {
                 rho = m_maxRho * (LAST_CIRCLE_INDEX - m_circleIndex) / static_cast<float>(LAST_CIRCLE_INDEX);
             }
-            return {0.0, rho};
+            return {m_currentTheta, rho};
         } else {
             m_complete = true;
             return {std::nan(""), std::nan("")};
@@ -260,6 +263,11 @@ PolarCord_t ClearingPatternGen::generateZigzagRadial() {
 
     float rho = std::sqrt((x * x) + (y * y));
     float theta = std::atan2(y, x);
+    if (m_haveUnwrappedTheta) {
+        theta += roundf((m_lastUnwrappedTheta - theta) / (2.0f * PI)) * (2.0f * PI);
+    }
+    m_lastUnwrappedTheta = theta;
+    m_haveUnwrappedTheta = true;
     return {theta, rho};
 }
 
@@ -283,10 +291,11 @@ PolarCord_t ClearingPatternGen::generatePetalFlower() {
         amplitude = m_maxRho * (LAST_PASS_INDEX - m_circleIndex) / static_cast<float>(LAST_PASS_INDEX);
     }
 
-    if (m_currentTheta >= PASS_THETA_MAX) {
+    const float passStart = m_circleIndex * PASS_THETA_MAX;
+    if (m_currentTheta - passStart >= PASS_THETA_MAX) {
         // Move to next pass
         m_circleIndex++;
-        m_currentTheta = 0.0;
+        m_currentTheta = m_circleIndex * PASS_THETA_MAX;
 
         if (m_circleIndex >= NUM_PASSES) {
             m_complete = true;
@@ -301,8 +310,9 @@ PolarCord_t ClearingPatternGen::generatePetalFlower() {
     }
 
     float theta = m_currentTheta;
+    const float localTheta = theta - m_circleIndex * PASS_THETA_MAX;
     // Petal function: rho = amplitude * |cos(NUM_PETALS * theta)|
-    float rho = amplitude * std::abs(cos(NUM_PETALS * theta));
+    float rho = amplitude * std::abs(cos(NUM_PETALS * localTheta));
 
     m_currentTheta += THETA_STEP;
 

@@ -35,6 +35,8 @@ private:
     int m_spokeIndex;   // For zigzag radial
     bool m_inward;      // For zigzag radial direction
     bool m_complete;
+    float m_lastUnwrappedTheta = 0.0f;
+    bool m_haveUnwrappedTheta = false;
 
     // Pattern-specific generation methods
     PolarCord_t generateSpiralOutward();

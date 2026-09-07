@@ -3,7 +3,9 @@
 #include "MakeUnique.hpp"
 #include "Logger.hpp"
 #include "ErrorLog.hpp"
+#include "StallGuardDetector.hpp"
 #include <cmath>
+#include <cstring>
 #include <cstdlib>
 #include <SD.h>
 #include <LittleFS.h>
@@ -15,8 +17,9 @@
 
 PolarControl::PolarControl() {
     // Initialize default driver settings
-    m_tDriverSettings.runCurrent = 1200;   // Theta motor - higher current (mA)
-    m_tDriverSettings.holdCurrent = 300;
+    // Operator-selected loaded theta profile (2026-09-07).
+    m_tDriverSettings.runCurrent = 700;
+    m_tDriverSettings.holdCurrent = 200;
     m_tDriverSettings.microsteps = 64;
     m_rDriverSettings.runCurrent = 500;    // Rho motor - lower current (mA)
     m_rDriverSettings.holdCurrent = 200;
@@ -27,8 +30,6 @@ PolarControl::~PolarControl() {
 }
 
 constexpr float PolarControl::R_MAX;
-constexpr float PolarControl::R_SENSE;
-
 static TMC2209::SerialAddress toSerialAddress(uint8_t address) {
     switch (address) {
         case 0:
@@ -44,41 +45,156 @@ static TMC2209::SerialAddress toSerialAddress(uint8_t address) {
     }
 }
 
+// The upstream library returns zero on a timeout and does not validate reply
+// framing or CRC. Homing cannot safely distinguish that from a true low
+// SG_RESULT, so use a checked read for load detection and confidence telemetry.
+static uint8_t tmcCrc(const uint8_t* bytes, size_t length) {
+    uint8_t crc = 0;
+    for (size_t i = 0; i < length; ++i) {
+        uint8_t current = bytes[i];
+        for (uint8_t bit = 0; bit < 8; ++bit) {
+            crc = ((crc >> 7) ^ (current & 0x01))
+                ? static_cast<uint8_t>((crc << 1) ^ 0x07)
+                : static_cast<uint8_t>(crc << 1);
+            current >>= 1;
+        }
+    }
+    return crc;
+}
+
+static bool readTmcRegisterCheckedOnce(uint8_t driverAddress,
+                                       uint8_t registerAddress,
+                                       uint32_t& value) {
+    constexpr uint8_t kSync = 0x05;
+    constexpr uint8_t kMasterAddress = 0xFF;
+    constexpr uint32_t kEchoTimeoutUs = 4000;
+    constexpr uint32_t kReplyTimeoutUs = 10000;
+    uint8_t request[4] = {kSync, driverAddress,
+                          static_cast<uint8_t>(registerAddress & 0x7F), 0};
+    request[3] = tmcCrc(request, 3);
+
+    while (Serial1.available() > 0) Serial1.read();
+    if (Serial1.write(request, sizeof(request)) != sizeof(request)) return false;
+    Serial1.flush();
+
+    uint8_t echo[sizeof(request)] = {};
+    size_t echoCount = 0;
+    uint32_t started = micros();
+    while (echoCount < sizeof(echo) && (micros() - started) < kEchoTimeoutUs) {
+        if (Serial1.available() > 0) {
+            echo[echoCount++] = static_cast<uint8_t>(Serial1.read());
+        }
+    }
+    if (echoCount != sizeof(echo) || memcmp(echo, request, sizeof(request)) != 0) {
+        return false;
+    }
+
+    uint8_t reply[8] = {};
+    size_t replyCount = 0;
+    started = micros();
+    while (replyCount < sizeof(reply) && (micros() - started) < kReplyTimeoutUs) {
+        if (Serial1.available() > 0) {
+            reply[replyCount++] = static_cast<uint8_t>(Serial1.read());
+        }
+    }
+    if (replyCount != sizeof(reply) || reply[0] != kSync ||
+        reply[1] != kMasterAddress || (reply[2] & 0x7F) != (registerAddress & 0x7F) ||
+        tmcCrc(reply, 7) != reply[7]) {
+        return false;
+    }
+
+    value = (static_cast<uint32_t>(reply[3]) << 24) |
+            (static_cast<uint32_t>(reply[4]) << 16) |
+            (static_cast<uint32_t>(reply[5]) << 8) |
+            static_cast<uint32_t>(reply[6]);
+    return true;
+}
+
+static bool readTmcRegisterChecked(uint8_t driverAddress,
+                                   uint8_t registerAddress,
+                                   uint32_t& value) {
+    constexpr uint8_t kAttempts = 3;
+    for (uint8_t attempt = 0; attempt < kAttempts; ++attempt) {
+        if (readTmcRegisterCheckedOnce(driverAddress, registerAddress, value)) {
+            return true;
+        }
+        delayMicroseconds(250);
+    }
+    return false;
+}
+
 // ============================================================================
 // Lifecycle
 // ============================================================================
 
-void PolarControl::begin() {
+bool PolarControl::begin() {
     if (m_mutex == NULL) {
         m_mutex = xSemaphoreCreateMutex();
     }
+    if (m_mutex == NULL) {
+        LOG("ERROR: Failed to create motor mutex\r\n");
+        return false;
+    }
 
-    // Load saved tuning settings (if any)
-    loadTuningSettings();
-
-    // Setup TMC2209 drivers with serial connection
-    // Using ESP32 variant of setup() with alternate pins
-    m_tDriver.setup(Serial1, 115200, toSerialAddress(T_ADDR), RX_PIN, TX_PIN);
-    m_rDriver.setup(Serial1, 115200, toSerialAddress(R_ADDR), RX_PIN, TX_PIN);
-    m_rCDriver.setup(Serial1, 115200, toSerialAddress(RC_ADDR), RX_PIN, TX_PIN);
-
-    delay(100);  // Allow drivers to initialize
-
-    // Initialize LittleFS
-    if (!LittleFS.begin(true)) {
+    // Machine tuning is controller configuration, so keep it in internal
+    // flash rather than on the removable pattern SD card.
+#ifdef SISYPHUS_SKIP_INTERNAL_FS
+    LOG("DIAGNOSTIC: LittleFS initialization is disabled; using tuning defaults.\r\n");
+#else
+    const bool littleFsReady = LittleFS.begin(true);
+    m_tuningStorageReady.store(littleFsReady);
+    if (!littleFsReady) {
         LOG("ERROR: LittleFS Mount Failed\r\n");
         ErrorLog::instance().log("ERROR", "FS", "LITTLEFS_MOUNT_FAILED",
                                  "LittleFS mount failed");
     } else {
         LOG("LittleFS Mounted\r\n");
+        loadTuningSettings();
     }
+#endif
+
+#ifdef SISYPHUS_THETA_COMMISSIONING
+    // Never inherit an aggressive saved value when a single motor is being
+    // attached and commissioned. Runtime changes remain possible after the
+    // operator supplies the actual motor rating to the measurement harness.
+    m_tDriverSettings.runCurrent = Config::kThetaCommissioningStartupCurrentMa;
+    m_tDriverSettings.holdCurrent = Config::kThetaCommissioningStartupHoldCurrentMa;
+    m_tDriverSettings.microsteps = 64;
+    m_tDriverSettings.stealthChopEnabled = true;
+    m_tDriverSettings.coolStepEnabled = false;
+    m_motionSettings.tMaxVelocity = 0.05f;
+    m_motionSettings.tMaxAccel = 0.10f;
+    m_motionSettings.tMaxJerk = 0.50f;
+    LOG("THETA COMMISSIONING: forced safe boot envelope (250mA, 0.05rad/s)\r\n");
+#endif
+
+#ifndef SISYPHUS_SKIP_MOTOR_HARDWARE
+    // Setup TMC2209 drivers with serial connection
+    // Using ESP32 variant of setup() with alternate pins
+    m_tDriver.setup(Serial1, 115200, toSerialAddress(T_ADDR), RX_PIN, TX_PIN);
+    m_rDriver.setup(Serial1, 115200, toSerialAddress(R_ADDR), RX_PIN, TX_PIN);
+    m_rCDriver.setup(Serial1, 115200, toSerialAddress(RC_ADDR), RX_PIN, TX_PIN);
+    // Datasheet SENDDELAY requirement for multiple addressed nodes sharing a
+    // single-wire UART. Apply it before the first bidirectional status read.
+    m_tDriver.setReplyDelay(2);
+    m_rDriver.setReplyDelay(2);
+    m_rCDriver.setReplyDelay(2);
+    m_driverBusInitialized.store(true);
+
+    delay(100);  // Allow drivers to initialize
+#endif
 
     // Create queues for async file reading
     m_coordQueue = xQueueCreate(256, sizeof(PolarCord_t));
     m_cmdQueue = xQueueCreate(5, sizeof(FileCommand));
+    if (m_coordQueue == NULL || m_cmdQueue == NULL) {
+        ErrorLog::instance().log("ERROR", "MOTOR", "QUEUE_CREATE_FAILED",
+                                 "Could not allocate motor command queues");
+        return false;
+    }
 
     // Create file reader task on Core 0 (System Core)
-    xTaskCreatePinnedToCore(
+    BaseType_t taskCreated = xTaskCreatePinnedToCore(
         fileReadTask,
         "FileReadTask",
         8192,
@@ -87,6 +203,12 @@ void PolarControl::begin() {
         &m_fileTaskHandle,
         0 // Core 0
     );
+    if (taskCreated != pdPASS) {
+        ErrorLog::instance().log("ERROR", "MOTOR", "FILE_TASK_CREATE_FAILED",
+                                 "Could not create file reader task");
+        m_fileTaskHandle = NULL;
+        return false;
+    }
 
     // Initialize motion planner with separate axis limits
     m_planner.init(
@@ -107,82 +229,313 @@ void PolarControl::begin() {
 
     delay(10);
     LOG("Motor Setup Complete\r\n");
+    return true;
 }
 
 void PolarControl::updateSpeedSettings() {
-    float speedFactor = m_speed / 10.0f;
+    float speedFactor = m_speed.load() / 10.0f;
     m_planner.setSpeedMultiplier(speedFactor);
 }
 
-void PolarControl::setupDrivers() {
+bool PolarControl::setupDrivers() {
+    if (!m_driverBusInitialized.load()) {
+        ErrorLog::instance().log("ERROR", "MOTOR", "DRIVER_BUS_DISABLED",
+                                 "TMC2209 UART initialization is disabled");
+        return false;
+    }
     if (m_state != UNINITIALIZED) {
         LOG("Setup was already done\r\n");
-        return;
+        return false;
     }
 
-    // Apply settings to all drivers
-    applyDriverSettings(m_tDriver, m_tDriverSettings);
-    applyDriverSettings(m_rDriver, m_rDriverSettings);
-    applyDriverSettings(m_rCDriver, m_rDriverSettings);
+    // Production requires every addressed driver. Single-axis commissioning
+    // intentionally permits the two rho drivers to be physically disconnected.
+    const bool thetaReady = m_tDriver.isSetupAndCommunicating();
+#ifdef SISYPHUS_THETA_COMMISSIONING
+    if (!thetaReady) {
+        ErrorLog::instance().log("ERROR", "MOTOR", "THETA_DRIVER_OFFLINE",
+                                 "Theta TMC2209 is not communicating");
+        return false;
+    }
+#else
+    if (!thetaReady || !m_rDriver.isSetupAndCommunicating() ||
+        !m_rCDriver.isSetupAndCommunicating()) {
+        ErrorLog::instance().log("ERROR", "MOTOR", "DRIVER_OFFLINE",
+                                 "One or more TMC2209 drivers are not communicating");
+        return false;
+    }
+#endif
 
-    // Enable all drivers
+    // Apply, read back, and enable only the axis under test in commissioning
+    // mode. Never start motion with an unverified register configuration.
+    if (!applyDriverSettings(m_tDriver, m_tDriverSettings, T_ADDR, "theta")) {
+        ErrorLog::instance().log("ERROR", "MOTOR", "THETA_CONFIG_VERIFY_FAILED",
+                                 "Theta driver settings did not verify over UART");
+        return false;
+    }
+#ifdef SISYPHUS_THETA_COMMISSIONING
+    m_tDriver.enable();
+    LOG("THETA COMMISSIONING: rho drivers may be disconnected; rho STEP remains low\r\n");
+#else
+    if (!applyDriverSettings(m_rDriver, m_rDriverSettings, R_ADDR, "rho") ||
+        !applyDriverSettings(m_rCDriver, m_rDriverSettings, RC_ADDR,
+                             "rho-companion")) {
+        ErrorLog::instance().log("ERROR", "MOTOR", "RHO_CONFIG_VERIFY_FAILED",
+                                 "Rho driver settings did not verify over UART");
+        return false;
+    }
     m_tDriver.enable();
     m_rDriver.enable();
     m_rCDriver.enable();
+#endif
 
     m_state = INITIALIZED;
+    return true;
 }
 
-void PolarControl::home() {
-    // Only allow homing if system is relatively idle/safe to do so
-    if (m_state != IDLE && m_state != INITIALIZED) {
-        LOG("Cannot home: system not IDLE/INITIALIZED\r\n");
-        return;
+bool PolarControl::home() {
+#ifdef SISYPHUS_THETA_COMMISSIONING
+    LOG("THETA COMMISSIONING: homing rejected\r\n");
+    return false;
+#endif
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    State_t state = m_state.load();
+    if (state != IDLE && state != INITIALIZED && state != HOMING_FAILED) {
+        LOG("Cannot home: system is busy\r\n");
+        xSemaphoreGive(m_mutex);
+        return false;
     }
-    
-    // Create async task for homing
-    xTaskCreate(homingTask, "HomingTask", 4096, this, 1, NULL);
+
+    // A previous logical position cannot be trusted once UART-controlled
+    // homing motion begins. Keep pattern execution locked out until a person
+    // confirms the resulting physical position.
+    m_planner.stop();
+    m_homingFailure.store(0);
+    m_homingFastApproachMs.store(0);
+    m_homingSlowApproachMs.store(0);
+    m_homingBaseline.store(0);
+    m_homingTrigger.store(0);
+    m_homingCycle.fetch_add(1);
+    m_state.store(HOMING);
+
+    BaseType_t created = xTaskCreatePinnedToCore(
+        homingTask,
+        "HomingTask",
+        4096,
+        this,
+        1,
+        &m_homingTaskHandle,
+        Config::kMotorCore
+    );
+    if (created != pdPASS) {
+        m_homingTaskHandle = NULL;
+        m_homingFailure.store(5);
+        m_state.store(HOMING_FAILED);
+        ErrorLog::instance().log("ERROR", "HOME", "TASK_CREATE_FAILED",
+                                 "Could not start homing task");
+        xSemaphoreGive(m_mutex);
+        return false;
+    }
+
+    xSemaphoreGive(m_mutex);
     LOG("Homing task started\r\n");
+    return true;
 }
 
 void PolarControl::homingTask(void* arg) {
     PolarControl* self = static_cast<PolarControl*>(arg);
-    
-    // Take mutex to protect driver access
-    xSemaphoreTake(self->m_mutex, portMAX_DELAY);
-    
-    // Perform homing
-    self->homeDriver(self->m_rDriver);
-    LOG("R Homing Done\r\n");
 
-    // Reset state
-    self->m_state = IDLE;
+    bool success = self->homeDriver(self->m_rDriver);
+    xSemaphoreTake(self->m_mutex, portMAX_DELAY);
+    self->m_homingTaskHandle = NULL;
+    State_t expected = HOMING;
+    const bool completedNormally = self->m_state.compare_exchange_strong(
+        expected, success ? HOMING_REVIEW : HOMING_FAILED);
     xSemaphoreGive(self->m_mutex);
-    
-    // Self-delete
+
+    if (!completedNormally) {
+        LOG("Homing cancelled by emergency stop\r\n");
+    } else if (success) {
+        LOG("Automatic homing pass complete; waiting for visual confirmation\r\n");
+    } else {
+        LOG("Homing failed; motors stopped\r\n");
+    }
+
     vTaskDelete(NULL);
 }
 
-void PolarControl::applyDriverSettings(TMC2209 &driver, const DriverSettings &settings) {
+bool PolarControl::confirmHome(bool successful) {
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    if (m_state.load() != HOMING_REVIEW) {
+        xSemaphoreGive(m_mutex);
+        return false;
+    }
+
+    if (successful) {
+        // Sensorless homing establishes rho=0. Theta has no absolute reference,
+        // and at the center its angular origin is arbitrary, so reset both axes.
+        m_planner.resetPosition(0.0f, 0.0f);
+        m_homingFailure.store(0);
+        m_state.store(IDLE);
+        LOG("Homing visually confirmed; logical position reset\r\n");
+    } else {
+        m_homingFailure.store(6);
+        m_state.store(HOMING_FAILED);
+        ErrorLog::instance().log("WARN", "HOME", "USER_REJECTED",
+                                 "User reported that sensorless homing stopped at the wrong position");
+    }
+
+    xSemaphoreGive(m_mutex);
+    return true;
+}
+
+#if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING)
+void PolarControl::assumeBenchTestOrigin() {
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    m_planner.stop();
+    m_planner.resetPosition(0.0f, 0.0f);
+    m_homingFailure.store(0);
+    m_state.store(IDLE);
+    xSemaphoreGive(m_mutex);
+#ifdef SISYPHUS_THETA_COMMISSIONING
+    LOG("THETA COMMISSIONING: logical theta origin assumed; rho motion locked out\r\n");
+#else
+    LOG("BENCH MOTION TEST: logical origin assumed without physical homing\r\n");
+#endif
+}
+#endif
+
+HomingStatus PolarControl::getHomingStatus() const {
+    HomingStatus status;
+    status.cycle = m_homingCycle.load();
+    status.fastApproachMs = m_homingFastApproachMs.load();
+    status.slowApproachMs = m_homingSlowApproachMs.load();
+    status.baseline = m_homingBaseline.load();
+    status.trigger = m_homingTrigger.load();
+    status.failure = m_homingFailure.load();
+    return status;
+}
+
+static float driverFullScaleCurrentMa() {
+    constexpr float kVsenseVolts = 0.325f;
+    return 1000.0f * kVsenseVolts /
+        (Config::kDriverSenseResistorOhms + 0.020f) / std::sqrt(2.0f);
+}
+
+static uint8_t currentMaToDriverRegister(uint16_t currentMa) {
+    const float rawCs = static_cast<float>(currentMa) /
+        driverFullScaleCurrentMa() * 32.0f - 1.0f;
+    return static_cast<uint8_t>(
+        std::max(0, std::min(31, static_cast<int>(std::lround(rawCs)))));
+}
+
+// The TMC2209 library accepts percentages, then floors them into register
+// values. A ceiling conversion is required to reproduce a chosen register
+// value exactly (notably for IHOLDDELAY).
+static constexpr uint8_t driverRegisterToLibraryPercent(uint8_t value,
+                                                         uint8_t maxValue) {
+    return static_cast<uint8_t>((value * 100U + maxValue - 1U) / maxValue);
+}
+
+static constexpr uint8_t microstepsToMres(uint16_t microsteps) {
+    return microsteps <= 1
+        ? 8U
+        : static_cast<uint8_t>(microstepsToMres(microsteps >> 1) - 1U);
+}
+
+static_assert((driverRegisterToLibraryPercent(8, 15) * 15U) / 100U == 8U,
+              "IHOLDDELAY conversion must survive the library's floor mapping");
+static_assert(microstepsToMres(256) == 0 && microstepsToMres(64) == 2 &&
+              microstepsToMres(1) == 8,
+              "MRES conversion must match the TMC2209 register encoding");
+
+static bool verifyDriverSettings(uint8_t driverAddress,
+                                 const DriverSettings& settings,
+                                 const char* driverName,
+                                 uint8_t interfaceCountBefore,
+                                 uint8_t expectedWrites) {
+    // GCONF, CHOPCONF, and PWMCONF are readable and can be compared directly.
+    // Current and threshold registers are write-only on the TMC2209, so IFCNT
+    // is the datasheet-defined acknowledgement that those UART writes landed.
+    constexpr uint8_t kRegGconf = 0x00;
+    constexpr uint8_t kRegIfcnt = 0x02;
+    constexpr uint8_t kRegChopconf = 0x6C;
+    constexpr uint8_t kRegPwmconf = 0x70;
+
+    uint32_t gconf = 0;
+    uint32_t interfaceCount = 0;
+    uint32_t chopconf = 0;
+    uint32_t pwmconf = 0;
+    if (!readTmcRegisterChecked(driverAddress, kRegGconf, gconf) ||
+        !readTmcRegisterChecked(driverAddress, kRegIfcnt, interfaceCount) ||
+        !readTmcRegisterChecked(driverAddress, kRegChopconf, chopconf) ||
+        !readTmcRegisterChecked(driverAddress, kRegPwmconf, pwmconf)) {
+        LOG("Driver %s settings readback failed (invalid UART reply)\r\n",
+            driverName);
+        return false;
+    }
+
+    const uint32_t expectedMres =
+        static_cast<uint32_t>(microstepsToMres(settings.microsteps)) << 24;
+    const uint8_t writesObserved = static_cast<uint8_t>(
+        static_cast<uint8_t>(interfaceCount) - interfaceCountBefore);
+    // The library rewrites COOLCONF after each current field when CoolStep was
+    // previously enabled. Those three additional acknowledged writes are
+    // harmless and depend on the prior in-memory driver state.
+    const bool writesOk = writesObserved == expectedWrites ||
+        writesObserved == static_cast<uint8_t>(expectedWrites + 3U);
+    const bool microstepsOk = (chopconf & 0x0F000000U) == expectedMres;
+    const bool interpolationOk = (chopconf & (1UL << 28)) != 0;
+    const bool modeOk = ((gconf & (1U << 2)) == 0) == settings.stealthChopEnabled;
+    const bool senseOk = (gconf & (1U << 1)) == 0;
+    const bool pwmOk = !settings.stealthChopEnabled ||
+        (pwmconf & ((1U << 18) | (1U << 19))) ==
+            ((1U << 18) | (1U << 19));
+
+    const bool verified = writesOk && microstepsOk && interpolationOk &&
+        modeOk && senseOk && pwmOk;
+    if (!verified) {
+        LOG("Driver %s readback mismatch: writes=%u/%u GCONF=%08lX "
+            "CHOPCONF=%08lX PWMCONF=%08lX\r\n",
+            driverName, writesObserved, expectedWrites,
+            static_cast<unsigned long>(gconf),
+            static_cast<unsigned long>(chopconf),
+            static_cast<unsigned long>(pwmconf));
+    }
+    return verified;
+}
+
+bool PolarControl::applyDriverSettings(TMC2209 &driver,
+                                       const DriverSettings &settings,
+                                       uint8_t driverAddress,
+                                       const char* driverName) {
+    uint32_t interfaceCount = 0;
+    if (!readTmcRegisterChecked(driverAddress, 0x02, interfaceCount)) {
+        LOG("Driver %s IFCNT pre-write read failed\r\n", driverName);
+        return false;
+    }
+
     // Set microstepping first
     driver.setMicrostepsPerStep(settings.microsteps);
 
-    // Current settings conversion (mA to percent)
-    // Assuming 0.12ohm sense resistors -> Max RMS current ~1900mA
-    const float MAX_CURRENT_MA = 1900.0f;
-
-    uint8_t runPercent = (uint8_t)((settings.runCurrent / MAX_CURRENT_MA) * 100.0f);
-    if (runPercent > 100) runPercent = 100;
-
-    uint8_t holdPercent = (uint8_t)((settings.holdCurrent / MAX_CURRENT_MA) * 100.0f);
-    if (holdPercent > 100) holdPercent = 100;
+    // TMC2209 datasheet equation (default 325 mV VFS):
+    // I_RMS = (CS + 1) / 32 * VFS / (R_SENSE + 20mOhm) / sqrt(2).
+    const float maxCurrentMa = driverFullScaleCurrentMa();
+    const uint8_t runPercent = driverRegisterToLibraryPercent(
+        currentMaToDriverRegister(settings.runCurrent), 31);
+    const uint8_t holdPercent = driverRegisterToLibraryPercent(
+        currentMaToDriverRegister(settings.holdCurrent), 31);
 
     driver.setRunCurrent(runPercent);
     driver.setHoldCurrent(holdPercent);
 
+    LOG("Driver current request run=%umA hold=%umA (R_sense=%.3fohm, full-scale=%.0fmA RMS)\r\n",
+        settings.runCurrent, settings.holdCurrent,
+        Config::kDriverSenseResistorOhms, maxCurrentMa);
+
     // Hold delay (0-15 mapped to 0-100%)
-    uint8_t delayPercent = (uint8_t)((settings.holdDelay * 100) / 15);
-    if (delayPercent > 100) delayPercent = 100;
+    const uint8_t delayPercent = driverRegisterToLibraryPercent(
+        settings.holdDelay, 15);
     driver.setHoldDelay(delayPercent);
 
     // Use external sense resistors
@@ -212,53 +565,334 @@ void PolarControl::applyDriverSettings(TMC2209 &driver, const DriverSettings &se
 
     // Use step/dir interface for motion (not UART velocity mode)
     driver.moveUsingStepDirInterface();
-}
 
-void PolarControl::homeDriver(TMC2209 &driver, int speed) {
-    // Move forward briefly
-    driver.moveAtVelocity(500);
-    delay(500);
-    driver.moveAtVelocity(0);
-    driver.moveAtVelocity(speed);
-
-    delay(100);
-    int sg_sum = driver.getStallGuardResult();
-    int cnt = 1;
-
-    while (true) {
-        int sg = driver.getStallGuardResult();
-        if (sg <= (sg_sum / cnt) * 0.75 && cnt > 15) {
-            driver.moveAtVelocity(0);
-            LOG("Hit Endstop, sg=%d\r\n", sg);
-            break;
-        }
-        sg_sum += sg;
-        cnt++;
-        delay(10);
+    const uint8_t expectedWrites = static_cast<uint8_t>(
+        6U + (settings.stealthChopEnabled ? 4U : 1U) +
+        (settings.coolStepEnabled ? 4U : 1U));
+    const bool verified = verifyDriverSettings(
+        driverAddress, settings, driverName,
+        static_cast<uint8_t>(interfaceCount), expectedWrites);
+    if (verified) {
+        LOG("Driver %s settings verified over UART\r\n", driverName);
+    } else {
+        ErrorLog::instance().log("ERROR", "TUNING", "UART_VERIFY_FAILED",
+                                 "Driver settings write/readback verification failed",
+                                 driverName);
     }
+    return verified;
 }
 
-void PolarControl::homeDriver(TMC2209 &driver) {
-    LOG("Preparing Homing\r\n");
-    homeDriver(driver, 1000);
+bool PolarControl::rampDriverVelocity(TMC2209 &driver, int32_t targetVelocity,
+                                      uint32_t rampMs) {
+    constexpr uint32_t kRampIntervalMs = 20;
+    const uint32_t steps = std::max<uint32_t>(1, rampMs / kRampIntervalMs);
+    for (uint32_t step = 1; step <= steps; ++step) {
+        xSemaphoreTake(m_mutex, portMAX_DELAY);
+        if (m_state.load() != HOMING) {
+            xSemaphoreGive(m_mutex);
+            return false;
+        }
+        const int32_t velocity = static_cast<int32_t>(
+            static_cast<int64_t>(targetVelocity) * step / steps);
+        driver.moveAtVelocity(velocity);
+        // Both rho drivers share the mechanics. UART velocity mode bypasses
+        // their common STEP signal, so explicitly command the companion too.
+        m_rCDriver.moveAtVelocity(velocity);
+        xSemaphoreGive(m_mutex);
+        vTaskDelay(pdMS_TO_TICKS(kRampIntervalMs));
+    }
+    return true;
+}
 
-    // Reverse direction
-    driver.enableInverseMotorDirection();
-    driver.moveAtVelocity(250);
-    delay(1000);
+PolarControl::HomingAttempt PolarControl::homeDriver(
+    TMC2209 &driver, int speed, uint32_t ignoreMs, uint32_t timeoutMs,
+    uint8_t requiredSamples, float triggerRatio) {
+    HomingAttempt result;
+    constexpr uint32_t kSampleIntervalMs = 20;
+    constexpr uint8_t kMaxConsecutiveUartErrors = 3;
+
+    if (!rampDriverVelocity(driver, speed, 500)) return result;
+    const uint32_t startedAt = millis();
+    StallGuardDetector detector(ignoreMs, requiredSamples, triggerRatio);
+    uint8_t consecutiveUartErrors = 0;
+
+    while ((millis() - startedAt) < timeoutMs) {
+        const uint32_t elapsed = millis() - startedAt;
+        xSemaphoreTake(m_mutex, portMAX_DELAY);
+        if (m_state.load() != HOMING) {
+            xSemaphoreGive(m_mutex);
+            return result;
+        }
+        uint32_t registerValue = 0;
+        const bool validSample = readTmcRegisterChecked(
+            R_ADDR, 0x41, registerValue);
+        if (!validSample) {
+            if (consecutiveUartErrors < UINT8_MAX) ++consecutiveUartErrors;
+            if (consecutiveUartErrors >= kMaxConsecutiveUartErrors) {
+                driver.moveAtVelocity(0);
+                m_rCDriver.moveAtVelocity(0);
+                xSemaphoreGive(m_mutex);
+                result.communicationError = true;
+                result.elapsedMs = elapsed;
+                result.baseline = detector.baseline();
+                LOG("Homing aborted after %u invalid TMC2209 replies\r\n",
+                    consecutiveUartErrors);
+                return result;
+            }
+            xSemaphoreGive(m_mutex);
+            vTaskDelay(pdMS_TO_TICKS(kSampleIntervalMs));
+            continue;
+        }
+        consecutiveUartErrors = 0;
+        const uint16_t sample = static_cast<uint16_t>(registerValue & 0x03FF);
+
+        if (detector.update(sample, elapsed)) {
+            driver.moveAtVelocity(0);
+            m_rCDriver.moveAtVelocity(0);
+            xSemaphoreGive(m_mutex);
+            result.success = true;
+            result.elapsedMs = elapsed;
+            result.baseline = detector.baseline();
+            result.trigger = sample;
+            LOG("Sustained StallGuard event: elapsed=%lu ms baseline=%u trigger=%u\r\n",
+                static_cast<unsigned long>(elapsed), result.baseline, result.trigger);
+            return result;
+        }
+        xSemaphoreGive(m_mutex);
+
+        vTaskDelay(pdMS_TO_TICKS(kSampleIntervalMs));
+    }
+
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    if (m_state.load() != HOMING) {
+        xSemaphoreGive(m_mutex);
+        return result;
+    }
     driver.moveAtVelocity(0);
+    m_rCDriver.moveAtVelocity(0);
+    xSemaphoreGive(m_mutex);
+    result.elapsedMs = millis() - startedAt;
+    result.baseline = detector.baseline();
+    LOG("StallGuard approach timed out after %lu ms (baseline=%u)\r\n",
+        static_cast<unsigned long>(result.elapsedMs), result.baseline);
+    return result;
+}
 
-    // Restore direction
+bool PolarControl::homeDriver(TMC2209 &driver) {
+    // VACTUAL uses native 1/256-microstep units scaled by fCLK/2^24. With the
+    // nominal 12 MHz clock and 50 fullsteps/mm these are approximately 4.0 and
+    // 1.5 mm/s (60 and 22.5 motor RPM), rather than the sub-RPM legacy values.
+    constexpr int32_t kCoarseVelocity = 71600;
+    constexpr int32_t kPrecisionVelocity = 26850;
+    constexpr uint32_t kBackoffMs = 1000;
+    LOG("Preparing two-pass sensorless homing\r\n");
+
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    uint32_t rhoIo = 0;
+    uint32_t companionIo = 0;
+    const bool driverReady = m_state.load() == HOMING &&
+        driver.isSetupAndCommunicating() && m_rCDriver.isSetupAndCommunicating() &&
+        readTmcRegisterChecked(R_ADDR, 0x06, rhoIo) &&
+        readTmcRegisterChecked(RC_ADDR, 0x06, companionIo) &&
+        ((rhoIo >> 24) & 0xFF) == 0x21 &&
+        ((companionIo >> 24) & 0xFF) == 0x21;
+    xSemaphoreGive(m_mutex);
+    if (!driverReady) {
+        if (m_state.load() != HOMING) return false;
+        m_homingFailure.store(1);
+        ErrorLog::instance().log("ERROR", "HOME", "DRIVER_OFFLINE",
+                                 "Rho driver is not communicating");
+        return false;
+    }
+
+    const DriverSettings normalSettings = m_rDriverSettings;
+    DriverSettings homingSettings = normalSettings;
+    homingSettings.holdCurrent = homingSettings.runCurrent;
+    homingSettings.stealthChopEnabled = true;
+    homingSettings.stealthChopThreshold = 0;
+    homingSettings.coolStepEnabled = false;
+    auto restoreNormalSettings = [&]() {
+        xSemaphoreTake(m_mutex, portMAX_DELAY);
+        driver.moveAtVelocity(0);
+        m_rCDriver.moveAtVelocity(0);
+        driver.disableInverseMotorDirection();
+        m_rCDriver.disableInverseMotorDirection();
+        applyDriverSettings(driver, normalSettings, R_ADDR, "rho");
+        applyDriverSettings(m_rCDriver, normalSettings, RC_ADDR,
+                            "rho-companion");
+        xSemaphoreGive(m_mutex);
+    };
+
+    // Force reproducible StallGuard conditions. AT#1 requires at least 130 ms
+    // stationary at the actual run current before the constant-speed AT#2 move.
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    if (!applyDriverSettings(driver, homingSettings, R_ADDR, "rho") ||
+        !applyDriverSettings(m_rCDriver, homingSettings, RC_ADDR,
+                             "rho-companion")) {
+        xSemaphoreGive(m_mutex);
+        m_homingFailure.store(7);
+        ErrorLog::instance().log("ERROR", "HOME", "UART_CONFIG_VERIFY_FAILED",
+                                 "Homing driver configuration did not read back correctly");
+        restoreNormalSettings();
+        return false;
+    }
+    xSemaphoreGive(m_mutex);
+    vTaskDelay(pdMS_TO_TICKS(150));
+
+    // Establish clearance and provide a constant-speed StealthChop AT#2 pass.
+    // Otherwise a boot at the stop would drive into it during detector setup.
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    if (m_state.load() != HOMING) {
+        xSemaphoreGive(m_mutex);
+        restoreNormalSettings();
+        return false;
+    }
+    driver.enableInverseMotorDirection();
+    m_rCDriver.enableInverseMotorDirection();
+    xSemaphoreGive(m_mutex);
+    if (!rampDriverVelocity(driver, kCoarseVelocity, 500)) {
+        restoreNormalSettings();
+        return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(kBackoffMs));
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    if (m_state.load() != HOMING) {
+        xSemaphoreGive(m_mutex);
+        restoreNormalSettings();
+        return false;
+    }
+    driver.moveAtVelocity(0);
+    m_rCDriver.moveAtVelocity(0);
+    xSemaphoreGive(m_mutex);
+    vTaskDelay(pdMS_TO_TICKS(150));
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    if (m_state.load() != HOMING) {
+        xSemaphoreGive(m_mutex);
+        restoreNormalSettings();
+        return false;
+    }
     driver.disableInverseMotorDirection();
-    homeDriver(driver, 250);
+    m_rCDriver.disableInverseMotorDirection();
+    xSemaphoreGive(m_mutex);
+
+    const float triggerRatio = m_homingSettings.triggerPercent / 100.0f;
+    const uint8_t fastSamples = std::max<uint8_t>(
+        6, static_cast<uint8_t>((m_homingSettings.consecutiveSamples * 2) / 3));
+    HomingAttempt fast = homeDriver(driver, kCoarseVelocity, 250, 120000,
+                                    fastSamples, triggerRatio);
+    m_homingFastApproachMs.store(fast.elapsedMs);
+    if (!fast.success) {
+        m_homingFailure.store(fast.communicationError ? 7 : 2);
+        ErrorLog::instance().log("ERROR", "HOME",
+                                 fast.communicationError ? "UART_INVALID" : "FAST_TIMEOUT",
+                                 fast.communicationError
+                                     ? "Invalid TMC2209 replies during coarse homing"
+                                     : "No sustained stall during coarse homing approach");
+        restoreNormalSettings();
+        return false;
+    }
+
+    // Back away far enough to leave both the hard stop and its high-load zone.
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    if (m_state.load() != HOMING) {
+        xSemaphoreGive(m_mutex);
+        restoreNormalSettings();
+        return false;
+    }
+    driver.enableInverseMotorDirection();
+    m_rCDriver.enableInverseMotorDirection();
+    xSemaphoreGive(m_mutex);
+    if (!rampDriverVelocity(driver, kCoarseVelocity, 500)) {
+        restoreNormalSettings();
+        return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(kBackoffMs));
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    if (m_state.load() != HOMING) {
+        xSemaphoreGive(m_mutex);
+        restoreNormalSettings();
+        return false;
+    }
+    driver.moveAtVelocity(0);
+    m_rCDriver.moveAtVelocity(0);
+    xSemaphoreGive(m_mutex);
+    vTaskDelay(pdMS_TO_TICKS(150));
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    if (m_state.load() != HOMING) {
+        xSemaphoreGive(m_mutex);
+        restoreNormalSettings();
+        return false;
+    }
+    driver.disableInverseMotorDirection();
+    m_rCDriver.disableInverseMotorDirection();
+    xSemaphoreGive(m_mutex);
+
+    // The slow pass is the actual measurement. Requiring a sustained event and
+    // a plausible return time filters out most isolated tight spots.
+    HomingAttempt slow = homeDriver(driver, kPrecisionVelocity,
+                                    m_homingSettings.minimumTravelMs,
+                                    5000, m_homingSettings.consecutiveSamples,
+                                    triggerRatio);
+    m_homingSlowApproachMs.store(slow.elapsedMs);
+    m_homingBaseline.store(slow.baseline);
+    m_homingTrigger.store(slow.trigger);
+    if (!slow.success) {
+        m_homingFailure.store(slow.communicationError ? 7 : 3);
+        ErrorLog::instance().log("ERROR", "HOME",
+                                 slow.communicationError ? "UART_INVALID" : "SLOW_TIMEOUT",
+                                 slow.communicationError
+                                     ? "Invalid TMC2209 replies during precision homing"
+                                     : "No sustained stall during precision homing approach");
+        restoreNormalSettings();
+        return false;
+    }
+
+    restoreNormalSettings();
+
+    const uint32_t latestPlausibleMs = std::max<uint32_t>(
+        4500, m_homingSettings.minimumTravelMs +
+            static_cast<uint32_t>(m_homingSettings.consecutiveSamples) * 20U + 500U);
+    if (slow.elapsedMs < m_homingSettings.minimumTravelMs ||
+        slow.elapsedMs > latestPlausibleMs) {
+        m_homingFailure.store(4);
+        ErrorLog::instance().log("ERROR", "HOME", "INCONSISTENT_APPROACH",
+                                 "Precision approach distance did not match the backoff move");
+        return false;
+    }
+
+    return true;
 }
 
 // ============================================================================
 // Pattern Control
 // ============================================================================
 
+class SingleTargetGen : public PosGen {
+public:
+    SingleTargetGen(float theta, float rho)
+        : m_target{theta, rho} {}
+
+    PolarCord_t getNextPos() override {
+        if (m_sent) return {std::nan(""), std::nan("")};
+        m_sent = true;
+        return m_target;
+    }
+
+private:
+    PolarCord_t m_target;
+    bool m_sent = false;
+};
+
 bool PolarControl::start(std::unique_ptr<PosGen> posGen) {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
+
+#ifdef SISYPHUS_THETA_COMMISSIONING
+    if (!m_thetaCommissioningStartPermit.exchange(false)) {
+        LOG("THETA COMMISSIONING: non-theta-test motion rejected\r\n");
+        xSemaphoreGive(m_mutex);
+        return false;
+    }
+#endif
 
     if (m_state != IDLE) {
         LOG("Not IDLE. Start Failed\r\n");
@@ -287,7 +921,29 @@ bool PolarControl::start(std::unique_ptr<PosGen> posGen) {
     return true;
 }
 
+bool PolarControl::moveTo(float theta, float rho) {
+    if (!std::isfinite(theta) || !std::isfinite(rho) || rho < 0.0f || rho > R_MAX) {
+        return false;
+    }
+
+    // A polar angle has no physical meaning at the center. Keeping the current
+    // theta there avoids an unnecessary rotation while rho converges to zero.
+    const PolarCord_t current = getCurrentPosition();
+    float targetTheta = current.theta;
+    if (rho > 0.01f) {
+        const float shortestDelta = remainderf(theta - current.theta, 2.0f * PI);
+        targetTheta = current.theta + shortestDelta;
+    }
+
+    return start(std_patch::make_unique<SingleTargetGen>(targetTheta, rho));
+}
+
 bool PolarControl::startClearing(std::unique_ptr<PosGen> posGen) {
+#ifdef SISYPHUS_THETA_COMMISSIONING
+    (void)posGen;
+    LOG("THETA COMMISSIONING: clearing motion rejected\r\n");
+    return false;
+#endif
     xSemaphoreTake(m_mutex, portMAX_DELAY);
 
     if (m_state != IDLE) {
@@ -325,6 +981,12 @@ bool PolarControl::loadAndRunFile(String filePath) {
 }
 
 bool PolarControl::loadAndRunFile(String filePath, float maxRho) {
+#ifdef SISYPHUS_THETA_COMMISSIONING
+    (void)filePath;
+    (void)maxRho;
+    LOG("THETA COMMISSIONING: pattern motion rejected\r\n");
+    return false;
+#endif
     xSemaphoreTake(m_mutex, portMAX_DELAY);
 
     if (m_state != IDLE) {
@@ -379,8 +1041,19 @@ bool PolarControl::loadAndRunFile(String filePath, float maxRho) {
 bool PolarControl::pause() {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     if (m_state == RUNNING) {
-        m_planner.stop();
-        m_state = PAUSED;
+        float theta[SEGMENT_BUFFER_SIZE];
+        float rho[SEGMENT_BUFFER_SIZE];
+        const size_t pending = m_planner.copyPendingTargets(
+            theta, rho, SEGMENT_BUFFER_SIZE);
+        m_resumePoints.clear();
+        m_resumePoints.reserve(pending);
+        for (size_t i = 0; i < pending; ++i) {
+            m_resumePoints.push_back({theta[i], rho[i]});
+        }
+        m_resumePointIndex = 0;
+        m_pauseAfterStop = true;
+        m_planner.stopGracefully();
+        m_state = STOPPING;
         xSemaphoreGive(m_mutex);
         return true;
     }
@@ -391,10 +1064,9 @@ bool PolarControl::pause() {
 bool PolarControl::resume() {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     if (m_state == PAUSED) {
-        // Feed segments and restart
+        m_state = RUNNING;
         feedPlanner();
         m_planner.start();
-        m_state = RUNNING;
         xSemaphoreGive(m_mutex);
         return true;
     }
@@ -405,23 +1077,31 @@ bool PolarControl::resume() {
 bool PolarControl::stop() {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
 
-    if (m_state == PAUSED || m_state == RUNNING || m_state == CLEARING || m_state == PREPARING) {
+    if (m_state == PAUSED || m_state == RUNNING || m_state == CLEARING ||
+        m_state == PREPARING || m_state == STOPPING) {
         m_posGen.reset();
+        m_resumePoints.clear();
+        m_resumePointIndex = 0;
+        m_pauseAfterStop = false;
 
         // Send stop command to file task
         FileCommand cmd;
         cmd.type = FileCommand::CMD_STOP;
         xQueueSend(m_cmdQueue, &cmd, 0);
 
-        m_planner.stopGracefully();
+        if (m_state == PAUSED) {
+            m_planner.stop();
+        } else if (m_state != STOPPING) {
+            m_planner.stopGracefully();
+        }
 
         if (m_state == CLEARING && m_clearingSpeedActive) {
             m_clearingSpeedActive = false;
             updateSpeedSettings();
         }
 
-        m_state = IDLE;
-        LOG("Stopped\r\n");
+        m_state = m_planner.isIdle() ? IDLE : STOPPING;
+        LOG("Stop requested\r\n");
 
         xSemaphoreGive(m_mutex);
         return true;
@@ -432,15 +1112,47 @@ bool PolarControl::stop() {
 
 void PolarControl::setSpeed(uint8_t speed) {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
-    m_speed = speed;
+    m_speed.store(std::max<uint8_t>(1, std::min<uint8_t>(speed, 10)));
     if (!m_clearingSpeedActive) {
         updateSpeedSettings();
     }
     xSemaphoreGive(m_mutex);
 }
 
+MotionSettings PolarControl::getMotionSettings() const {
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    MotionSettings settings = m_motionSettings;
+    xSemaphoreGive(m_mutex);
+    return settings;
+}
+
+DriverSettings PolarControl::getThetaDriverSettings() const {
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    DriverSettings settings = m_tDriverSettings;
+    xSemaphoreGive(m_mutex);
+    return settings;
+}
+
+DriverSettings PolarControl::getRhoDriverSettings() const {
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    DriverSettings settings = m_rDriverSettings;
+    xSemaphoreGive(m_mutex);
+    return settings;
+}
+
+HomingSettings PolarControl::getHomingSettings() const {
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    HomingSettings settings = m_homingSettings;
+    xSemaphoreGive(m_mutex);
+    return settings;
+}
+
 void PolarControl::resetTheta() {
-    m_planner.resetTheta();
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    if (m_state.load() == IDLE) {
+        m_planner.resetTheta();
+    }
+    xSemaphoreGive(m_mutex);
 }
 
 PolarControl::State_t PolarControl::getState() {
@@ -448,22 +1160,53 @@ PolarControl::State_t PolarControl::getState() {
 }
 
 PolarCord_t PolarControl::getCurrentPosition() const {
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
     float theta, rho;
-    // Note: casting away const for the planner call - it's thread-safe
-    const_cast<MotionPlanner&>(m_planner).getCurrentPosition(theta, rho);
+    m_planner.getCurrentPosition(theta, rho);
+    xSemaphoreGive(m_mutex);
     return {theta, rho};
 }
 
 PolarCord_t PolarControl::getActualPosition() {
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
     float theta, rho;
     m_planner.getCurrentPosition(theta, rho);
+    xSemaphoreGive(m_mutex);
     return {theta, rho};
 }
 
 PolarVelocity_t PolarControl::getActualVelocity() {
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
     float thetaVel, rhoVel;
     m_planner.getCurrentVelocity(thetaVel, rhoVel);
+    xSemaphoreGive(m_mutex);
     return {thetaVel, rhoVel};
+}
+
+uint32_t PolarControl::getSegmentsCompleted() const {
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    uint32_t completed = m_planner.getCompletedCount();
+    xSemaphoreGive(m_mutex);
+    return completed;
+}
+
+void PolarControl::getDiagnostics(uint32_t& queueDepth, uint32_t& underruns) const {
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    m_planner.getDiagnostics(queueDepth, underruns);
+    xSemaphoreGive(m_mutex);
+}
+
+void PolarControl::getProfileData(uint32_t& maxProcessUs, uint32_t& maxIntervalUs,
+                                  uint32_t& avgGenUs) {
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    m_planner.getProfileData(maxProcessUs, maxIntervalUs, avgGenUs);
+    xSemaphoreGive(m_mutex);
+}
+
+void PolarControl::getTelemetry(PlannerTelemetry& telemetry) {
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    m_planner.getTelemetry(telemetry);
+    xSemaphoreGive(m_mutex);
 }
 
 int PolarControl::getProgressPercent() const {
@@ -485,8 +1228,29 @@ int PolarControl::getProgressPercent() const {
     return progress;
 }
 
-void PolarControl::forceStop() {
+void PolarControl::emergencyStop() {
+    // Publish cancellation before waiting for the UART/motion lock. The homing
+    // task checks this state while holding the same lock before every command.
+    m_state.store(INITIALIZED);
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    if (m_driverBusInitialized.load()) {
+        m_tDriver.moveAtVelocity(0);
+        m_rDriver.moveAtVelocity(0);
+        m_rCDriver.moveAtVelocity(0);
+        m_rDriver.disableInverseMotorDirection();
+    }
     m_planner.stop();
+    m_posGen.reset();
+    m_resumePoints.clear();
+    m_resumePointIndex = 0;
+    m_pauseAfterStop = false;
+    if (m_cmdQueue) {
+        FileCommand cmd{};
+        cmd.type = FileCommand::CMD_STOP;
+        xQueueSend(m_cmdQueue, &cmd, 0);
+    }
+    xSemaphoreGive(m_mutex);
+    LOG("Emergency stop; homing is required before motion resumes\r\n");
 }
 
 uint32_t PolarControl::getFileTaskHighWater() const {
@@ -501,6 +1265,35 @@ uint32_t PolarControl::getFileTaskHighWater() const {
 // ============================================================================
 
 void PolarControl::feedPlanner() {
+    bool replayAdded = false;
+    while (m_resumePointIndex < m_resumePoints.size() && m_planner.hasSpace()) {
+        const PolarCord_t& point = m_resumePoints[m_resumePointIndex];
+        if (!m_planner.addSegment(point.theta, point.rho)) {
+            ErrorLog::instance().log("ERROR", "MOTION", "RESUME_POINT_REJECTED",
+                                     "A saved resume waypoint was invalid");
+            m_resumePoints.clear();
+            m_resumePointIndex = 0;
+            m_planner.setEndOfPattern(true);
+            break;
+        }
+        ++m_resumePointIndex;
+        replayAdded = true;
+    }
+    if (m_resumePointIndex >= m_resumePoints.size()) {
+        m_resumePoints.clear();
+        m_resumePointIndex = 0;
+    }
+    if (replayAdded) {
+        m_planner.setEndOfPattern(false);
+        m_planner.recalculate();
+    }
+
+    // Preserve replay ordering: do not pull newer source points until all
+    // planner targets displaced by the braking move have been restored.
+    if (!m_resumePoints.empty()) {
+        return;
+    }
+
     // Mode 1: Generator (Testing/Clear)
     if (m_posGen) {
         bool addedAny = false;
@@ -513,7 +1306,13 @@ void PolarControl::feedPlanner() {
             }
 
             m_planner.setEndOfPattern(false);
-            m_planner.addSegment(next.theta, next.rho);
+            if (!m_planner.addSegment(next.theta, next.rho)) {
+                ErrorLog::instance().log("ERROR", "MOTION", "GENERATOR_POINT_REJECTED",
+                                         "A generated waypoint was invalid or outside planner range");
+                m_posGen.reset();
+                m_planner.setEndOfPattern(true);
+                break;
+            }
             addedAny = true;
         }
         if (addedAny) {
@@ -536,15 +1335,21 @@ void PolarControl::feedPlanner() {
                 LOG("feedPlanner: First coord received, state -> RUNNING\r\n");
             }
             m_planner.setEndOfPattern(false);
-            m_planner.addSegment(next.theta, next.rho);
+            if (!m_planner.addSegment(next.theta, next.rho)) {
+                ErrorLog::instance().log("ERROR", "MOTION", "FILE_POINT_REJECTED",
+                                         "A streamed pattern waypoint was rejected by the planner");
+                FileCommand stopCmd{};
+                stopCmd.type = FileCommand::CMD_STOP;
+                xQueueSend(m_cmdQueue, &stopCmd, 0);
+                xQueueReset(m_coordQueue);
+                m_fileLoading.store(false);
+                m_planner.setEndOfPattern(true);
+                break;
+            }
             addedAny = true;
         } else {
-            // Queue empty
-            // Check if file task is still loading
-            // We use a safe peek or just assume if queue is empty and we aren't told it's done...
-            // But we don't have a reliable "done" flag from the task easily visible here without shared state.
-            // m_fileLoading is volatile bool, set by task.
-            if (!m_fileLoading) {
+            // Queue empty. The file task publishes completion atomically.
+            if (!m_fileLoading.load()) {
                 // File done and queue empty -> End of Pattern
                 LOG("feedPlanner: Queue empty and fileLoading=false -> End of Pattern\r\n");
                 m_planner.setEndOfPattern(true);
@@ -574,6 +1379,21 @@ bool PolarControl::processNextMove() {
 
     // Let planner process (handles timer internally)
     m_planner.process();
+
+    if (m_state == STOPPING) {
+        if (m_planner.isIdle()) {
+            if (m_pauseAfterStop) {
+                m_pauseAfterStop = false;
+                m_state = PAUSED;
+                LOG("Paused after controlled deceleration\r\n");
+            } else {
+                m_state = IDLE;
+                LOG("Stopped after controlled deceleration\r\n");
+            }
+        }
+        xSemaphoreGive(m_mutex);
+        return false;
+    }
 
     if (m_state == RUNNING || m_state == CLEARING || m_state == PREPARING) {
         // Feed more segments to the planner
@@ -608,8 +1428,93 @@ bool PolarControl::processNextMove() {
 // Tuning Settings
 // ============================================================================
 
-void PolarControl::setMotionSettings(const MotionSettings& settings) {
+static bool validMotionSettings(const MotionSettings& settings) {
+    const bool finite = std::isfinite(settings.rMaxVelocity) &&
+        std::isfinite(settings.rMaxAccel) && std::isfinite(settings.rMaxJerk) &&
+        std::isfinite(settings.tMaxVelocity) && std::isfinite(settings.tMaxAccel) &&
+        std::isfinite(settings.tMaxJerk);
+    return finite &&
+        settings.rMaxVelocity >= 0.1f && settings.rMaxVelocity <= 50.0f &&
+        settings.rMaxAccel >= 0.1f && settings.rMaxAccel <= 200.0f &&
+        settings.rMaxJerk >= 0.1f && settings.rMaxJerk <= 2000.0f &&
+        settings.tMaxVelocity >= 0.01f && settings.tMaxVelocity <= 5.0f &&
+        settings.tMaxAccel >= 0.01f && settings.tMaxAccel <= 20.0f &&
+        settings.tMaxJerk >= 0.01f && settings.tMaxJerk <= 200.0f;
+}
+
+// The software executor services at most one step event per 50 us. Keep a
+// substantial margin for dual-axis motion and Wi-Fi task jitter until pulse
+// generation moves to a hardware peripheral.
+static constexpr float kSafeAxisStepRate = 10000.0f;
+
+static bool motionStepRatesAreSafe(const MotionSettings& motion,
+                                   uint16_t thetaMicrosteps,
+                                   uint16_t rhoMicrosteps) {
+    const float thetaStepsPerRadian =
+        (200.0f * thetaMicrosteps / (2.0f * PI)) * (60.0f / 16.0f);
+    const float rhoStepsPerMm = 50.0f * rhoMicrosteps;
+    return motion.tMaxVelocity * thetaStepsPerRadian <= kSafeAxisStepRate &&
+           motion.rMaxVelocity * rhoStepsPerMm <= kSafeAxisStepRate;
+}
+
+static bool validMicrosteps(uint16_t microsteps) {
+    switch (microsteps) {
+        case 1: case 2: case 4: case 8: case 16:
+        case 32: case 64: case 128: case 256:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool validDriverSettings(const DriverSettings& settings,
+                                uint16_t configuredMaxCurrentMa) {
+    constexpr float kVsenseVolts = 0.325f;
+    const uint16_t driverMaxCurrentMa = static_cast<uint16_t>(1000.0f * kVsenseVolts /
+        (Config::kDriverSenseResistorOhms + 0.020f) / std::sqrt(2.0f));
+    const uint16_t maxCurrentMa = std::min(driverMaxCurrentMa, configuredMaxCurrentMa);
+    return settings.runCurrent >= 100 && settings.runCurrent <= maxCurrentMa &&
+        settings.holdCurrent <= settings.runCurrent &&
+        settings.holdDelay <= 15 && validMicrosteps(settings.microsteps) &&
+        settings.stealthChopThreshold <= 0x000FFFFFU &&
+        (!settings.coolStepEnabled || settings.coolStepLowerThreshold >= 1) &&
+        settings.coolStepLowerThreshold <= 15 &&
+        settings.coolStepUpperThreshold <= 15 &&
+        settings.coolStepCurrentIncrement <= 3 &&
+        settings.coolStepMeasurementCount <= 3 &&
+        settings.coolStepThreshold <= 0x000FFFFFU;
+}
+
+static bool validHomingSettings(const HomingSettings& settings) {
+    return settings.triggerPercent >= 40 && settings.triggerPercent <= 85 &&
+        settings.consecutiveSamples >= 5 && settings.consecutiveSamples <= 50 &&
+        settings.minimumTravelMs >= 100 && settings.minimumTravelMs <= 2500;
+}
+
+static bool tuningAllowed(PolarControl::State_t state) {
+    const bool normallyAllowed =
+        state == PolarControl::IDLE || state == PolarControl::INITIALIZED ||
+        state == PolarControl::HOMING_FAILED;
+#ifdef SISYPHUS_SKIP_MOTOR_HARDWARE
+    return normallyAllowed || state == PolarControl::UNINITIALIZED;
+#else
+    return normallyAllowed;
+#endif
+}
+
+TuningUpdateResult PolarControl::saveMotionSettings(const MotionSettings& settings) {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
+    if (!tuningAllowed(m_state.load()) || !validMotionSettings(settings) ||
+        !motionStepRatesAreSafe(settings, m_tDriverSettings.microsteps,
+                               m_rDriverSettings.microsteps)) {
+        xSemaphoreGive(m_mutex);
+        return TuningUpdateResult::REJECTED;
+    }
+    if (!writeTuningSettingsLocked(settings, m_tDriverSettings,
+                                   m_rDriverSettings, m_homingSettings)) {
+        xSemaphoreGive(m_mutex);
+        return TuningUpdateResult::SAVE_FAILED;
+    }
     m_motionSettings = settings;
 
     // Update the motion planner with new limits (doesn't reset positions)
@@ -624,12 +1529,47 @@ void PolarControl::setMotionSettings(const MotionSettings& settings) {
 
     LOG("Motion settings updated\r\n");
     xSemaphoreGive(m_mutex);
+    return TuningUpdateResult::UPDATED;
 }
 
-void PolarControl::setThetaDriverSettings(const DriverSettings& settings) {
+TuningUpdateResult PolarControl::saveThetaDriverSettings(const DriverSettings& settings) {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
+    if (!tuningAllowed(m_state.load()) ||
+        !validDriverSettings(settings, Config::kThetaMaxRunCurrentMa) ||
+        !motionStepRatesAreSafe(m_motionSettings, settings.microsteps,
+                               m_rDriverSettings.microsteps)) {
+        xSemaphoreGive(m_mutex);
+        return TuningUpdateResult::REJECTED;
+    }
+
+    const DriverSettings previousSettings = m_tDriverSettings;
+    const bool driverReady = m_driverBusInitialized.load();
+    auto restoreDriver = [&]() {
+        if (!driverReady) return true;
+        const bool restored = applyDriverSettings(
+            m_tDriver, previousSettings, T_ADDR, "theta");
+        if (!restored) {
+            m_state.store(INITIALIZED);
+            ErrorLog::instance().log("ERROR", "TUNING", "THETA_ROLLBACK_FAILED",
+                                     "Could not restore theta settings after a failed update");
+        }
+        return restored;
+    };
+
+    if (driverReady &&
+        !applyDriverSettings(m_tDriver, settings, T_ADDR, "theta")) {
+        restoreDriver();
+        xSemaphoreGive(m_mutex);
+        return TuningUpdateResult::DRIVER_VERIFY_FAILED;
+    }
+    if (!writeTuningSettingsLocked(m_motionSettings, settings,
+                                   m_rDriverSettings, m_homingSettings)) {
+        restoreDriver();
+        xSemaphoreGive(m_mutex);
+        return TuningUpdateResult::SAVE_FAILED;
+    }
+    const bool scaleChanged = settings.microsteps != m_tDriverSettings.microsteps;
     m_tDriverSettings = settings;
-    applyDriverSettings(m_tDriver, m_tDriverSettings);
 
     // Reinitialize planner if microsteps changed (keep position)
     m_planner.init(
@@ -642,18 +1582,72 @@ void PolarControl::setThetaDriverSettings(const DriverSettings& settings) {
         m_motionSettings.tMaxVelocity,
         m_motionSettings.tMaxAccel,
         m_motionSettings.tMaxJerk,
-        false
+        scaleChanged
     );
+
+    if (scaleChanged) {
+#ifdef SISYPHUS_THETA_COMMISSIONING
+        // There is deliberately no physical homing in single-axis mode. The
+        // present shaft angle becomes the fresh logical origin after a scale
+        // change so another guarded theta test can run immediately.
+        m_planner.resetPosition(0.0f, 0.0f);
+        m_state.store(IDLE);
+#else
+        m_state.store(INITIALIZED);
+#endif
+    }
 
     LOG("Theta driver settings updated\r\n");
     xSemaphoreGive(m_mutex);
+    return TuningUpdateResult::UPDATED;
 }
 
-void PolarControl::setRhoDriverSettings(const DriverSettings& settings) {
+TuningUpdateResult PolarControl::saveRhoDriverSettings(const DriverSettings& settings) {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
+    if (!tuningAllowed(m_state.load()) ||
+        !validDriverSettings(settings, Config::kRhoMaxRunCurrentMa) ||
+        !motionStepRatesAreSafe(m_motionSettings, m_tDriverSettings.microsteps,
+                               settings.microsteps)) {
+        xSemaphoreGive(m_mutex);
+        return TuningUpdateResult::REJECTED;
+    }
+
+    const DriverSettings previousSettings = m_rDriverSettings;
+    const bool driversReady = m_driverBusInitialized.load();
+    auto restoreDrivers = [&]() {
+        if (!driversReady) return true;
+        const bool primaryRestored = applyDriverSettings(
+            m_rDriver, previousSettings, R_ADDR, "rho");
+        const bool companionRestored = applyDriverSettings(
+            m_rCDriver, previousSettings, RC_ADDR, "rho-companion");
+        if (!primaryRestored || !companionRestored) {
+            m_state.store(INITIALIZED);
+            ErrorLog::instance().log("ERROR", "TUNING", "RHO_ROLLBACK_FAILED",
+                                     "Could not restore rho settings after a failed update");
+            return false;
+        }
+        return true;
+    };
+
+    if (driversReady) {
+        const bool primaryApplied = applyDriverSettings(
+            m_rDriver, settings, R_ADDR, "rho");
+        const bool companionApplied = primaryApplied && applyDriverSettings(
+            m_rCDriver, settings, RC_ADDR, "rho-companion");
+        if (!primaryApplied || !companionApplied) {
+            restoreDrivers();
+            xSemaphoreGive(m_mutex);
+            return TuningUpdateResult::DRIVER_VERIFY_FAILED;
+        }
+    }
+    if (!writeTuningSettingsLocked(m_motionSettings, m_tDriverSettings,
+                                   settings, m_homingSettings)) {
+        restoreDrivers();
+        xSemaphoreGive(m_mutex);
+        return TuningUpdateResult::SAVE_FAILED;
+    }
+    const bool scaleChanged = settings.microsteps != m_rDriverSettings.microsteps;
     m_rDriverSettings = settings;
-    applyDriverSettings(m_rDriver, m_rDriverSettings);
-    applyDriverSettings(m_rCDriver, m_rDriverSettings);
 
     // Reinitialize planner if microsteps changed (keep position)
     m_planner.init(
@@ -666,11 +1660,32 @@ void PolarControl::setRhoDriverSettings(const DriverSettings& settings) {
         m_motionSettings.tMaxVelocity,
         m_motionSettings.tMaxAccel,
         m_motionSettings.tMaxJerk,
-        false
+        scaleChanged
     );
+
+    if (scaleChanged) {
+        m_state.store(INITIALIZED);
+    }
 
     LOG("Rho driver settings updated\r\n");
     xSemaphoreGive(m_mutex);
+    return TuningUpdateResult::UPDATED;
+}
+
+TuningUpdateResult PolarControl::saveHomingSettings(const HomingSettings& settings) {
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    if (!tuningAllowed(m_state.load()) || !validHomingSettings(settings)) {
+        xSemaphoreGive(m_mutex);
+        return TuningUpdateResult::REJECTED;
+    }
+    if (!writeTuningSettingsLocked(m_motionSettings, m_tDriverSettings,
+                                   m_rDriverSettings, settings)) {
+        xSemaphoreGive(m_mutex);
+        return TuningUpdateResult::SAVE_FAILED;
+    }
+    m_homingSettings = settings;
+    xSemaphoreGive(m_mutex);
+    return TuningUpdateResult::UPDATED;
 }
 
 // ============================================================================
@@ -678,6 +1693,8 @@ void PolarControl::setRhoDriverSettings(const DriverSettings& settings) {
 // ============================================================================
 
 static const char* TUNING_FILE = "/tuning.json";
+static const char* TUNING_TEMP_FILE = "/tuning.tmp";
+static const char* TUNING_BACKUP_FILE = "/tuning.bak";
 
 // Helper to save driver settings to JSON object
 static void saveDriverSettingsToJson(JsonObject& obj, const DriverSettings& settings) {
@@ -702,27 +1719,50 @@ static void saveDriverSettingsToJson(JsonObject& obj, const DriverSettings& sett
     obj["coolStepThreshold"] = settings.coolStepThreshold;
 }
 
-bool PolarControl::saveTuningSettings() {
+bool PolarControl::writeTuningSettingsLocked(
+    const MotionSettings& motionSettings,
+    const DriverSettings& thetaSettings,
+    const DriverSettings& rhoSettings,
+    const HomingSettings& homingSettings) {
+    if (!m_tuningStorageReady.load()) {
+        ErrorLog::instance().log("ERROR", "TUNING", "STORAGE_UNAVAILABLE",
+                                 "LittleFS is unavailable; settings were not changed");
+        return false;
+    }
+
     JsonDocument doc;
+    doc["schemaVersion"] = 1;
 
     // Motion settings
     JsonObject motion = doc["motion"].to<JsonObject>();
-    motion["rMaxVelocity"] = m_motionSettings.rMaxVelocity;
-    motion["rMaxAccel"] = m_motionSettings.rMaxAccel;
-    motion["rMaxJerk"] = m_motionSettings.rMaxJerk;
-    motion["tMaxVelocity"] = m_motionSettings.tMaxVelocity;
-    motion["tMaxAccel"] = m_motionSettings.tMaxAccel;
-    motion["tMaxJerk"] = m_motionSettings.tMaxJerk;
+    motion["rMaxVelocity"] = motionSettings.rMaxVelocity;
+    motion["rMaxAccel"] = motionSettings.rMaxAccel;
+    motion["rMaxJerk"] = motionSettings.rMaxJerk;
+    motion["tMaxVelocity"] = motionSettings.tMaxVelocity;
+    motion["tMaxAccel"] = motionSettings.tMaxAccel;
+    motion["tMaxJerk"] = motionSettings.tMaxJerk;
 
     // Driver settings
     JsonObject theta = doc["thetaDriver"].to<JsonObject>();
-    saveDriverSettingsToJson(theta, m_tDriverSettings);
+    saveDriverSettingsToJson(theta, thetaSettings);
 
     JsonObject rho = doc["rhoDriver"].to<JsonObject>();
-    saveDriverSettingsToJson(rho, m_rDriverSettings);
+    saveDriverSettingsToJson(rho, rhoSettings);
 
-    // Write to file
-    File file = SD.open(TUNING_FILE, FILE_WRITE);
+    JsonObject homing = doc["homing"].to<JsonObject>();
+    homing["triggerPercent"] = homingSettings.triggerPercent;
+    homing["consecutiveSamples"] = homingSettings.consecutiveSamples;
+    homing["minimumTravelMs"] = homingSettings.minimumTravelMs;
+
+    // Stage and atomically replace the old file so loss of power cannot leave
+    // a half-written machine configuration.
+    if (LittleFS.exists(TUNING_TEMP_FILE) &&
+        !LittleFS.remove(TUNING_TEMP_FILE)) {
+        ErrorLog::instance().log("ERROR", "TUNING", "TEMP_REMOVE_FAILED",
+                                 "Could not remove the stale tuning temp file");
+        return false;
+    }
+    File file = LittleFS.open(TUNING_TEMP_FILE, FILE_WRITE);
     if (!file) {
         LOG("Failed to open tuning file for writing\r\n");
         ErrorLog::instance().log("ERROR", "TUNING", "WRITE_OPEN_FAILED",
@@ -730,14 +1770,55 @@ bool PolarControl::saveTuningSettings() {
         return false;
     }
 
-    serializeJsonPretty(doc, file);
+    const size_t bytesWritten = serializeJsonPretty(doc, file);
+    file.flush();
+    const bool writeFailed = bytesWritten == 0 || file.getWriteError() != 0;
+    if (writeFailed) {
+        file.close();
+        LittleFS.remove(TUNING_TEMP_FILE);
+        ErrorLog::instance().log("ERROR", "TUNING", "WRITE_FAILED",
+                                 "Could not completely write the tuning temp file");
+        return false;
+    }
     file.close();
+
+    if (LittleFS.exists(TUNING_BACKUP_FILE) &&
+        !LittleFS.remove(TUNING_BACKUP_FILE)) {
+        LittleFS.remove(TUNING_TEMP_FILE);
+        ErrorLog::instance().log("ERROR", "TUNING", "BACKUP_REMOVE_FAILED",
+                                 "Could not rotate the previous tuning backup");
+        return false;
+    }
+    const bool hadOriginal = LittleFS.exists(TUNING_FILE);
+    if (hadOriginal && !LittleFS.rename(TUNING_FILE, TUNING_BACKUP_FILE)) {
+        LittleFS.remove(TUNING_TEMP_FILE);
+        ErrorLog::instance().log("ERROR", "TUNING", "BACKUP_CREATE_FAILED",
+                                 "Could not preserve the previous tuning file");
+        return false;
+    }
+    if (!LittleFS.rename(TUNING_TEMP_FILE, TUNING_FILE)) {
+        if (hadOriginal) LittleFS.rename(TUNING_BACKUP_FILE, TUNING_FILE);
+        LittleFS.remove(TUNING_TEMP_FILE);
+        ErrorLog::instance().log("ERROR", "TUNING", "COMMIT_FAILED",
+                                 "Could not commit the staged tuning file");
+        return false;
+    }
+    if (hadOriginal) LittleFS.remove(TUNING_BACKUP_FILE);
     LOG("Tuning settings saved to %s\r\n", TUNING_FILE);
     return true;
 }
 
+bool PolarControl::saveTuningSettings() {
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    const bool saved = writeTuningSettingsLocked(
+        m_motionSettings, m_tDriverSettings, m_rDriverSettings,
+        m_homingSettings);
+    xSemaphoreGive(m_mutex);
+    return saved;
+}
+
 // Helper to load driver settings from JSON object
-static void loadDriverSettingsFromJson(JsonObject& obj, DriverSettings& settings) {
+static void loadDriverSettingsFromJson(JsonObjectConst obj, DriverSettings& settings) {
     // Current settings (mA)
     settings.runCurrent = obj["runCurrent"] | settings.runCurrent;
     settings.holdCurrent = obj["holdCurrent"] | settings.holdCurrent;
@@ -759,17 +1840,19 @@ static void loadDriverSettingsFromJson(JsonObject& obj, DriverSettings& settings
     settings.coolStepThreshold = obj["coolStepThreshold"] | settings.coolStepThreshold;
 }
 
-bool PolarControl::loadTuningSettings() {
-    if (!SD.exists(TUNING_FILE)) {
-        LOG("No tuning file found, using defaults\r\n");
-        return false;
-    }
-
-    File file = SD.open(TUNING_FILE, FILE_READ);
+static bool loadTuningSettingsFile(
+    const char* sourceFile,
+    const MotionSettings& currentMotion,
+    const DriverSettings& currentTheta,
+    const DriverSettings& currentRho,
+    const HomingSettings& currentHoming,
+    MotionSettings& loadedMotion,
+    DriverSettings& loadedTheta,
+    DriverSettings& loadedRho,
+    HomingSettings& loadedHoming) {
+    File file = LittleFS.open(sourceFile, FILE_READ);
     if (!file) {
-        LOG("Failed to open tuning file for reading\r\n");
-        ErrorLog::instance().log("ERROR", "TUNING", "READ_OPEN_FAILED",
-                                 "Failed to open tuning file for reading");
+        LOG("Failed to open tuning file %s for reading\r\n", sourceFile);
         return false;
     }
 
@@ -778,35 +1861,110 @@ bool PolarControl::loadTuningSettings() {
     file.close();
 
     if (error) {
-        LOG("Failed to parse tuning file: %s\r\n", error.c_str());
-        ErrorLog::instance().log("ERROR", "TUNING", "PARSE_FAILED",
-                                 "Failed to parse tuning file", error.c_str());
+        LOG("Failed to parse tuning file %s: %s\r\n",
+            sourceFile, error.c_str());
         return false;
     }
 
-    // Motion settings
-    if (doc["motion"].is<JsonObject>()) {
-        JsonObject motion = doc["motion"];
-        m_motionSettings.rMaxVelocity = motion["rMaxVelocity"] | m_motionSettings.rMaxVelocity;
-        m_motionSettings.rMaxAccel = motion["rMaxAccel"] | m_motionSettings.rMaxAccel;
-        m_motionSettings.rMaxJerk = motion["rMaxJerk"] | m_motionSettings.rMaxJerk;
-        m_motionSettings.tMaxVelocity = motion["tMaxVelocity"] | m_motionSettings.tMaxVelocity;
-        m_motionSettings.tMaxAccel = motion["tMaxAccel"] | m_motionSettings.tMaxAccel;
-        m_motionSettings.tMaxJerk = motion["tMaxJerk"] | m_motionSettings.tMaxJerk;
+    if (!doc.is<JsonObject>()) {
+        LOG("Tuning file %s does not contain a JSON object\r\n", sourceFile);
+        return false;
+    }
+    const uint32_t schemaVersion = doc["schemaVersion"] | 0U;
+    if (schemaVersion > 1U) {
+        LOG("Tuning file %s uses unsupported schema %lu\r\n",
+            sourceFile, static_cast<unsigned long>(schemaVersion));
+        return false;
+    }
+
+    loadedMotion = currentMotion;
+    loadedTheta = currentTheta;
+    loadedRho = currentRho;
+    loadedHoming = currentHoming;
+
+    // Load into temporary values so a corrupt file cannot partially change
+    // the machine configuration.
+    if (doc["motion"].is<JsonObjectConst>()) {
+        JsonObjectConst motion = doc["motion"];
+        loadedMotion.rMaxVelocity = motion["rMaxVelocity"] | loadedMotion.rMaxVelocity;
+        loadedMotion.rMaxAccel = motion["rMaxAccel"] | loadedMotion.rMaxAccel;
+        loadedMotion.rMaxJerk = motion["rMaxJerk"] | loadedMotion.rMaxJerk;
+        loadedMotion.tMaxVelocity = motion["tMaxVelocity"] | loadedMotion.tMaxVelocity;
+        loadedMotion.tMaxAccel = motion["tMaxAccel"] | loadedMotion.tMaxAccel;
+        loadedMotion.tMaxJerk = motion["tMaxJerk"] | loadedMotion.tMaxJerk;
     }
 
     // Driver settings
-    if (doc["thetaDriver"].is<JsonObject>()) {
-        JsonObject theta = doc["thetaDriver"];
-        loadDriverSettingsFromJson(theta, m_tDriverSettings);
+    if (doc["thetaDriver"].is<JsonObjectConst>()) {
+        JsonObjectConst theta = doc["thetaDriver"];
+        loadDriverSettingsFromJson(theta, loadedTheta);
     }
 
-    if (doc["rhoDriver"].is<JsonObject>()) {
-        JsonObject rho = doc["rhoDriver"];
-        loadDriverSettingsFromJson(rho, m_rDriverSettings);
+    if (doc["rhoDriver"].is<JsonObjectConst>()) {
+        JsonObjectConst rho = doc["rhoDriver"];
+        loadDriverSettingsFromJson(rho, loadedRho);
     }
 
-    LOG("Tuning settings loaded from %s\r\n", TUNING_FILE);
+    if (doc["homing"].is<JsonObjectConst>()) {
+        JsonObjectConst homing = doc["homing"];
+        loadedHoming.triggerPercent = homing["triggerPercent"] | loadedHoming.triggerPercent;
+        loadedHoming.consecutiveSamples = homing["consecutiveSamples"] | loadedHoming.consecutiveSamples;
+        loadedHoming.minimumTravelMs = homing["minimumTravelMs"] | loadedHoming.minimumTravelMs;
+    }
+
+    if (!validMotionSettings(loadedMotion) ||
+        !validDriverSettings(loadedTheta, Config::kThetaMaxRunCurrentMa) ||
+        !validDriverSettings(loadedRho, Config::kRhoMaxRunCurrentMa) ||
+        !validHomingSettings(loadedHoming) ||
+        !motionStepRatesAreSafe(loadedMotion, loadedTheta.microsteps,
+                               loadedRho.microsteps)) {
+        LOG("Tuning file %s contains unsafe or invalid values\r\n", sourceFile);
+        return false;
+    }
+
+    return true;
+}
+
+bool PolarControl::loadTuningSettings() {
+    if (!m_tuningStorageReady.load()) return false;
+
+    MotionSettings loadedMotion;
+    DriverSettings loadedTheta;
+    DriverSettings loadedRho;
+    HomingSettings loadedHoming;
+    const char* sourceFile = nullptr;
+    const char* candidates[] = {TUNING_FILE, TUNING_BACKUP_FILE};
+    for (const char* candidate : candidates) {
+        if (!LittleFS.exists(candidate)) continue;
+        if (loadTuningSettingsFile(candidate, m_motionSettings,
+                                   m_tDriverSettings, m_rDriverSettings,
+                                   m_homingSettings, loadedMotion, loadedTheta,
+                                   loadedRho, loadedHoming)) {
+            sourceFile = candidate;
+            break;
+        }
+    }
+
+    if (sourceFile == nullptr) {
+        if (LittleFS.exists(TUNING_FILE) || LittleFS.exists(TUNING_BACKUP_FILE)) {
+            ErrorLog::instance().log("ERROR", "TUNING", "INVALID_FILE",
+                                     "No valid tuning file was found; using defaults");
+        } else {
+            LOG("No tuning file found, using defaults\r\n");
+        }
+        return false;
+    }
+
+    m_motionSettings = loadedMotion;
+    m_tDriverSettings = loadedTheta;
+    m_rDriverSettings = loadedRho;
+    m_homingSettings = loadedHoming;
+
+    LOG("Tuning settings loaded from %s\r\n", sourceFile);
+    if (strcmp(sourceFile, TUNING_BACKUP_FILE) == 0) {
+        ErrorLog::instance().log("WARN", "TUNING", "BACKUP_RECOVERED",
+                                 "Primary tuning file was invalid; recovered the backup");
+    }
     return true;
 }
 
@@ -819,11 +1977,11 @@ public:
     TestThetaContinuousGen(float fixedRho) : m_rho(fixedRho), m_phase(0) {}
 
     PolarCord_t getNextPos() override {
-        // Phase 0: Rotate 5 full turns forward in one go
-        // Phase 1: Rotate 5 full turns back in one go
+        // Phase 0: Rotate one full turn forward in one go
+        // Phase 1: Rotate one full turn back in one go
 
         const float FULL_ROTATION = 2.0 * PI;
-        const int ROTATIONS = 5;
+        const int ROTATIONS = 1;
 
         if (m_phase == 0) {
             m_phase = 1;
@@ -1009,42 +2167,52 @@ private:
     int m_step;
 };
 
-void PolarControl::testThetaContinuous() {
-    if (m_state != IDLE) return;
+bool PolarControl::testThetaContinuous() {
+    if (m_state != IDLE) return false;
     LOG("Starting theta continuous test...\r\n");
 
     float currentTheta, currentRho;
     m_planner.getCurrentPosition(currentTheta, currentRho);
-    float testRho = (currentRho > 50.0f && currentRho < R_MAX - 50.0f) ? currentRho : R_MAX / 2.0f;
-
     resetTheta();
-    start(std_patch::make_unique<TestThetaContinuousGen>(testRho));
+#ifdef SISYPHUS_THETA_COMMISSIONING
+    m_thetaCommissioningStartPermit.store(true);
+#endif
+    return start(std_patch::make_unique<TestThetaContinuousGen>(currentRho));
 }
 
-void PolarControl::testThetaStress() {
-    if (m_state != IDLE) return;
+bool PolarControl::testThetaStress() {
+    if (m_state != IDLE) return false;
     LOG("Starting theta stress test...\r\n");
 
     float currentTheta, currentRho;
     m_planner.getCurrentPosition(currentTheta, currentRho);
-    float testRho = (currentRho > 50.0f && currentRho < R_MAX - 50.0f) ? currentRho : R_MAX / 2.0f;
-
     resetTheta();
-    start(std_patch::make_unique<TestThetaStressGen>(testRho));
+#ifdef SISYPHUS_THETA_COMMISSIONING
+    m_thetaCommissioningStartPermit.store(true);
+#endif
+    return start(std_patch::make_unique<TestThetaStressGen>(currentRho));
 }
 
-void PolarControl::testRhoContinuous() {
-    if (m_state != IDLE) return;
+bool PolarControl::testRhoContinuous() {
+#ifdef SISYPHUS_THETA_COMMISSIONING
+    LOG("THETA COMMISSIONING: rho test rejected\r\n");
+    return false;
+#endif
+    if (m_state != IDLE) return false;
     LOG("Starting rho continuous test...\r\n");
     resetTheta();
-    start(std_patch::make_unique<TestRhoContinuousGen>(R_MAX));
+    return start(std_patch::make_unique<TestRhoContinuousGen>(R_MAX));
 }
 
-void PolarControl::testRhoStress() {
-    if (m_state != IDLE) return;
+bool PolarControl::testRhoStress() {
+#ifdef SISYPHUS_THETA_COMMISSIONING
+    LOG("THETA COMMISSIONING: rho test rejected\r\n");
+    return false;
+#endif
+    if (m_state != IDLE) return false;
     LOG("Starting rho stress test...\r\n");
     resetTheta();
-    start(std_patch::make_unique<TestRhoStressGen>(R_MAX));
+    return start(std_patch::make_unique<TestRhoStressGen>(R_MAX));
 }
 
 // ============================================================================
@@ -1052,12 +2220,18 @@ void PolarControl::testRhoStress() {
 // ============================================================================
 
 // Helper to dump driver info to JSON
-static void fillDriverJson(TMC2209& driver, const char* name, JsonDocument& doc) {
+static void fillDriverJson(TMC2209& driver, uint8_t driverAddress,
+                           const char* name, JsonDocument& doc) {
+    uint32_t ioInput = 0;
+    const bool uartResponseValid =
+        readTmcRegisterChecked(driverAddress, 0x06, ioInput) &&
+        ((ioInput >> 24) & 0xFF) == 0x21;
     doc["name"] = name;
-    doc["communicating"] = driver.isCommunicating();
-    doc["setupOk"] = driver.isSetupAndCommunicating();
+    doc["uartResponseValid"] = uartResponseValid;
+    doc["communicating"] = uartResponseValid && driver.isCommunicating();
+    doc["setupOk"] = uartResponseValid && driver.isSetupAndCommunicating();
 
-    if (driver.isCommunicating()) {
+    if (uartResponseValid) {
         // Get settings from driver
         TMC2209::Settings settings = driver.getSettings();
         JsonObject settingsObj = doc["settings"].to<JsonObject>();
@@ -1075,6 +2249,14 @@ static void fillDriverJson(TMC2209& driver, const char* name, JsonDocument& doc)
         settingsObj["coolStepEnabled"] = settings.cool_step_enabled;
         settingsObj["analogCurrentScaling"] = settings.analog_current_scaling_enabled;
         settingsObj["internalSenseResistors"] = settings.internal_sense_resistors_enabled;
+        uint32_t chopconf = 0;
+        const bool chopconfValid =
+            readTmcRegisterChecked(driverAddress, 0x6C, chopconf);
+        settingsObj["chopconfReadValid"] = chopconfValid;
+        if (chopconfValid) {
+            settingsObj["interpolationTo256"] = (chopconf & (1UL << 28)) != 0;
+            settingsObj["chopconfRaw"] = chopconf;
+        }
 
         // Get status from driver
         TMC2209::Status status = driver.getStatus();
@@ -1104,7 +2286,13 @@ static void fillDriverJson(TMC2209& driver, const char* name, JsonDocument& doc)
 
         // Get dynamic values
         JsonObject dynamicObj = doc["dynamic"].to<JsonObject>();
-        dynamicObj["stallGuardResult"] = driver.getStallGuardResult();
+        uint32_t stallGuard = 0;
+        const bool stallGuardValid =
+            readTmcRegisterChecked(driverAddress, 0x41, stallGuard);
+        dynamicObj["stallGuardValid"] = stallGuardValid;
+        if (stallGuardValid) {
+            dynamicObj["stallGuardResult"] = stallGuard & 0x03FF;
+        }
         dynamicObj["pwmScaleSum"] = driver.getPwmScaleSum();
         dynamicObj["pwmScaleAuto"] = driver.getPwmScaleAuto();
         dynamicObj["pwmOffsetAuto"] = driver.getPwmOffsetAuto();
@@ -1114,15 +2302,51 @@ static void fillDriverJson(TMC2209& driver, const char* name, JsonDocument& doc)
 }
 
 void PolarControl::writeThetaDriverSettings(Print& out) {
+    if (!m_driverBusInitialized.load()) {
+        out.print("{\"error\":\"Driver UART is not initialized\"}");
+        return;
+    }
+    if (m_state.load() == HOMING) {
+        out.print("{\"error\":\"Driver diagnostics unavailable during homing\"}");
+        return;
+    }
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
     JsonDocument doc;
-    fillDriverJson(m_tDriver, "theta", doc);
+    fillDriverJson(m_tDriver, T_ADDR, "theta", doc);
     serializeJson(doc, out);
+    xSemaphoreGive(m_mutex);
 }
 
 void PolarControl::writeRhoDriverSettings(Print& out) {
+    if (!m_driverBusInitialized.load()) {
+        out.print("{\"error\":\"Driver UART is not initialized\"}");
+        return;
+    }
+    if (m_state.load() == HOMING) {
+        out.print("{\"error\":\"Driver diagnostics unavailable during homing\"}");
+        return;
+    }
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
     JsonDocument doc;
-    fillDriverJson(m_rDriver, "rho", doc);
+    fillDriverJson(m_rDriver, R_ADDR, "rho", doc);
     serializeJson(doc, out);
+    xSemaphoreGive(m_mutex);
+}
+
+void PolarControl::writeRhoCompanionDriverSettings(Print& out) {
+    if (!m_driverBusInitialized.load()) {
+        out.print("{\"error\":\"Driver UART is not initialized\"}");
+        return;
+    }
+    if (m_state.load() == HOMING) {
+        out.print("{\"error\":\"Driver diagnostics unavailable during homing\"}");
+        return;
+    }
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    JsonDocument doc;
+    fillDriverJson(m_rCDriver, RC_ADDR, "rhoCompanion", doc);
+    serializeJson(doc, out);
+    xSemaphoreGive(m_mutex);
 }
 
 // Parse a coordinate line (theta, rho format)
@@ -1159,6 +2383,16 @@ static bool parseLine(const char* line, float maxRho, PolarCord_t& out) {
 
     float rho = strtof(q, &end);
     if (end == q) {
+        return false;
+    }
+
+    while (*end == ' ' || *end == '\t') {
+        ++end;
+    }
+    if (*end != '\0' && *end != '#') {
+        return false;
+    }
+    if (!std::isfinite(theta) || !std::isfinite(rho) || rho < 0.0f || rho > 1.0f) {
         return false;
     }
 
@@ -1225,7 +2459,7 @@ void PolarControl::fileReadTask(void* arg) {
     bool overflowLogged = false;
     char currentFilename[sizeof(cmd.filename)] = {0};
     uint32_t yieldCounter = 0;
-    
+
     // State for pending line handling
     PolarCord_t pendingPos;
     bool hasPendingPos = false;

@@ -272,37 +272,64 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
         </div>
 
         <nav class="navbar">
-            <a href="/" class="nav-link">Dashboard</a>
+            <a href="/" class="nav-link">Patterns</a>
+            <a href="/manual" class="nav-link">Manual</a>
             <a href="/files" class="nav-link">Files</a>
             <a href="/tuning" class="nav-link active">Tuning</a>
         </nav>
+
+        <div class="card" style="border-color: var(--warning);">
+            <div class="card-title">Commissioning Settings</div>
+            <p class="test-description">These values are intended for one-time setup. Motion must be stopped before saving. Changing either microstep setting invalidates the logical position, so the dashboard will require homing again.</p>
+            <p class="test-description" id="tuning-storage-warning" hidden>Internal settings storage is unavailable. Values can be viewed, but they cannot be saved until LittleFS mounts successfully.</p>
+        </div>
+
+        <div class="card">
+            <div class="card-title">Sensorless Homing</div>
+            <p class="test-description">Use the dashboard result and visual confirmation to tune out false stops. Lower trigger sensitivity or require more samples when a stiff section is mistaken for home.</p>
+            <div class="grid">
+                <div class="form-group">
+                    <label>Stall Trigger (% of normal SG_RESULT)</label>
+                    <input type="number" id="tune-home-triggerPercent" min="40" max="85" step="1">
+                </div>
+                <div class="form-group">
+                    <label>Consecutive Low Samples (10 ms each)</label>
+                    <input type="number" id="tune-home-consecutiveSamples" min="5" max="50" step="1">
+                </div>
+                <div class="form-group">
+                    <label>Ignore Initial Travel (ms)</label>
+                    <input type="number" id="tune-home-minimumTravelMs" min="100" max="2500" step="50">
+                </div>
+            </div>
+            <button class="btn-primary" id="btn-save-homing">Save Homing Settings</button>
+        </div>
 
         <div class="card">
             <div class="card-title">Motion Settings</div>
             <div class="grid">
                 <div class="form-group">
                     <label>Rho Max Velocity (mm/s)</label>
-                    <input type="number" id="tune-rMaxVelocity" step="0.1">
+                    <input type="number" id="tune-rMaxVelocity" min="0.1" max="50" step="0.1">
                 </div>
                 <div class="form-group">
                     <label>Rho Max Accel (mm/s2)</label>
-                    <input type="number" id="tune-rMaxAccel" step="0.1">
+                    <input type="number" id="tune-rMaxAccel" min="0.1" max="200" step="0.1">
                 </div>
                 <div class="form-group">
                     <label>Rho Max Jerk (mm/s3)</label>
-                    <input type="number" id="tune-rMaxJerk" step="1">
+                    <input type="number" id="tune-rMaxJerk" min="0.1" max="2000" step="1">
                 </div>
                 <div class="form-group">
                     <label>Theta Max Velocity (rad/s)</label>
-                    <input type="number" id="tune-tMaxVelocity" step="0.1">
+                    <input type="number" id="tune-tMaxVelocity" min="0.01" max="5" step="0.01">
                 </div>
                 <div class="form-group">
                     <label>Theta Max Accel (rad/s2)</label>
-                    <input type="number" id="tune-tMaxAccel" step="0.1">
+                    <input type="number" id="tune-tMaxAccel" min="0.01" max="20" step="0.01">
                 </div>
                 <div class="form-group">
                     <label>Theta Max Jerk (rad/s3)</label>
-                    <input type="number" id="tune-tMaxJerk" step="1">
+                    <input type="number" id="tune-tMaxJerk" min="0.01" max="200" step="0.1">
                 </div>
             </div>
             <button class="btn-primary" id="btn-save-motion">Save Motion Settings</button>
@@ -315,18 +342,18 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
             <div class="grid">
                 <div class="form-group">
                     <label>Run Current (<span id="disp-theta-runCurrent">0</span> mA)</label>
-                    <input type="range" id="tune-theta-runCurrent" min="0" max="100" step="1" oninput="updateCurrentDisplay('theta', 'runCurrent')">
+                    <input type="range" id="tune-theta-runCurrent" min="100" max="1500" step="1" oninput="updateCurrentDisplay('theta', 'runCurrent')">
                 </div>
                 <div class="form-group">
                     <label>Hold Current (<span id="disp-theta-holdCurrent">0</span> mA)</label>
-                    <input type="range" id="tune-theta-holdCurrent" min="0" max="100" step="1" oninput="updateCurrentDisplay('theta', 'holdCurrent')">
+                    <input type="range" id="tune-theta-holdCurrent" min="0" max="1500" step="1" oninput="updateCurrentDisplay('theta', 'holdCurrent')">
                 </div>
                 <div class="form-group">
                     <label>Hold Delay (0-15)</label>
                     <input type="number" id="tune-theta-holdDelay" min="0" max="15">
                 </div>
                 <div class="form-group">
-                    <label>Microsteps (Rho)</label>
+                    <label>Microsteps (Theta)</label>
                     <select id="tune-theta-microsteps">
                         <option value="1">1 (full step)</option>
                         <option value="2">2</option>
@@ -352,7 +379,7 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
                 </div>
                 <div class="form-group">
                     <label>StealthChop Threshold</label>
-                    <input type="number" id="tune-theta-stealthChopThreshold" min="0">
+                    <input type="number" id="tune-theta-stealthChopThreshold" min="0" max="1048575">
                 </div>
             </div>
 
@@ -393,7 +420,7 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
                 </div>
                 <div class="form-group">
                     <label>CoolStep Threshold</label>
-                    <input type="number" id="tune-theta-coolStepThreshold" min="0">
+                    <input type="number" id="tune-theta-coolStepThreshold" min="0" max="1048575">
                 </div>
             </div>
 
@@ -407,11 +434,11 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
             <div class="grid">
                 <div class="form-group">
                     <label>Run Current (<span id="disp-rho-runCurrent">0</span> mA)</label>
-                    <input type="range" id="tune-rho-runCurrent" min="0" max="100" step="1" oninput="updateCurrentDisplay('rho', 'runCurrent')">
+                    <input type="range" id="tune-rho-runCurrent" min="100" max="500" step="1" oninput="updateCurrentDisplay('rho', 'runCurrent')">
                 </div>
                 <div class="form-group">
                     <label>Hold Current (<span id="disp-rho-holdCurrent">0</span> mA)</label>
-                    <input type="range" id="tune-rho-holdCurrent" min="0" max="100" step="1" oninput="updateCurrentDisplay('rho', 'holdCurrent')">
+                    <input type="range" id="tune-rho-holdCurrent" min="0" max="500" step="1" oninput="updateCurrentDisplay('rho', 'holdCurrent')">
                 </div>
                 <div class="form-group">
                     <label>Hold Delay (0-15)</label>
@@ -444,7 +471,7 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
                 </div>
                 <div class="form-group">
                     <label>StealthChop Threshold</label>
-                    <input type="number" id="tune-rho-stealthChopThreshold" min="0">
+                    <input type="number" id="tune-rho-stealthChopThreshold" min="0" max="1048575">
                 </div>
             </div>
 
@@ -485,7 +512,7 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
                 </div>
                 <div class="form-group">
                     <label>CoolStep Threshold</label>
-                    <input type="number" id="tune-rho-coolStepThreshold" min="0">
+                    <input type="number" id="tune-rho-coolStepThreshold" min="0" max="1048575">
                 </div>
             </div>
 
@@ -504,6 +531,7 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
                 <button class="btn-test-rho" id="btn-test-rho-continuous">Rho Sweep</button>
                 <button class="btn-test-rho" id="btn-test-rho-stress">Rho Stress</button>
             </div>
+            <button class="btn-secondary" id="btn-stop-motion">Stop Motion</button>
         </div>
 
         <div class="card">
@@ -514,6 +542,7 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
             <div class="dump-buttons">
                 <button class="btn-secondary" id="btn-dump-theta">Dump Theta Driver</button>
                 <button class="btn-secondary" id="btn-dump-rho">Dump Rho Driver</button>
+                <button class="btn-secondary" id="btn-dump-rho-companion">Dump Rho Companion</button>
             </div>
             <pre class="dump-output" id="dump-output">Click a dump button to view driver registers...</pre>
         </div>
@@ -523,6 +552,8 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
         const apiBase = '/api';
 
         const maxCurrents = {
+            // Project RMS phase-current ceiling. Firmware independently
+            // enforces this value, so browser changes cannot bypass it.
             theta: 1500,
             rho: 500
         };
@@ -538,16 +569,13 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
         function updateCurrentDisplay(driver, field) {
             const el = document.getElementById('tune-' + driver + '-' + field);
             const disp = document.getElementById('disp-' + driver + '-' + field);
-            if (disp && maxCurrents[driver]) {
-                const val = Math.round((el.value / 100) * maxCurrents[driver]);
-                disp.textContent = val;
-            }
+            if (disp) disp.textContent = el.value;
         }
 
         function getDriverValue(data, field) {
             const el = document.getElementById('tune-' + data + '-' + field);
             if (field === 'runCurrent' || field === 'holdCurrent') {
-                return Math.round((el.value / 100) * maxCurrents[data]);
+                return el.value;
             }
             if (el.tagName === 'SELECT') {
                 return el.value;
@@ -558,7 +586,7 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
         function setDriverValue(data, field, value) {
             const el = document.getElementById('tune-' + data + '-' + field);
             if (field === 'runCurrent' || field === 'holdCurrent') {
-                el.value = Math.round((value / maxCurrents[data]) * 100);
+                el.value = value;
                 updateCurrentDisplay(data, field);
             } else if (el.tagName === 'SELECT') {
                 el.value = String(value);
@@ -570,7 +598,21 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
         async function loadSettings() {
             try {
                 const response = await fetch(apiBase + '/tuning');
+                if (!response.ok) throw new Error('HTTP ' + response.status);
                 const data = await response.json();
+
+                maxCurrents.theta = data.limits.thetaMaxRunCurrentMa;
+                maxCurrents.rho = data.limits.rhoMaxRunCurrentMa;
+                ['theta', 'rho'].forEach(driver => {
+                    document.getElementById('tune-' + driver + '-runCurrent').max = maxCurrents[driver];
+                    document.getElementById('tune-' + driver + '-holdCurrent').max = maxCurrents[driver];
+                });
+
+                if (!data.persistenceAvailable) {
+                    document.getElementById('tuning-storage-warning').hidden = false;
+                    ['btn-save-motion', 'btn-save-theta', 'btn-save-rho', 'btn-save-homing']
+                        .forEach(id => document.getElementById(id).disabled = true);
+                }
 
                 document.getElementById('tune-rMaxVelocity').value = data.motion.rMaxVelocity;
                 document.getElementById('tune-rMaxAccel').value = data.motion.rMaxAccel;
@@ -578,6 +620,10 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
                 document.getElementById('tune-tMaxVelocity').value = data.motion.tMaxVelocity;
                 document.getElementById('tune-tMaxAccel').value = data.motion.tMaxAccel;
                 document.getElementById('tune-tMaxJerk').value = data.motion.tMaxJerk;
+
+                document.getElementById('tune-home-triggerPercent').value = data.homing.triggerPercent;
+                document.getElementById('tune-home-consecutiveSamples').value = data.homing.consecutiveSamples;
+                document.getElementById('tune-home-minimumTravelMs').value = data.homing.minimumTravelMs;
 
                 driverFields.forEach(field => {
                     setDriverValue('theta', field, data.thetaDriver[field]);
@@ -596,8 +642,9 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
             formData.append('tMaxVelocity', document.getElementById('tune-tMaxVelocity').value);
             formData.append('tMaxAccel', document.getElementById('tune-tMaxAccel').value);
             formData.append('tMaxJerk', document.getElementById('tune-tMaxJerk').value);
-            await fetch(apiBase + '/tuning/motion', { method: 'POST', body: formData });
-            alert('Motion settings saved');
+            const response = await fetch(apiBase + '/tuning/motion', { method: 'POST', body: formData });
+            const result = await response.json();
+            alert(result.success ? 'Motion settings saved' : 'Not saved: ' + result.message);
         }
 
         async function saveDriver(driver) {
@@ -605,8 +652,21 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
             driverFields.forEach(field => {
                 formData.append(field, getDriverValue(driver, field));
             });
-            await fetch(apiBase + '/tuning/' + driver, { method: 'POST', body: formData });
-            alert(driver.charAt(0).toUpperCase() + driver.slice(1) + ' driver saved');
+            const response = await fetch(apiBase + '/tuning/' + driver, { method: 'POST', body: formData });
+            const result = await response.json();
+            alert(result.success
+                ? driver.charAt(0).toUpperCase() + driver.slice(1) + ' driver saved and verified'
+                : 'Not saved: ' + result.message);
+        }
+
+        async function saveHoming() {
+            const formData = new FormData();
+            formData.append('triggerPercent', document.getElementById('tune-home-triggerPercent').value);
+            formData.append('consecutiveSamples', document.getElementById('tune-home-consecutiveSamples').value);
+            formData.append('minimumTravelMs', document.getElementById('tune-home-minimumTravelMs').value);
+            const response = await fetch(apiBase + '/tuning/homing', { method: 'POST', body: formData });
+            const result = await response.json();
+            alert(result.success ? 'Homing settings saved' : 'Not saved: ' + result.message);
         }
 
         async function testMotor(motor, type) {
@@ -615,9 +675,11 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
             btn.disabled = true;
             btn.textContent = 'Testing...';
             try {
-                await fetch(apiBase + '/tuning/test/' + motor + '/' + type, { method: 'POST' });
+                const response = await fetch(apiBase + '/tuning/test/' + motor + '/' + type, { method: 'POST' });
+                const result = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(result.message || 'Test could not be queued');
             } catch (err) {
-                console.error('Test failed:', err);
+                alert('Test failed: ' + err.message);
             }
             btn.disabled = false;
             btn.textContent = originalText;
@@ -638,12 +700,18 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
         document.getElementById('btn-save-motion').addEventListener('click', saveMotion);
         document.getElementById('btn-save-theta').addEventListener('click', () => saveDriver('theta'));
         document.getElementById('btn-save-rho').addEventListener('click', () => saveDriver('rho'));
+        document.getElementById('btn-save-homing').addEventListener('click', saveHoming);
         document.getElementById('btn-test-theta-continuous').addEventListener('click', () => testMotor('theta', 'continuous'));
         document.getElementById('btn-test-theta-stress').addEventListener('click', () => testMotor('theta', 'stress'));
         document.getElementById('btn-test-rho-continuous').addEventListener('click', () => testMotor('rho', 'continuous'));
         document.getElementById('btn-test-rho-stress').addEventListener('click', () => testMotor('rho', 'stress'));
+        document.getElementById('btn-stop-motion').addEventListener('click', async () => {
+            const response = await fetch('/api/motion/stop', { method: 'POST' });
+            if (!response.ok) alert('Motion could not be stopped');
+        });
         document.getElementById('btn-dump-theta').addEventListener('click', () => dumpDriver('theta'));
         document.getElementById('btn-dump-rho').addEventListener('click', () => dumpDriver('rho'));
+        document.getElementById('btn-dump-rho-companion').addEventListener('click', () => dumpDriver('rho-companion'));
 
         window.onload = loadSettings;
     </script>

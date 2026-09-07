@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import argparse
+import codecs
+import sys
 import time
 
 import serial
@@ -16,17 +18,28 @@ def main() -> int:
 
     ser = serial.Serial(args.port, args.baud, timeout=0.5)
     try:
+        # PySerial asserts DTR when opening by default. Release both modem-control
+        # lines immediately so simply observing logs cannot influence boot pins.
+        ser.dtr = False
+        ser.rts = False
         if args.reset:
-            ser.dtr = False
             ser.rts = True
             time.sleep(0.1)
             ser.rts = False
             ser.dtr = True
+            time.sleep(0.1)
+            # Release GPIO0 after the reset sequence. Leaving DTR asserted can
+            # force a later brownout/watchdog reset into the ROM bootloader.
+            ser.dtr = False
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         start = time.time()
         while time.time() - start < args.duration:
             data = ser.read(args.chunk)
             if data:
-                print(data.decode(errors="replace"), end="")
+                sys.stdout.write(decoder.decode(data))
+                sys.stdout.flush()
+        sys.stdout.write(decoder.decode(b"", final=True))
+        sys.stdout.flush()
     finally:
         ser.close()
     return 0

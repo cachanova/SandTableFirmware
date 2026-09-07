@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <vector>
 #include <fstream>
 #include <sstream>
@@ -39,16 +40,22 @@ public:
         while (std::getline(file, line)) {
             lineNum++;
 
-            // Skip empty lines
-            if (line.empty() || line[0] == '#') {
+            const size_t first = line.find_first_not_of(" \t\r");
+            if (first == std::string::npos || line[first] == '#' ||
+                line.compare(first, 2, "//") == 0) {
                 continue;
             }
 
+            std::replace(line.begin(), line.end(), ',', ' ');
             std::istringstream iss(line);
             float theta, rho;
-            if (!(iss >> theta >> rho)) {
+            std::string trailing;
+            if (!(iss >> theta >> rho) || !std::isfinite(theta) ||
+                !std::isfinite(rho) || rho < 0.0f || rho > 1.0f ||
+                ((iss >> trailing) && trailing[0] != '#')) {
                 std::cerr << "Parse error at line " << lineNum << ": " << line << std::endl;
-                continue;
+                m_positions.clear();
+                return false;
             }
 
             m_positions.push_back({theta, rho});

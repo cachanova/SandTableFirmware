@@ -4,6 +4,7 @@
 #include <Print.h>
 #include "PolarControl.hpp"
 #include "LEDController.hpp"
+#include "SDCard.hpp"
 
 class JsonHelpers {
 public:
@@ -16,6 +17,7 @@ public:
         uint32_t heap = ESP.getFreeHeap();
         uint32_t uptime = millis() / 1000;
         int clearingProgress = (state == "CLEARING") ? progress : -1;
+        HomingStatus homing = polarControl->getHomingStatus();
 
         out.print("{\"state\":\"");
         out.print(state);
@@ -35,14 +37,32 @@ public:
         out.print(heap);
         out.print(",\"uptime\":");
         out.print(uptime);
+        out.print(",\"storageAvailable\":");
+        out.print(isSDCardReady() ? "true" : "false");
+        out.print(",\"homing\":{\"cycle\":");
+        out.print(homing.cycle);
+        out.print(",\"fastApproachMs\":");
+        out.print(homing.fastApproachMs);
+        out.print(",\"slowApproachMs\":");
+        out.print(homing.slowApproachMs);
+        out.print(",\"baseline\":");
+        out.print(homing.baseline);
+        out.print(",\"trigger\":");
+        out.print(homing.trigger);
+        out.print(",\"failure\":");
+        out.print(homing.failure);
+        out.print("}");
         out.print("}");
     }
 
     static void writeFileListJSON(Print& out) {
-        out.print("{\"files\":[");
+        out.print("{\"storageAvailable\":");
+        out.print(isSDCardReady() ? "true" : "false");
+        out.print(",\"files\":[");
         bool first = true;
 
-        File root = SD.open("/patterns");
+        File root;
+        if (isSDCardReady()) root = SD.open("/patterns");
         if (root) {
             File file = root.openNextFile();
             while (file) {
@@ -104,6 +124,9 @@ public:
             case 5: return "STOPPING";
             case 6: return "CLEARING";
             case 7: return "PREPARING";
+            case 8: return "HOMING";
+            case 9: return "HOMING_REVIEW";
+            case 10: return "HOMING_FAILED";
             default: return "UNKNOWN";
         }
     }

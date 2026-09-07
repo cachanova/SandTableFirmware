@@ -25,6 +25,15 @@ bool SCurve::calculate(
     float jMax,
     Profile& p
 ) {
+    p = {};
+    if (!std::isfinite(distance) || !std::isfinite(vStart) ||
+        !std::isfinite(vEnd) || !std::isfinite(vMax) ||
+        !std::isfinite(aMax) || !std::isfinite(jMax) ||
+        distance < 0.0f || vStart < 0.0f || vEnd < 0.0f ||
+        vMax <= 0.0f || aMax <= 0.0f || jMax <= 0.0f) {
+        return false;
+    }
+
     // Store constraints
     p.jerk = jMax;
     p.maxAccel = aMax;
@@ -62,78 +71,33 @@ bool SCurve::calculate(
     // This is the minimum velocity change if we use full acceleration
     float vAccelMin = 2.0f * vJerk;  // Just the jerk phases, no const accel
 
-    // Calculate required velocity change for accel and decel
+    // Find the highest reachable peak velocity. Acceleration from v0 to vp is
+    // the time-reverse of deceleration from vp to v0, so the same exact
+    // distance helper applies to both sides. Binary search is both faster and
+    // substantially more precise than decrementing the peak in 1% steps.
+    const float minimumPeak = std::max(vStart, vEnd);
+    auto transitionDistance = [=](float peak) {
+        return decelerationDistance(peak, vStart, aMax, jMax) +
+               decelerationDistance(peak, vEnd, aMax, jMax);
+    };
+
+    if (transitionDistance(minimumPeak) > distance + 0.00001f) {
+        return false;
+    }
+
     float vCruise = vMax;
-
-    // Check if we can reach cruise velocity
-    float vAccelNeeded = vCruise - vStart;
-    float vDecelNeeded = vCruise - vEnd;
-
-    // If we can't reach cruise, find the peak velocity
-    // This is a simplified calculation - find max achievable velocity
-    if (vAccelNeeded + vDecelNeeded > 0.0f) {
-        // Distance needed for symmetric accel/decel with full jerk phases
-        float dAccelFull = vStart * (2.0f * tJerk) + 2.0f * jerkPhaseDistance(0.0f, 0.0f, jMax, tJerk);
-        float dDecelFull = vEnd * (2.0f * tJerk) + 2.0f * jerkPhaseDistance(0.0f, 0.0f, jMax, tJerk);
-
-        // Start with max velocity and reduce if needed
-        while (vCruise > std::max(vStart, vEnd)) {
-            // Calculate distances for acceleration and deceleration phases
-            float accelDist = 0.0f;
-            float decelDist = 0.0f;
-
-            // Acceleration phase distances
-            float deltaVAccel = vCruise - vStart;
-            if (deltaVAccel > 0.0f) {
-                if (deltaVAccel <= vAccelMin) {
-                    // Can't reach max accel, reduced jerk profile
-                    // Must calculate both jerk phases separately as they have different starting conditions
-                    float tJ = sqrtf(std::max(0.0f, deltaVAccel / jMax));
-                    float v1 = vStart + 0.5f * jMax * tJ * tJ;  // velocity after phase 1
-                    float a1 = jMax * tJ;                       // accel after phase 1
-                    accelDist = jerkPhaseDistance(vStart, 0.0f, jMax, tJ);    // phase 1
-                    accelDist += jerkPhaseDistance(v1, a1, -jMax, tJ);     // phase 3
-                } else {
-                    // Full profile with const accel phase
-                    float vConstAccel = deltaVAccel - vAccelMin;
-                    float tConstAccel = vConstAccel / aMax;
-                    accelDist = jerkPhaseDistance(vStart, 0.0f, jMax, tJerk);  // Phase 1
-                    accelDist += constAccelDistance(vStart + vJerk, aMax, tConstAccel);  // Phase 2
-                    accelDist += jerkPhaseDistance(vStart + vJerk + vConstAccel, aMax, -jMax, tJerk);  // Phase 3
-                }
-            }
-
-            // Deceleration phase distances
-            float deltaVDecel = vCruise - vEnd;
-            if (deltaVDecel > 0.0f) {
-                if (deltaVDecel <= vAccelMin) {
-                    // Can't reach max decel, reduced jerk profile
-                    // Must calculate both jerk phases separately as they have different starting conditions
-                    float tJ = sqrtf(std::max(0.0f, deltaVDecel / jMax));
-                    float v5 = vCruise - 0.5f * jMax * tJ * tJ;  // velocity after phase 5
-                    float a5 = -jMax * tJ;                       // accel after phase 5
-                    decelDist = jerkPhaseDistance(vCruise, 0.0f, -jMax, tJ);   // phase 5
-                    decelDist += jerkPhaseDistance(v5, a5, jMax, tJ);       // phase 7
-                } else {
-                    float vConstDecel = deltaVDecel - vAccelMin;
-                    float tConstDecel = vConstDecel / aMax;
-                    decelDist = jerkPhaseDistance(vCruise, 0.0f, -jMax, tJerk);  // Phase 5
-                    decelDist += constAccelDistance(vCruise - vJerk, -aMax, tConstDecel);  // Phase 6
-                    decelDist += jerkPhaseDistance(vEnd + vJerk, -aMax, jMax, tJerk);  // Phase 7
-                }
-            }
-
-            if (accelDist + decelDist <= distance) {
-                break;  // Found achievable cruise velocity
-            }
-
-            // Reduce by 1% of vMax (scales with units)
-            vCruise -= vMax * 0.01f;
-            if (vCruise <= std::max(vStart, vEnd)) {
-                vCruise = std::max(vStart, vEnd);
-                break;
+    if (transitionDistance(vMax) > distance) {
+        float low = minimumPeak;
+        float high = vMax;
+        for (int i = 0; i < 24; ++i) {
+            const float mid = (low + high) * 0.5f;
+            if (transitionDistance(mid) <= distance) {
+                low = mid;
+            } else {
+                high = mid;
             }
         }
+        vCruise = low;
     }
 
     // Now calculate actual profile with determined cruise velocity
@@ -437,6 +401,36 @@ float SCurve::maxAchievableEntryVelocity(float distance, float vEnd, float vMax,
     for (int i = 0; i < 20; i++) {  // ~6 decimal places precision
         float vMid = (vLow + vHigh) * 0.5f;
         float dist = decelerationDistance(vMid, vEnd, aMax, jMax);
+
+        if (dist <= distance) {
+            vLow = vMid;
+        } else {
+            vHigh = vMid;
+        }
+    }
+
+    return vLow;
+}
+
+float SCurve::maxAchievableExitVelocity(float distance, float vStart, float vMax, float aMax, float jMax) {
+    if (distance <= 0.0f) return vStart;
+
+    // Binary search for max vEnd that can be reached from vStart within distance
+    float vLow = vStart;
+    float vHigh = vMax;
+
+    // Check if we can reach max velocity
+    // Note: acceleration logic is symmetric to deceleration.
+    // Distance to accel from vStart to vEnd is same as decel from vEnd to vStart
+    float distAtMax = decelerationDistance(vMax, vStart, aMax, jMax);
+    if (distAtMax <= distance) {
+        return vMax;
+    }
+
+    // Binary search
+    for (int i = 0; i < 20; i++) {
+        float vMid = (vLow + vHigh) * 0.5f;
+        float dist = decelerationDistance(vMid, vStart, aMax, jMax);
 
         if (dist <= distance) {
             vLow = vMid;
