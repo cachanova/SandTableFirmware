@@ -103,6 +103,9 @@ Loaded theta commissioning, acoustic acceptance, known resonances, selected
 defaults, and the repeatable retuning procedure are documented in the
 [theta acoustic tuning playbook](docs/THETA_ACOUSTIC_TUNING.md).
 
+Paired-rho acoustic commissioning uses an outward-only temporary origin and is
+documented in the [rho acoustic tuning playbook](docs/RHO_ACOUSTIC_TUNING.md).
+
 ## Sensorless Homing
 
 The two rho motors home sequentially over their normal shared STEP/DIR signal.

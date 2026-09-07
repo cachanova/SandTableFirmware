@@ -257,10 +257,12 @@ void setup() {
     if (!motorSubsystemReady) {
         LOG("Motor subsystem failed to initialize; pattern motion is locked out.\r\n");
     } else {
-#if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING)
+#if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
         polarControl.assumeBenchTestOrigin();
 #ifdef SISYPHUS_THETA_COMMISSIONING
         LOG("WARNING: THETA-ONLY COMMISSIONING firmware is active.\r\n");
+#elif defined(SISYPHUS_RHO_COMMISSIONING)
+        LOG("WARNING: RHO-ONLY COMMISSIONING firmware is active; physical start is temporary rho zero.\r\n");
 #else
         LOG("WARNING: BENCH MOTION TEST firmware is active; physical position is not known.\r\n");
 #endif

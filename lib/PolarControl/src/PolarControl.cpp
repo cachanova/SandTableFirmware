@@ -1,4 +1,5 @@
 #include "PolarControl.hpp"
+#include "RhoAcousticProfile.hpp"
 #include "PolarUtils.hpp"
 #include "MakeUnique.hpp"
 #include "Logger.hpp"
@@ -173,6 +174,20 @@ bool PolarControl::begin() {
     m_motionSettings.tMaxJerk = 0.50f;
     LOG("THETA COMMISSIONING: forced safe boot envelope (250mA, 0.05rad/s)\r\n");
 #endif
+#ifdef SISYPHUS_RHO_COMMISSIONING
+    // Do not inherit an aggressive saved value before the paired rho motors
+    // and mechanism have been observed. A trial can apply a higher value only
+    // after the operator supplies the motor rating to the host-side tool.
+    m_rDriverSettings.runCurrent = Config::kRhoCommissioningStartupCurrentMa;
+    m_rDriverSettings.holdCurrent = Config::kRhoCommissioningStartupHoldCurrentMa;
+    m_rDriverSettings.microsteps = 2;
+    m_rDriverSettings.stealthChopEnabled = true;
+    m_rDriverSettings.coolStepEnabled = false;
+    m_motionSettings.rMaxVelocity = 1.0f;
+    m_motionSettings.rMaxAccel = 2.0f;
+    m_motionSettings.rMaxJerk = 10.0f;
+    LOG("RHO COMMISSIONING: forced safe boot envelope (150mA, 1mm/s)\r\n");
+#endif
 
 #ifndef SISYPHUS_SKIP_MOTOR_HARDWARE
     // Setup TMC2209 drivers with serial connection
@@ -274,8 +289,22 @@ bool PolarControl::setupDrivers() {
         return true;
     };
 
-    const bool thetaReady = configureConnectedDriver(
+    bool thetaReady = false;
+    bool thetaSafe = true;
+#ifdef SISYPHUS_RHO_COMMISSIONING
+    // OTA reboot does not power-cycle a TMC2209. Explicitly turn theta off and
+    // read it back so a previously running production image cannot leave the
+    // stationary axis energized during rho acoustic measurements.
+    m_tDriver.disable();
+    uint32_t thetaChopconf = 0;
+    thetaSafe = readTmcRegisterChecked(T_ADDR, 0x6C, thetaChopconf) &&
+        (thetaChopconf & 0x0FU) == 0;
+    LOG("RHO COMMISSIONING: theta driver %s; theta STEP remains low\r\n",
+        thetaSafe ? "disabled and verified" : "disable verification failed");
+#else
+    thetaReady = configureConnectedDriver(
         m_tDriver, m_tDriverSettings, T_ADDR, "theta");
+#endif
     bool rhoReady = false;
     bool rhoCompanionReady = false;
 #ifdef SISYPHUS_THETA_COMMISSIONING
@@ -297,13 +326,24 @@ bool PolarControl::setupDrivers() {
         rhoReady ? "connected" : "disconnected",
         rhoCompanionReady ? "connected" : "disconnected");
 
+#ifdef SISYPHUS_RHO_COMMISSIONING
+    if (!thetaSafe || !rhoReady || !rhoCompanionReady) {
+        m_rDriver.disable();
+        m_rCDriver.disable();
+        m_state = INITIALIZED;
+        ErrorLog::instance().log(
+            "ERROR", "MOTOR", "RHO_COMMISSIONING_PREFLIGHT",
+            "Rho commissioning requires theta disabled and both rho drivers verified");
+        return false;
+    }
+#endif
     m_state = INITIALIZED;
     return true;
 }
 
 bool PolarControl::home() {
-#ifdef SISYPHUS_THETA_COMMISSIONING
-    LOG("THETA COMMISSIONING: homing rejected\r\n");
+#if defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
+    LOG("COMMISSIONING: physical homing rejected\r\n");
     return false;
 #endif
     if (!m_rhoDriverConnected.load() ||
@@ -422,7 +462,7 @@ bool PolarControl::confirmHome(bool successful) {
     return true;
 }
 
-#if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING)
+#if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
 void PolarControl::assumeBenchTestOrigin() {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     m_planner.stop();
@@ -432,6 +472,8 @@ void PolarControl::assumeBenchTestOrigin() {
     xSemaphoreGive(m_mutex);
 #ifdef SISYPHUS_THETA_COMMISSIONING
     LOG("THETA COMMISSIONING: logical theta origin assumed; rho motion locked out\r\n");
+#elif defined(SISYPHUS_RHO_COMMISSIONING)
+    LOG("RHO COMMISSIONING: physical start assigned rho=0; only outward-return tests are allowed\r\n");
 #else
     LOG("BENCH MOTION TEST: logical origin assumed without physical homing\r\n");
 #endif
@@ -1217,9 +1259,9 @@ private:
 bool PolarControl::start(std::unique_ptr<PosGen> posGen) {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
 
-#ifdef SISYPHUS_THETA_COMMISSIONING
-    if (!m_thetaCommissioningStartPermit.exchange(false)) {
-        LOG("THETA COMMISSIONING: non-theta-test motion rejected\r\n");
+#if defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
+    if (!m_commissioningStartPermit.exchange(false)) {
+        LOG("COMMISSIONING: non-test motion rejected\r\n");
         xSemaphoreGive(m_mutex);
         return false;
     }
@@ -1331,9 +1373,9 @@ bool PolarControl::jogRelative(float thetaDelta, float rhoDelta) {
 }
 
 bool PolarControl::startClearing(std::unique_ptr<PosGen> posGen) {
-#ifdef SISYPHUS_THETA_COMMISSIONING
+#if defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
     (void)posGen;
-    LOG("THETA COMMISSIONING: clearing motion rejected\r\n");
+    LOG("COMMISSIONING: clearing motion rejected\r\n");
     return false;
 #endif
     xSemaphoreTake(m_mutex, portMAX_DELAY);
@@ -1374,10 +1416,10 @@ bool PolarControl::loadAndRunFile(String filePath) {
 }
 
 bool PolarControl::loadAndRunFile(String filePath, float maxRho) {
-#ifdef SISYPHUS_THETA_COMMISSIONING
+#if defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
     (void)filePath;
     (void)maxRho;
-    LOG("THETA COMMISSIONING: pattern motion rejected\r\n");
+    LOG("COMMISSIONING: pattern motion rejected\r\n");
     return false;
 #endif
     xSemaphoreTake(m_mutex, portMAX_DELAY);
@@ -2063,7 +2105,15 @@ TuningUpdateResult PolarControl::saveRhoDriverSettings(const DriverSettings& set
     );
 
     if (scaleChanged) {
+#ifdef SISYPHUS_RHO_COMMISSIONING
+        // Commissioning motion can only finish at its temporary origin and no
+        // other motion mode is available. Re-establish that logical origin so
+        // microstep candidates can be compared without pretending to home.
+        m_planner.resetPosition(0.0f, 0.0f);
+        m_state.store(IDLE);
+#else
         m_state.store(INITIALIZED);
+#endif
     }
 
     LOG("Rho driver settings updated\r\n");
@@ -2471,103 +2521,48 @@ private:
 
 class TestRhoContinuousGen : public PosGen {
 public:
-    TestRhoContinuousGen(float maxRho) : m_maxRho(maxRho), m_phase(0) {}
+    TestRhoContinuousGen(float theta, float startRho)
+        : m_theta(theta), m_startRho(startRho) {}
 
     PolarCord_t getNextPos() override {
-        const float CENTER = m_maxRho / 2.0f;
-        const float MIN_RHO = 20.0f;
-
-        if (m_phase == 0) {
-            // Move outward to max in one go
-            m_phase = 1;
-            return {0, m_maxRho};
+        if (m_phase >= RhoAcousticProfile::kContinuousOffsetsMm.size()) {
+            return {std::nan(""), std::nan("")};
         }
-
-        if (m_phase == 1) {
-            // Move inward to min in one go
-            m_phase = 2;
-            return {0, MIN_RHO};
-        }
-
-        if (m_phase == 2) {
-            // Move back to center in one go
-            m_phase = 3;
-            return {0, CENTER};
-        }
-        return {std::nan(""), std::nan("")};
+        return {m_theta, m_startRho +
+            RhoAcousticProfile::kContinuousOffsetsMm[m_phase++]};
     }
 private:
-    float m_maxRho;
-    int m_phase;
+    float m_theta;
+    float m_startRho;
+    uint8_t m_phase = 0;
 };
 
 class TestRhoStressGen : public PosGen {
 public:
-    TestRhoStressGen(float maxRho) : m_maxRho(maxRho), m_phase(0), m_step(0) {
-        m_currentRho = maxRho / 2;
-    }
+    TestRhoStressGen(float theta, float startRho)
+        : m_theta(theta), m_startRho(startRho) {}
 
     PolarCord_t getNextPos() override {
-        const float CENTER = m_maxRho / 2.0;
-
-        // Varying move sizes in mm
-        static const float MOVE_SIZES[] = {
-            1.0f, 2.0f, 5.0f, 10.0f, 20.0f, 30.0f, 50.0f, 75.0f, 100.0f,
-            100.0f, 75.0f, 50.0f, 30.0f, 20.0f, 10.0f, 5.0f, 2.0f, 1.0f
-        };
-        static const int NUM_MOVE_SIZES = sizeof(MOVE_SIZES) / sizeof(MOVE_SIZES[0]);
-
-        if (m_phase == 0) {
-            // Varying size moves - go out and back for each size
-            if (m_step >= NUM_MOVE_SIZES * 2) {
-                m_phase = 1;
-                m_step = 0;
-            } else {
-                int sizeIdx = m_step / 2;
-                bool goingOut = (m_step % 2 == 0);
-                float moveSize = MOVE_SIZES[sizeIdx];
-
-                if (goingOut) {
-                    m_currentRho = CENTER + moveSize;
-                } else {
-                    m_currentRho = CENTER;
-                }
-                m_step++;
-                return {0, m_currentRho};
-            }
+        // Every target is at or outward from the temporary origin. The final
+        // zero offset is mandatory so even the jerky profile finishes exactly
+        // where it began without ever commanding motion farther inward.
+        if (m_step >= RhoAcousticProfile::kStressOffsetsMm.size()) {
+            return {std::nan(""), std::nan("")};
         }
-
-        if (m_phase == 1) {
-            // Quick random-ish reversals at different amplitudes
-            static const float QUICK_SIZES[] = {10.0f, 50.0f, 5.0f, 100.0f, 20.0f, 75.0f, 2.0f, 30.0f, 1.0f, 60.0f};
-            static const int NUM_QUICK = sizeof(QUICK_SIZES) / sizeof(QUICK_SIZES[0]);
-
-            if (m_step >= NUM_QUICK * 2) {
-                return {std::nan(""), std::nan("")};  // Done
-            }
-
-            int sizeIdx = m_step / 2;
-            bool goingOut = (m_step % 2 == 0);
-            float moveSize = QUICK_SIZES[sizeIdx];
-
-            if (goingOut) {
-                m_currentRho = CENTER + moveSize;
-            } else {
-                m_currentRho = CENTER;
-            }
-            m_step++;
-            return {0, m_currentRho};
-        }
-        return {std::nan(""), std::nan("")};
+        return {m_theta, m_startRho +
+            RhoAcousticProfile::kStressOffsetsMm[m_step++]};
     }
 private:
-    float m_maxRho;
-    float m_currentRho;
-    int m_phase;
-    int m_step;
+    float m_theta;
+    float m_startRho;
+    size_t m_step = 0;
 };
 
 bool PolarControl::testThetaContinuous() {
+#ifdef SISYPHUS_RHO_COMMISSIONING
+    LOG("RHO COMMISSIONING: theta test rejected\r\n");
+    return false;
+#endif
     if (m_state != IDLE) return false;
     LOG("Starting theta continuous test...\r\n");
 
@@ -2575,12 +2570,16 @@ bool PolarControl::testThetaContinuous() {
     m_planner.getCurrentPosition(currentTheta, currentRho);
     resetTheta();
 #ifdef SISYPHUS_THETA_COMMISSIONING
-    m_thetaCommissioningStartPermit.store(true);
+    m_commissioningStartPermit.store(true);
 #endif
     return start(std_patch::make_unique<TestThetaContinuousGen>(currentRho));
 }
 
 bool PolarControl::testThetaStress() {
+#ifdef SISYPHUS_RHO_COMMISSIONING
+    LOG("RHO COMMISSIONING: theta test rejected\r\n");
+    return false;
+#endif
     if (m_state != IDLE) return false;
     LOG("Starting theta stress test...\r\n");
 
@@ -2588,7 +2587,7 @@ bool PolarControl::testThetaStress() {
     m_planner.getCurrentPosition(currentTheta, currentRho);
     resetTheta();
 #ifdef SISYPHUS_THETA_COMMISSIONING
-    m_thetaCommissioningStartPermit.store(true);
+    m_commissioningStartPermit.store(true);
 #endif
     return start(std_patch::make_unique<TestThetaStressGen>(currentRho));
 }
@@ -2598,10 +2597,21 @@ bool PolarControl::testRhoContinuous() {
     LOG("THETA COMMISSIONING: rho test rejected\r\n");
     return false;
 #endif
-    if (m_state != IDLE) return false;
+    if (m_state != IDLE || !m_rhoDriverConnected.load() ||
+        !m_rhoCompanionDriverConnected.load()) return false;
     LOG("Starting rho continuous test...\r\n");
-    resetTheta();
-    return start(std_patch::make_unique<TestRhoContinuousGen>(R_MAX));
+    const PolarCord_t startPosition = getCurrentPosition();
+    if (startPosition.rho < 0.0f ||
+        startPosition.rho + RhoAcousticProfile::kExcursionMm > R_MAX) {
+        LOG("Rho test origin lacks %.0fmm outward clearance\r\n",
+            RhoAcousticProfile::kExcursionMm);
+        return false;
+    }
+#ifdef SISYPHUS_RHO_COMMISSIONING
+    m_commissioningStartPermit.store(true);
+#endif
+    return start(std_patch::make_unique<TestRhoContinuousGen>(
+        startPosition.theta, startPosition.rho));
 }
 
 bool PolarControl::testRhoStress() {
@@ -2609,10 +2619,21 @@ bool PolarControl::testRhoStress() {
     LOG("THETA COMMISSIONING: rho test rejected\r\n");
     return false;
 #endif
-    if (m_state != IDLE) return false;
+    if (m_state != IDLE || !m_rhoDriverConnected.load() ||
+        !m_rhoCompanionDriverConnected.load()) return false;
     LOG("Starting rho stress test...\r\n");
-    resetTheta();
-    return start(std_patch::make_unique<TestRhoStressGen>(R_MAX));
+    const PolarCord_t startPosition = getCurrentPosition();
+    if (startPosition.rho < 0.0f ||
+        startPosition.rho + RhoAcousticProfile::kExcursionMm > R_MAX) {
+        LOG("Rho test origin lacks %.0fmm outward clearance\r\n",
+            RhoAcousticProfile::kExcursionMm);
+        return false;
+    }
+#ifdef SISYPHUS_RHO_COMMISSIONING
+    m_commissioningStartPermit.store(true);
+#endif
+    return start(std_patch::make_unique<TestRhoStressGen>(
+        startPosition.theta, startPosition.rho));
 }
 
 // ============================================================================

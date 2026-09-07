@@ -70,4 +70,11 @@ static constexpr uint16_t kRhoMaxRunCurrentMa = 500;
 // envelope, regardless of settings saved by a previous production run.
 static constexpr uint16_t kThetaCommissioningStartupCurrentMa = 250;
 static constexpr uint16_t kThetaCommissioningStartupHoldCurrentMa = 100;
+
+// Rho-only commissioning also ignores persisted motion/current values on boot.
+// The operator establishes the physical start point before power-up; firmware
+// treats it as a temporary logical zero and only permits outward-positive test
+// trajectories that return to that point.
+static constexpr uint16_t kRhoCommissioningStartupCurrentMa = 150;
+static constexpr uint16_t kRhoCommissioningStartupHoldCurrentMa = 100;
 }

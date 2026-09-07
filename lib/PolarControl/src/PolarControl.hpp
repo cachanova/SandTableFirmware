@@ -135,9 +135,9 @@ public:
   bool confirmHome(bool successful);
   HomingStatus getHomingStatus() const;
   DriverAvailability getDriverAvailability() const;
-#if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING)
-  // Bench-only escape hatch: establish a logical origin without moving the
-  // mechanism. This must never be present in a production build.
+#if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
+  // Test/commissioning-only escape hatch: establish a logical origin without
+  // moving the mechanism. This must never be present in a production build.
   void assumeBenchTestOrigin();
 #endif
 
@@ -270,8 +270,8 @@ private:
   std::atomic<bool> m_thetaDriverConnected{false};
   std::atomic<bool> m_rhoDriverConnected{false};
   std::atomic<bool> m_rhoCompanionDriverConnected{false};
-#ifdef SISYPHUS_THETA_COMMISSIONING
-  std::atomic<bool> m_thetaCommissioningStartPermit{false};
+#if defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
+  std::atomic<bool> m_commissioningStartPermit{false};
 #endif
   std::atomic<uint32_t> m_homingCycle{0};
   std::atomic<uint32_t> m_homingFastApproachMs{0};

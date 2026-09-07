@@ -13,6 +13,7 @@
 #include "esp32_mock.hpp"
 #include "thr_reader.hpp"
 #include "profile_validator.hpp"
+#include "RhoAcousticProfile.hpp"
 #include "StallGuardDetector.hpp"
 
 // Directly include implementations for native build to resolve linker errors
@@ -71,6 +72,36 @@ bool testStallGuardFiltering() {
 
     std::cout << "PASS" << std::endl;
     return true;
+}
+
+bool testRhoAcousticProfiles() {
+    std::cout << "\n=== Test: Outward-only Rho Acoustic Profiles ===" << std::endl;
+
+    auto validate = [](const auto& offsets, const char* name) {
+        if (offsets.empty() || offsets.back() != 0.0f) {
+            std::cout << "FAIL: " << name << " does not return to its start" << std::endl;
+            return false;
+        }
+        bool reachedExcursion = false;
+        for (float offset : offsets) {
+            if (offset < 0.0f || offset > RhoAcousticProfile::kExcursionMm) {
+                std::cout << "FAIL: " << name << " leaves the outward-only envelope" << std::endl;
+                return false;
+            }
+            reachedExcursion |= offset == RhoAcousticProfile::kExcursionMm;
+        }
+        if (!reachedExcursion) {
+            std::cout << "FAIL: " << name << " never reaches the 200mm endpoint" << std::endl;
+            return false;
+        }
+        return true;
+    };
+
+    const bool passed =
+        validate(RhoAcousticProfile::kContinuousOffsetsMm, "continuous") &&
+        validate(RhoAcousticProfile::kStressOffsetsMm, "stress");
+    if (passed) std::cout << "PASS: both profiles stay in [0,+200mm] and return to zero" << std::endl;
+    return passed;
 }
 
 bool testSynchronizedBoundaryVelocity() {
@@ -917,6 +948,7 @@ int main(int argc, char* argv[]) {
 
     // Run S-curve tests
     allPassed &= testStallGuardFiltering();
+    allPassed &= testRhoAcousticProfiles();
     allPassed &= testSynchronizedBoundaryVelocity();
     allPassed &= testMixedAxisBoundaryContinuityRegression();
     allPassed &= testCoordinatedAxisArrival();

@@ -29,6 +29,10 @@ DEFAULT_BOARD = "http://100.76.149.200"
 DEFAULT_SOURCE = "alsa_input.usb-Antlion_Audio_Antlion_USB_Microphone-00.mono-fallback"
 DEFAULT_RATE = 48000
 THETA_CURRENT_CEILING_MA = 1500
+RHO_CURRENT_CEILING_MA = 500
+RHO_TEST_EXCURSION_MM = 200.0
+RHO_POSITION_TOLERANCE_MM = 0.05
+RHO_PROFILE_DISTANCE_MM = {"continuous": 400.0, "stress": 2850.0}
 HUMAN_AUDIBLE_MIN_HZ = 20.0
 HUMAN_AUDIBLE_MAX_HZ = 20000.0
 TONE_MATCH_TOLERANCE_HZ = 12.5
@@ -39,6 +43,54 @@ DEFAULT_ACCEPTABLE_NEAR_HIGH_SPEED_CEILING_DBFS = -53.92
 # reference.  Unlike the broadband level, this remains useful when unrelated
 # room sound occurs during the motion window.  Override it for quieter tiers.
 DEFAULT_ACCEPTABLE_NEAR_TONE_CEILING_DBFS = -58.45
+
+
+@dataclass(frozen=True)
+class AxisConfig:
+    name: str
+    other_axis: str
+    driver_key: str
+    motion_velocity_key: str
+    motion_accel_key: str
+    motion_jerk_key: str
+    velocity_unit: str
+    current_ceiling_ma: int
+    tuning_path: str
+    test_path_prefix: str
+    driver_dump_paths: tuple[tuple[str, str], ...]
+
+
+AXES = {
+    "theta": AxisConfig(
+        name="theta",
+        other_axis="rho",
+        driver_key="thetaDriver",
+        motion_velocity_key="tMaxVelocity",
+        motion_accel_key="tMaxAccel",
+        motion_jerk_key="tMaxJerk",
+        velocity_unit="rad/s",
+        current_ceiling_ma=THETA_CURRENT_CEILING_MA,
+        tuning_path="/api/tuning/theta",
+        test_path_prefix="/api/tuning/test/theta",
+        driver_dump_paths=(("theta", "/api/tuning/dump/theta"),),
+    ),
+    "rho": AxisConfig(
+        name="rho",
+        other_axis="theta",
+        driver_key="rhoDriver",
+        motion_velocity_key="rMaxVelocity",
+        motion_accel_key="rMaxAccel",
+        motion_jerk_key="rMaxJerk",
+        velocity_unit="mm/s",
+        current_ceiling_ma=RHO_CURRENT_CEILING_MA,
+        tuning_path="/api/tuning/rho",
+        test_path_prefix="/api/tuning/test/rho",
+        driver_dump_paths=(
+            ("rho", "/api/tuning/dump/rho"),
+            ("rhoCompanion", "/api/tuning/dump/rho-companion"),
+        ),
+    ),
+}
 
 
 @dataclass
@@ -310,7 +362,8 @@ def high_speed_acoustic_level(
     path: Path,
     recorder_launch_offset_s: float,
     telemetry: list[dict[str, Any]],
-    acceptable_ceiling_dbfs: float = DEFAULT_ACCEPTABLE_NEAR_HIGH_SPEED_CEILING_DBFS,
+    axis: AxisConfig,
+    acceptable_ceiling_dbfs: float | None = DEFAULT_ACCEPTABLE_NEAR_HIGH_SPEED_CEILING_DBFS,
 ) -> dict[str, Any]:
     """Measure near-field level only while telemetry is near peak speed."""
     audio, rate = read_wav(path)
@@ -318,7 +371,7 @@ def high_speed_acoustic_level(
     host_times = times + recorder_launch_offset_s
     telemetry_times = np.asarray([float(item["hostOffsetS"]) for item in telemetry])
     telemetry_speeds = np.asarray([
-        abs(float(item["velocity"]["theta"])) for item in telemetry
+        abs(float(item["velocity"][axis.name])) for item in telemetry
     ])
     interpolated_speed = np.interp(host_times, telemetry_times, telemetry_speeds)
     max_speed = float(np.max(interpolated_speed))
@@ -337,14 +390,20 @@ def high_speed_acoustic_level(
         "valid": True,
         "frameCount": int(np.sum(selected)),
         "selection": ">= 90% of maximum telemetry-measured speed",
-        "minimumSelectedSpeedRadS": round(float(np.min(interpolated_speed[selected])), 4),
-        "maximumMeasuredSpeedRadS": round(max_speed, 4),
+        "axis": axis.name,
+        "speedUnit": axis.velocity_unit,
+        "minimumSelectedSpeed": round(float(np.min(interpolated_speed[selected])), 4),
+        "maximumMeasuredSpeed": round(max_speed, 4),
         "medianAWeightedDbfs": round(level, 2),
         "acceptableCeilingAWeightedDbfs": acceptable_ceiling_dbfs,
-        "marginBelowAcceptableCeilingDb": round(
-            acceptable_ceiling_dbfs - level, 2
+        "marginBelowAcceptableCeilingDb": (
+            round(acceptable_ceiling_dbfs - level, 2)
+            if acceptable_ceiling_dbfs is not None else None
         ),
-        "withinAcceptableReference": level <= acceptable_ceiling_dbfs,
+        "withinAcceptableReference": (
+            level <= acceptable_ceiling_dbfs
+            if acceptable_ceiling_dbfs is not None else None
+        ),
     }
 
 
@@ -522,15 +581,67 @@ def post_form(board: Board, path: str, values: dict[str, Any]) -> None:
     board.post(path, encoded)
 
 
+def driver_is_healthy(diagnostic: dict[str, Any]) -> bool:
+    status = diagnostic.get("status", {})
+    global_status = diagnostic.get("globalStatus", {})
+    fault_fields = (
+        "overTempWarning", "overTempShutdown", "shortToGroundA",
+        "shortToGroundB", "lowSideShortA", "lowSideShortB",
+        "overTemp120c", "overTemp143c", "overTemp150c", "overTemp157c",
+    )
+    return (
+        diagnostic.get("uartResponseValid", False)
+        and diagnostic.get("setupOk", False)
+        and not any(bool(status.get(field, False)) for field in fault_fields)
+        and not bool(global_status.get("drvErr", False))
+        and not bool(global_status.get("uvCp", False))
+    )
+
+
+def preflight_rho_commissioning(board: Board) -> dict[str, Any]:
+    """Require the guarded image, temporary origin, and both healthy drivers."""
+    status = board.get("/api/status")
+    if status.get("state") != "IDLE":
+        raise RuntimeError(
+            f"Board must be IDLE for a rho trial; state is {status.get('state')}"
+        )
+    telemetry = board.get("/api/motion/telemetry")
+    if telemetry.get("commissioningAxis") != "rho":
+        raise RuntimeError(
+            "Rho trials require the rho-commissioning firmware; physical homing "
+            "must not be bypassed in a production build"
+        )
+    logical_rho = float(telemetry["position"]["rho"])
+    if abs(logical_rho) > RHO_POSITION_TOLERANCE_MM:
+        raise RuntimeError(
+            f"Rho must be at its temporary start (logical 0 mm), got {logical_rho:.3f} mm"
+        )
+    if abs(float(telemetry["velocity"]["rho"])) > 0.002:
+        raise RuntimeError("Rho must be stationary before a trial")
+    for driver_role, dump_path in AXES["rho"].driver_dump_paths:
+        diagnostic = board.get(dump_path)
+        if not driver_is_healthy(diagnostic):
+            raise RuntimeError(f"{driver_role} driver failed commissioning preflight")
+        verified_settings = diagnostic.get("settings", {})
+        if not verified_settings.get("chopconfReadValid") or not verified_settings.get(
+            "interpolationTo256"
+        ):
+            raise RuntimeError(
+                f"{driver_role} driver did not confirm interpolation-to-256"
+            )
+    return telemetry
+
+
 def apply_requested_settings(board: Board, args: argparse.Namespace) -> dict[str, Any]:
+    axis = AXES[args.axis]
     tuning = board.get("/api/tuning")
     motion = dict(tuning["motion"])
-    theta = dict(tuning["thetaDriver"])
+    driver = dict(tuning[axis.driver_key])
 
     motion_changes = {
-        "tMaxVelocity": args.velocity,
-        "tMaxAccel": args.accel,
-        "tMaxJerk": args.jerk,
+        axis.motion_velocity_key: args.velocity,
+        axis.motion_accel_key: args.accel,
+        axis.motion_jerk_key: args.jerk,
     }
     driver_changes = {
         "runCurrent": args.run_current_ma,
@@ -543,30 +654,30 @@ def apply_requested_settings(board: Board, args: argparse.Namespace) -> dict[str
             motion[key] = value
     for key, value in driver_changes.items():
         if value is not None:
-            theta[key] = value
+            driver[key] = value
     if args.mode:
-        theta["stealthChopEnabled"] = args.mode == "stealthchop"
+        driver["stealthChopEnabled"] = args.mode == "stealthchop"
     if args.coolstep:
-        theta["coolStepEnabled"] = args.coolstep == "on"
+        driver["coolStepEnabled"] = args.coolstep == "on"
 
-    requested_current = int(theta["runCurrent"])
-    if requested_current > THETA_CURRENT_CEILING_MA:
+    requested_current = int(driver["runCurrent"])
+    if requested_current > axis.current_ceiling_ma:
         raise ValueError(
-            f"Requested theta current {requested_current} mA exceeds the project ceiling "
-            f"of {THETA_CURRENT_CEILING_MA} mA"
+            f"Requested {axis.name} current {requested_current} mA exceeds the project ceiling "
+            f"of {axis.current_ceiling_ma} mA"
         )
     if requested_current > args.rated_current_ma:
         raise ValueError(
-            f"Requested theta current {requested_current} mA exceeds the supplied motor rating "
+            f"Requested {axis.name} current {requested_current} mA exceeds the supplied motor rating "
             f"of {args.rated_current_ma} mA"
         )
-    if int(theta["holdCurrent"]) > requested_current:
+    if int(driver["holdCurrent"]) > requested_current:
         raise ValueError("Hold current must not exceed run current")
 
     if any(value is not None for value in motion_changes.values()):
         post_form(board, "/api/tuning/motion", motion)
     if any(value is not None for value in driver_changes.values()) or args.mode or args.coolstep:
-        post_form(board, "/api/tuning/theta", theta)
+        post_form(board, axis.tuning_path, driver)
     return board.get("/api/tuning")
 
 
@@ -610,6 +721,7 @@ def save_timing_plot(
     analysis: dict[str, np.ndarray],
     telemetry: list[dict[str, Any]],
     metrics: TimedAcousticMetrics,
+    axis_config: AxisConfig = AXES["theta"],
 ) -> None:
     try:
         import matplotlib
@@ -638,10 +750,12 @@ def save_timing_plot(
     fig.colorbar(mesh, ax=axes[0], label="Power (dBFS/bin)")
 
     telemetry_times = [float(sample["hostOffsetS"]) for sample in telemetry]
-    velocities = [float(sample["velocity"]["theta"]) for sample in telemetry]
+    velocities = [float(sample["velocity"][axis_config.name]) for sample in telemetry]
     axes[1].plot(telemetry_times, velocities, color="#1874cd", linewidth=1.5)
     axes[1].axhline(0.0, color="black", linewidth=0.5)
-    axes[1].set_ylabel("Theta velocity\n(rad/s)")
+    axes[1].set_ylabel(
+        f"{axis_config.name.capitalize()} velocity\n({axis_config.velocity_unit})"
+    )
     axes[1].grid(alpha=0.25)
 
     for tone in metrics.timing_locked_tones[:5]:
@@ -680,8 +794,14 @@ def run_timed_repeat(
     prefix: str,
     profile: str,
 ) -> dict[str, Any]:
+    axis = AXES[args.axis]
     board.recovering_stop()
     time.sleep(args.settle)
+    start_sample = _telemetry_sample(board, time.monotonic())
+    if not start_sample or start_sample.get("state") != "IDLE":
+        raise RuntimeError(f"Board must be IDLE before a {axis.name} repeat")
+    start_position = float(start_sample["position"][axis.name])
+    other_start_position = float(start_sample["position"][axis.other_axis])
     audio_path = output_dir / f"{prefix}-{profile}-antlion-near.wav"
     plot_path = output_dir / f"{prefix}-{profile}-antlion-near-timing.png"
     timeline_path = output_dir / f"{prefix}-{profile}-timeline.json"
@@ -709,14 +829,43 @@ def run_timed_repeat(
                 sample = _telemetry_sample(board, recording_zero)
                 if sample:
                     telemetry.append(sample)
+                    if axis.name == "rho":
+                        rho_position = float(sample["position"]["rho"])
+                        if rho_position < start_position - RHO_POSITION_TOLERANCE_MM:
+                            raise RuntimeError(
+                                f"Rho commanded inward of its start: {rho_position:.3f} < "
+                                f"{start_position:.3f} mm"
+                            )
+                        if rho_position > (
+                            start_position + RHO_TEST_EXCURSION_MM + RHO_POSITION_TOLERANCE_MM
+                        ):
+                            raise RuntimeError(
+                                f"Rho exceeded its +{RHO_TEST_EXCURSION_MM:.0f} mm envelope"
+                            )
+                        if (
+                            abs(float(sample["position"]["theta"]) - other_start_position)
+                            > 0.001
+                            or abs(float(sample["velocity"]["theta"])) > 0.002
+                        ):
+                            raise RuntimeError("Theta changed during a rho-only trial")
                 next_poll = now + args.telemetry_interval
             if now >= next_driver_poll:
-                try:
-                    driver = board.get("/api/tuning/dump/theta")
-                    driver["hostOffsetS"] = round(time.monotonic() - recording_zero, 6)
-                    driver_samples.append(driver)
-                except requests.RequestException:
-                    pass
+                for driver_role, dump_path in axis.driver_dump_paths:
+                    try:
+                        driver = board.get(dump_path)
+                        driver["driverRole"] = driver_role
+                        driver["hostOffsetS"] = round(
+                            time.monotonic() - recording_zero, 6
+                        )
+                        driver_samples.append(driver)
+                        if not driver_is_healthy(driver):
+                            raise RuntimeError(
+                                f"{driver_role} driver reported a fault during motion"
+                            )
+                    except requests.RequestException as error:
+                        raise RuntimeError(
+                            f"Lost {driver_role} driver diagnostics during motion"
+                        ) from error
                 next_driver_poll = now + 0.5
             time.sleep(0.01)
 
@@ -725,7 +874,7 @@ def run_timed_repeat(
         if recorder_process.poll() is not None:
             raise RuntimeError("The Antlion recorder exited before the trial began")
         collect_for(args.pre_idle)
-        board.post(f"/api/tuning/test/theta/{profile}")
+        board.post(f"{axis.test_path_prefix}/{profile}")
         command_offset = time.monotonic() - recording_zero
         motion_deadline = time.monotonic() + args.duration
         motion_seen = False
@@ -734,7 +883,10 @@ def run_timed_repeat(
             collect_for(args.telemetry_interval)
             if telemetry:
                 last = telemetry[-1]
-                moving = abs(float(last["velocity"]["theta"])) >= args.motion_velocity_threshold
+                moving = (
+                    abs(float(last["velocity"][axis.name]))
+                    >= args.motion_velocity_threshold
+                )
                 if moving or last.get("state") in ("RUNNING", "STOPPING"):
                     motion_seen = True
                 is_idle = (
@@ -743,7 +895,7 @@ def run_timed_repeat(
                 )
                 consecutive_idle = consecutive_idle + 1 if is_idle else 0
         if not motion_seen:
-            raise RuntimeError("ESP32 telemetry did not confirm theta motion")
+            raise RuntimeError(f"ESP32 telemetry did not confirm {axis.name} motion")
         if consecutive_idle < 3:
             board.stop()
             stop_request_offset = time.monotonic() - recording_zero
@@ -754,12 +906,12 @@ def run_timed_repeat(
                     last = telemetry[-1]
                     is_idle = (
                         last.get("state") == "IDLE"
-                        and abs(float(last["velocity"]["theta"]))
+                        and abs(float(last["velocity"][axis.name]))
                         < args.motion_velocity_threshold
                     )
                     consecutive_idle = consecutive_idle + 1 if is_idle else 0
             raise RuntimeError(
-                f"Theta {profile} test did not complete within {args.duration:.1f}s; "
+                f"{axis.name.capitalize()} {profile} test did not complete within {args.duration:.1f}s; "
                 "the partial run was stopped and cannot qualify a profile"
             )
         collect_for(args.post_idle)
@@ -781,10 +933,32 @@ def run_timed_repeat(
         raise RuntimeError("Antlion microphone recording is incomplete")
     moving_samples = [
         sample for sample in telemetry
-        if abs(float(sample["velocity"]["theta"])) >= args.motion_velocity_threshold
+        if abs(float(sample["velocity"][axis.name])) >= args.motion_velocity_threshold
     ]
     if len(moving_samples) < 5:
-        raise RuntimeError("ESP32 telemetry did not confirm theta motion")
+        raise RuntimeError(f"ESP32 telemetry did not confirm {axis.name} motion")
+
+    final_position = float(telemetry[-1]["position"][axis.name])
+    return_error = abs(final_position - start_position)
+    return_tolerance = RHO_POSITION_TOLERANCE_MM if axis.name == "rho" else 0.001
+    position_unit = "mm" if axis.name == "rho" else "rad"
+    if return_error > return_tolerance:
+        raise RuntimeError(
+            f"{axis.name.capitalize()} {profile} finished {return_error:.4f} "
+            f"{position_unit} from its starting position"
+        )
+    if axis.name == "rho":
+        minimum_position = min(float(sample["position"]["rho"]) for sample in telemetry)
+        maximum_position = max(float(sample["position"]["rho"]) for sample in telemetry)
+        if minimum_position < start_position - RHO_POSITION_TOLERANCE_MM:
+            raise RuntimeError(
+                f"Rho {profile} commanded inward of its start: "
+                f"{minimum_position:.3f} < {start_position:.3f} mm"
+            )
+        if maximum_position > start_position + RHO_TEST_EXCURSION_MM + RHO_POSITION_TOLERANCE_MM:
+            raise RuntimeError(
+                f"Rho {profile} exceeded its +{RHO_TEST_EXCURSION_MM:.0f} mm envelope"
+            )
     motion_start = float(moving_samples[0]["hostOffsetS"])
     motion_end = float(moving_samples[-1]["hostOffsetS"])
     recording_motion_start = motion_start - recorder_launch_offset
@@ -795,13 +969,14 @@ def run_timed_repeat(
         minimum_persistence=args.minimum_persistence,
     )
     near_high_speed = high_speed_acoustic_level(
-        audio_path, recorder_launch_offset, telemetry, args.acceptable_ceiling_dbfs,
+        audio_path, recorder_launch_offset, telemetry, axis,
+        None if args.reference_only else args.acceptable_ceiling_dbfs,
     )
     recording_telemetry = [
         {**sample, "hostOffsetS": float(sample["hostOffsetS"]) - recorder_launch_offset}
         for sample in telemetry
     ]
-    save_timing_plot(plot_path, analysis, recording_telemetry, metrics)
+    save_timing_plot(plot_path, analysis, recording_telemetry, metrics, axis)
     timeline = {
         "clock": "host monotonic seconds from capture orchestration start",
         "recorderLaunchOffsetS": round(recorder_launch_offset, 6),
@@ -810,6 +985,10 @@ def run_timed_repeat(
             round(stop_request_offset, 6) if stop_request_offset is not None else None
         ),
         "testCompletedNaturally": True,
+        "axis": axis.name,
+        "startPosition": round(start_position, 6),
+        "finalPosition": round(final_position, 6),
+        "returnError": round(return_error, 6),
         "actualMotionStartS": round(motion_start, 6),
         "actualMotionEndS": round(motion_end, 6),
         "telemetry": telemetry,
@@ -828,6 +1007,10 @@ def run_timed_repeat(
         "gainFingerprintStable": gain_before == gain_after,
         "nearHighSpeed": near_high_speed,
         "testCompletedNaturally": True,
+        "axis": axis.name,
+        "startPosition": round(start_position, 6),
+        "finalPosition": round(final_position, 6),
+        "returnError": round(return_error, 6),
         "telemetry": telemetry,
         "driverSamples": driver_samples,
     }
@@ -867,6 +1050,19 @@ def confirmed_tones(repeats: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def cmd_trial(args: argparse.Namespace) -> int:
+    axis = AXES[args.axis]
+    if not args.reference_only:
+        if axis.name == "rho" and (
+            args.acceptable_ceiling_dbfs is None or args.tone_ceiling_dbfs is None
+        ):
+            raise ValueError(
+                "rho trials require rho-specific --acceptable-ceiling-dbfs and "
+                "--tone-ceiling-dbfs, or --reference-only"
+            )
+        if args.acceptable_ceiling_dbfs is None:
+            args.acceptable_ceiling_dbfs = DEFAULT_ACCEPTABLE_NEAR_HIGH_SPEED_CEILING_DBFS
+        if args.tone_ceiling_dbfs is None:
+            args.tone_ceiling_dbfs = DEFAULT_ACCEPTABLE_NEAR_TONE_CEILING_DBFS
     if args.repeats < 1 or args.repeats > 5:
         raise ValueError("--repeats must be between 1 and 5")
     if args.duration <= 0 or args.pre_idle <= 0 or args.post_idle <= 0:
@@ -875,12 +1071,33 @@ def cmd_trial(args: argparse.Namespace) -> int:
         raise ValueError("--rated-current-ma must be positive")
     board = Board(args.board)
     board.recovering_stop()
+    if axis.name == "rho":
+        # Check the firmware boundary before changing speed or tuning values.
+        preflight_rho_commissioning(board)
     board.post("/api/speed", {"speed": 10})
     tuning = apply_requested_settings(board, args)
-    theta = tuning["thetaDriver"]
+    driver_settings = tuning[axis.driver_key]
     status = board.get("/api/status")
     if status.get("state") != "IDLE":
         raise RuntimeError(f"Board must be IDLE for a trial; state is {status.get('state')}")
+    if axis.name == "rho":
+        # Recheck after applying current/microstep settings. In commissioning,
+        # a microstep change deliberately re-establishes logical zero.
+        preflight_rho_commissioning(board)
+        requested_profiles = (
+            ("continuous", "stress") if args.profile == "both" else (args.profile,)
+        )
+        minimum_motion_s = max(
+            RHO_PROFILE_DISTANCE_MM[profile]
+            / float(tuning["motion"][axis.motion_velocity_key])
+            for profile in requested_profiles
+        )
+        minimum_timeout_s = minimum_motion_s * 1.25 + 10.0
+        if args.duration < minimum_timeout_s:
+            raise ValueError(
+                f"--duration {args.duration:.1f}s is too short for the requested rho profile; "
+                f"use at least {minimum_timeout_s:.0f}s (includes 25% ramp margin)"
+            )
 
     output_dir = Path(args.output_dir)
     stamp = utc_stamp()
@@ -931,7 +1148,9 @@ def cmd_trial(args: argparse.Namespace) -> int:
                 "acceptedAsMotorNoise": valid_detection,
                 "levelValidForComparison": level_valid,
                 "confirmedTimingLockedTones": tones,
-                "acceptableTimingLockedToneCeilingDbfs": args.tone_ceiling_dbfs,
+                "acceptableTimingLockedToneCeilingDbfs": (
+                    None if args.reference_only else args.tone_ceiling_dbfs
+                ),
                 "timingLockedToneDetectedInEveryRepeat": all(
                     bool(item["metrics"]["timing_locked_tones"])
                     for item in profile_repeats
@@ -943,8 +1162,10 @@ def cmd_trial(args: argparse.Namespace) -> int:
                     round(max(confirmed_tone_levels), 2) if confirmed_tone_levels else None
                 ),
                 "allDetectedTimingLockedTonesWithinCeiling": (
+                    None if args.reference_only else (
                     bool(repeat_tone_levels)
                     and all(level <= args.tone_ceiling_dbfs for level in repeat_tone_levels)
+                    )
                 ),
                 "motorNoiseLevelAWeightedDbfs": (
                     round(float(np.median(locked_levels)), 2)
@@ -965,14 +1186,16 @@ def cmd_trial(args: argparse.Namespace) -> int:
                     if near_high_speed_levels else None
                 ),
                 "acceptableHighSpeedCeilingAWeightedDbfs": (
-                    args.acceptable_ceiling_dbfs
+                    None if args.reference_only else args.acceptable_ceiling_dbfs
                 ),
                 "everyRepeatWithinAcceptableReference": (
+                    None if args.reference_only else (
                     bool(near_high_speed_levels)
                     and len(near_high_speed_levels) == len(profile_repeats)
                     and all(
                         level <= args.acceptable_ceiling_dbfs
                         for level in near_high_speed_levels
+                    )
                     )
                 ),
             },
@@ -987,45 +1210,81 @@ def cmd_trial(args: argparse.Namespace) -> int:
 
     all_telemetry = [sample for item in repeat_results for sample in item["telemetry"]]
     all_drivers = [sample for item in repeat_results for sample in item["driverSamples"]]
-    driver_diagnostics = board.get("/api/tuning/dump/theta")
+    sampled_driver_roles = {sample.get("driverRole") for sample in all_drivers}
+    expected_driver_roles = {role for role, _ in axis.driver_dump_paths}
+    driver_diagnostics = {
+        driver_role: board.get(dump_path)
+        for driver_role, dump_path in axis.driver_dump_paths
+    }
     errors = board.get("/api/errors")
-    theta_steps_per_radian = (200.0 * int(theta["microsteps"]) / (2.0 * math.pi)) * (60.0 / 16.0)
-    commanded_step_rate = float(tuning["motion"]["tMaxVelocity"]) * theta_steps_per_radian
+    if axis.name == "theta":
+        steps_per_unit = (
+            (200.0 * int(driver_settings["microsteps"]) / (2.0 * math.pi))
+            * (60.0 / 16.0)
+        )
+    else:
+        steps_per_unit = 50.0 * int(driver_settings["microsteps"])
+    commanded_step_rate = (
+        float(tuning["motion"][axis.motion_velocity_key]) * steps_per_unit
+    )
+    other_start = float(all_telemetry[0]["position"][axis.other_axis])
+    other_position_tolerance = 0.05 if axis.other_axis == "rho" else 0.001
+    other_velocity_tolerance = 0.002
     payload = {
-        "kind": "theta_timing_locked_trial",
+        "kind": f"{axis.name}_timing_locked_trial",
+        "axis": axis.name,
         "label": args.label,
         "recordedAt": stamp,
         "microphone": microphone_metadata(args.source),
-        "settings": {"motion": tuning["motion"], "thetaDriver": theta},
+        "settings": {"motion": tuning["motion"], axis.driver_key: driver_settings},
         "summary": {
+            "referenceOnly": args.reference_only,
             "repeatConfirmationSatisfied": args.repeats >= 2,
             "allTestsCompletedNaturally": all(
                 item["testCompletedNaturally"] for item in repeat_results
             ),
             "byProfile": profile_summaries,
-            "maxMeasuredThetaVelocity": round(max(
-                (abs(float(sample["velocity"]["theta"])) for sample in all_telemetry), default=0.0
+            "maxMeasuredVelocity": round(max(
+                (abs(float(sample["velocity"][axis.name])) for sample in all_telemetry), default=0.0
             ), 6),
-            "rhoStationary": all(
-                abs(float(sample["position"]["rho"])) < 0.001
-                and abs(float(sample["velocity"]["rho"])) < 0.001
+            "velocityUnit": axis.velocity_unit,
+            "otherAxisStationary": all(
+                abs(float(sample["position"][axis.other_axis]) - other_start)
+                <= other_position_tolerance
+                and abs(float(sample["velocity"][axis.other_axis]))
+                < other_velocity_tolerance
                 for sample in all_telemetry
+            ),
+            "allSequencesReturnedToStart": all(
+                float(item["returnError"])
+                <= (RHO_POSITION_TOLERANCE_MM if axis.name == "rho" else 0.001)
+                for item in repeat_results
+            ),
+            "rhoNeverMovedInwardOfStart": (
+                all(
+                    min(float(sample["position"]["rho"]) for sample in item["telemetry"])
+                    >= float(item["startPosition"]) - RHO_POSITION_TOLERANCE_MM
+                    for item in repeat_results
+                ) if axis.name == "rho" else None
             ),
             "plannerHealthy": all(
                 int(sample["planner"]["underruns"]) == 0
                 and int(sample["planner"]["maxConsecutiveUnderruns"]) == 0
                 for sample in all_telemetry
             ),
-            "commandedThetaStepRateHz": round(commanded_step_rate, 1),
+            "commandedStepRateHz": round(commanded_step_rate, 1),
             "stepRateBudgetPercent": round(commanded_step_rate / 10000.0 * 100.0, 1),
             "allDriverUartResponsesValid": bool(all_drivers) and all(
                 sample.get("uartResponseValid", False) for sample in all_drivers
-            ),
+            ) and sampled_driver_roles == expected_driver_roles,
             "allDriverInterpolationTo256Confirmed": bool(all_drivers) and all(
                 sample.get("settings", {}).get("chopconfReadValid", False)
                 and sample.get("settings", {}).get("interpolationTo256", False)
                 for sample in all_drivers
-            ),
+            ) and sampled_driver_roles == expected_driver_roles,
+            "allDriversFaultFree": bool(all_drivers) and all(
+                driver_is_healthy(sample) for sample in all_drivers
+            ) and sampled_driver_roles == expected_driver_roles,
         },
         "repeats": repeat_results,
         "driverDiagnostics": driver_diagnostics,
@@ -1078,7 +1337,9 @@ def cmd_self_test(_: argparse.Namespace) -> int:
     path = output_dir / "idle-motion-idle.wav"
     pcm = np.clip(audio * 32768.0, -32768, 32767).astype("<i2")
     with wave.open(str(path), "wb") as wav:
-        wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(rate)
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
         wav.writeframes(pcm.tobytes())
     metrics, analysis = analyze_timed(path, motion_start, motion_end)
     tones = [tone.frequency_hz for tone in metrics.timing_locked_tones]
@@ -1122,10 +1383,11 @@ def build_parser() -> argparse.ArgumentParser:
     baseline.set_defaults(func=cmd_baseline)
 
     trial = subparsers.add_parser(
-        "trial", help="run repeated telemetry-aligned idle -> theta motion -> idle recordings"
+        "trial", help="run repeated telemetry-aligned idle -> axis motion -> idle recordings"
     )
     add_capture_options(trial)
     trial.set_defaults(duration=300.0)
+    trial.add_argument("--axis", choices=sorted(AXES), default="theta")
     trial.add_argument("--label", required=True)
     trial.add_argument("--rated-current-ma", type=int, required=True)
     trial.add_argument("--profile", choices=["continuous", "stress", "both"], default="both")
@@ -1138,22 +1400,24 @@ def build_parser() -> argparse.ArgumentParser:
     trial.add_argument("--minimum-gain-db", type=float, default=6.0)
     trial.add_argument("--minimum-persistence", type=float, default=0.65)
     trial.add_argument(
+        "--reference-only", action="store_true",
+        help="record a new reference without applying acoustic pass/fail ceilings",
+    )
+    trial.add_argument(
         "--acceptable-ceiling-dbfs",
         type=float,
-        default=DEFAULT_ACCEPTABLE_NEAR_HIGH_SPEED_CEILING_DBFS,
-        help="maximum acceptable telemetry-selected Antlion level",
+        help="maximum acceptable telemetry-selected Antlion level (theta default retained)",
     )
     trial.add_argument(
         "--tone-ceiling-dbfs",
         type=float,
-        default=DEFAULT_ACCEPTABLE_NEAR_TONE_CEILING_DBFS,
-        help="maximum acceptable level for a timing-locked Antlion tone",
+        help="maximum acceptable timing-locked tone level (theta default retained)",
     )
     trial.add_argument("--run-current-ma", type=int)
     trial.add_argument("--hold-current-ma", type=int)
-    trial.add_argument("--velocity", type=float, help="theta maximum velocity in rad/s")
-    trial.add_argument("--accel", type=float, help="theta maximum acceleration in rad/s^2")
-    trial.add_argument("--jerk", type=float, help="theta maximum jerk in rad/s^3")
+    trial.add_argument("--velocity", type=float, help="axis maximum velocity (rad/s for theta, mm/s for rho)")
+    trial.add_argument("--accel", type=float, help="axis maximum acceleration (rad/s^2 or mm/s^2)")
+    trial.add_argument("--jerk", type=float, help="axis maximum jerk (rad/s^3 or mm/s^3)")
     trial.add_argument("--microsteps", type=int, choices=[1, 2, 4, 8, 16, 32, 64, 128, 256])
     trial.add_argument("--mode", choices=["stealthchop", "spreadcycle"])
     trial.add_argument("--coolstep", choices=["on", "off"])

@@ -1343,6 +1343,8 @@ void SisyphusWebServer::handleMotionTelemetry(AsyncWebServerRequest *request) {
 #endif
 #ifdef SISYPHUS_THETA_COMMISSIONING
     response->print(",\"commissioningAxis\":\"theta\"");
+#elif defined(SISYPHUS_RHO_COMMISSIONING)
+    response->print(",\"commissioningAxis\":\"rho\"");
 #else
     response->print(",\"commissioningAxis\":null");
 #endif
@@ -1385,9 +1387,9 @@ void SisyphusWebServer::handlePatternResume(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handleManualMove(AsyncWebServerRequest *request) {
-#ifdef SISYPHUS_THETA_COMMISSIONING
+#if defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
     request->send(409, "application/json",
-        "{\"success\":false,\"message\":\"Manual motion is disabled in theta commissioning mode\"}");
+        "{\"success\":false,\"message\":\"Manual motion is disabled in commissioning mode\"}");
     return;
 #endif
     if (!request->hasParam("theta", true) || !request->hasParam("rho", true)) {
@@ -1421,9 +1423,9 @@ void SisyphusWebServer::handleManualMove(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handleManualJog(AsyncWebServerRequest *request) {
-#ifdef SISYPHUS_THETA_COMMISSIONING
+#if defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
     request->send(409, "application/json",
-        "{\"success\":false,\"message\":\"Manual motion is disabled in theta commissioning mode\"}");
+        "{\"success\":false,\"message\":\"Manual motion is disabled in commissioning mode\"}");
     return;
 #endif
     if (!request->hasParam("axis", true) ||
@@ -1467,9 +1469,9 @@ void SisyphusWebServer::handleManualJog(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handleHome(AsyncWebServerRequest *request) {
-#ifdef SISYPHUS_THETA_COMMISSIONING
+#if defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
     request->send(409, "application/json",
-        "{\"success\":false,\"message\":\"Homing is disabled in theta commissioning mode\"}");
+        "{\"success\":false,\"message\":\"Homing is disabled in commissioning mode\"}");
     return;
 #endif
     SemaphoreGuard stateLock(m_stateMutex);
@@ -2378,6 +2380,11 @@ void SisyphusWebServer::handleTuningHomingSet(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handleTuningTestThetaContinuous(AsyncWebServerRequest *request) {
+#ifdef SISYPHUS_RHO_COMMISSIONING
+    request->send(409, "application/json",
+        "{\"success\":false,\"message\":\"Theta motion is disabled in rho commissioning mode\"}");
+    return;
+#endif
     SemaphoreGuard stateLock(m_stateMutex);
     if (!queueTuningTestLocked(PendingMotion::THETA_CONTINUOUS)) {
         request->send(409, "application/json", "{\"success\":false,\"message\":\"Motion is unavailable until homing is complete\"}");
@@ -2387,6 +2394,11 @@ void SisyphusWebServer::handleTuningTestThetaContinuous(AsyncWebServerRequest *r
 }
 
 void SisyphusWebServer::handleTuningTestThetaStress(AsyncWebServerRequest *request) {
+#ifdef SISYPHUS_RHO_COMMISSIONING
+    request->send(409, "application/json",
+        "{\"success\":false,\"message\":\"Theta motion is disabled in rho commissioning mode\"}");
+    return;
+#endif
     SemaphoreGuard stateLock(m_stateMutex);
     if (!queueTuningTestLocked(PendingMotion::THETA_STRESS)) {
         request->send(409, "application/json", "{\"success\":false,\"message\":\"Motion is unavailable until homing is complete\"}");
