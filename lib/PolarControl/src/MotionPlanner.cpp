@@ -1592,8 +1592,13 @@ void IRAM_ATTR MotionPlanner::handleStepTimer() {
         FastGPIO::write(R_DIR_PIN, (event.dirMask & 0x02));
     }
 
-    // Small delay for direction setup (inline)
-    for (volatile int i = 0; i < 10; i++) {}
+    // The TMC2209 samples DIR before the rising STEP edge. Use the ESP32's
+    // ISR-safe microsecond delay instead of an uncalibrated instruction loop;
+    // the latter can become shorter than the driver's setup time depending on
+    // compiler optimization and CPU frequency.
+#ifndef NATIVE_BUILD
+    delayMicroseconds(DIR_SETUP_TIME_US);
+#endif
 
     // Generate step pulses
     if (event.stepMask & 0x01) {
@@ -1603,8 +1608,12 @@ void IRAM_ATTR MotionPlanner::handleStepTimer() {
         FastGPIO::setHigh(R_STEP_PIN);
     }
 
-    // Brief pulse width delay
-    for (volatile int i = 0; i < 20; i++) {}
+    // Hold STEP high for the declared pulse width. This matters especially
+    // after a direction transition, where marginal pulses can otherwise be
+    // rejected by every driver sharing the STEP/DIR pair.
+#ifndef NATIVE_BUILD
+    delayMicroseconds(STEP_PULSE_WIDTH_US);
+#endif
 
     // End step pulses
     if (event.stepMask & 0x01) {

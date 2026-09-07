@@ -2323,6 +2323,20 @@ static void fillDriverJson(TMC2209& driver, uint8_t driverAddress,
     doc["setupOk"] = uartResponseValid && driver.isSetupAndCommunicating();
 
     if (uartResponseValid) {
+        // IOIN reflects the actual levels observed at the TMC2209 pins. Keep
+        // these in the diagnostic dump so a commanded GPIO direction can be
+        // distinguished from a wiring or driver-input fault.
+        JsonObject inputsObj = doc["inputs"].to<JsonObject>();
+        inputsObj["enableN"] = (ioInput & (1UL << 0)) != 0;
+        inputsObj["ms1"] = (ioInput & (1UL << 2)) != 0;
+        inputsObj["ms2"] = (ioInput & (1UL << 3)) != 0;
+        inputsObj["diag"] = (ioInput & (1UL << 4)) != 0;
+        inputsObj["pdnUart"] = (ioInput & (1UL << 6)) != 0;
+        inputsObj["step"] = (ioInput & (1UL << 7)) != 0;
+        inputsObj["spreadEnable"] = (ioInput & (1UL << 8)) != 0;
+        inputsObj["direction"] = (ioInput & (1UL << 9)) != 0;
+        inputsObj["raw"] = ioInput;
+
         // Get settings from driver
         TMC2209::Settings settings = driver.getSettings();
         JsonObject settingsObj = doc["settings"].to<JsonObject>();
@@ -2389,6 +2403,13 @@ static void fillDriverJson(TMC2209& driver, uint8_t driverAddress,
         dynamicObj["pwmOffsetAuto"] = driver.getPwmOffsetAuto();
         dynamicObj["pwmGradientAuto"] = driver.getPwmGradientAuto();
         dynamicObj["microstepCounter"] = driver.getMicrostepCounter();
+        uint32_t microstepCounter = 0;
+        const bool microstepCounterValid =
+            readTmcRegisterChecked(driverAddress, 0x6A, microstepCounter);
+        dynamicObj["microstepCounterCheckedValid"] = microstepCounterValid;
+        if (microstepCounterValid) {
+            dynamicObj["microstepCounterChecked"] = microstepCounter & 0x03FF;
+        }
     }
 }
 
