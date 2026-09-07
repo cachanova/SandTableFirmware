@@ -61,8 +61,18 @@ public:
         out.print(homing.baseline);
         out.print(",\"trigger\":");
         out.print(homing.trigger);
+        out.print(",\"companionFastApproachMs\":");
+        out.print(homing.companionFastApproachMs);
+        out.print(",\"companionSlowApproachMs\":");
+        out.print(homing.companionSlowApproachMs);
+        out.print(",\"companionBaseline\":");
+        out.print(homing.companionBaseline);
+        out.print(",\"companionTrigger\":");
+        out.print(homing.companionTrigger);
         out.print(",\"failure\":");
         out.print(homing.failure);
+        out.print(",\"failedAxis\":");
+        out.print(homing.failedAxis);
         out.print("}");
         out.print("}");
     }

@@ -65,17 +65,27 @@ pio run -e esp32dev -t upload --upload-port /dev/ttyUSB0
    `INITIALIZED`, and pattern start requests should be rejected.
 2. Use short motor tests to verify theta and rho direction with the mechanism
    able to move safely. Stop immediately if either axis binds.
-3. Start homing from the dashboard and watch the entire coarse approach,
-   backoff, and precision approach.
+3. Start homing from the dashboard and watch both sequential motor passes.
+   For each motor, verify a short outward runway, a constant-speed inward
+   approach, a 4 mm verification backoff, and a slow inward return. The other
+   rho motor must remain de-energized and mechanically stationary during that
+   pass. If its shaft is back-driven, cut power and do not use this sequential
+   homing method: electrical-phase restoration assumes the disabled rotor did
+   not move.
 4. If motion stops in a stiff section, choose **No, It Stopped Early**. On the
    Tuning page, first lower the trigger percentage, then increase consecutive
    samples or ignored initial travel. Change one value at a time.
 5. If the hard stop is reached but never detected, raise the trigger percentage
    or reduce consecutive samples. Do not compensate by raising motor current
    until the mechanical path and driver temperature have been checked.
-6. Confirm home only when the carriage is visibly at the physical center stop.
-   Record the precision-pass time and StallGuard trigger/baseline shown on the
-   dashboard; large changes on later runs are a useful warning sign.
+6. Confirm home only when both mechanisms are visibly at their physical center
+   stops. Record both precision-pass times and StallGuard trigger/baseline pairs
+   shown on the dashboard; large changes on later runs are a useful warning
+   sign.
+7. On the first powered run, be ready to cut power when either driver's phase
+   is restored or the pair is re-enabled. A phase-restore failure must leave
+   both rho power stages disabled and report failure 9; do not proceed to
+   pattern motion if either motor jumps on re-enable.
 
 ## Motion checks
 

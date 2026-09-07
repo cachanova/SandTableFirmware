@@ -105,11 +105,27 @@ defaults, and the repeatable retuning procedure are documented in the
 
 ## Sensorless Homing
 
-Homing uses two StallGuard approaches: a coarse search, then a backoff and slow
-precision search. Initial samples are ignored, low readings must persist for a
-configured number of samples, both approaches have timeouts, and the slow
-return distance must be plausible. The automatic result is still not treated
-as proof: the dashboard requires visual confirmation before entering `IDLE`.
+The two rho motors home sequentially over their normal shared STEP/DIR signal.
+For each pass, the other driver's power stage is disabled, the active motor
+makes a bounded 4 mm outward runway move, and then approaches the center stop
+at constant speed while StallGuard is sampled over its addressed UART. The
+motor backs out 4 mm and repeats the inward approach slowly; homing succeeds
+only when StallGuard recovers during the backoff and the second trigger occurs
+within the expected return window. Both drivers remain disabled after any
+failure.
+
+Initial samples are ignored, low readings must persist for a configured number
+of samples, and every move has a step and time bound. Because disabled TMC2209
+indexers still see the shared STEP signal, firmware restores each inactive
+driver's recorded electrical phase while its power stage remains off before it
+can be re-enabled. A visually rejected result also leaves both rho power stages
+disabled. The automatic result is still not treated as proof: the dashboard
+requires visual confirmation before entering `IDLE`.
+
+Sequential homing assumes the de-energized motor is not mechanically
+back-driven by the active motor. That must be confirmed during the first guarded
+powered run; this method is not suitable for a mechanism that moves both motor
+shafts when only one is driven.
 
 The Tuning page exposes the three values useful for rejecting stiff-path false
 positives: trigger percentage, consecutive low samples, and ignored initial

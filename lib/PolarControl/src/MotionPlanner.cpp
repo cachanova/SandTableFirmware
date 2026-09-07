@@ -905,18 +905,10 @@ void MotionPlanner::stopGracefully() {
 }
 
 void MotionPlanner::start() {
-    if (m_running.load()) return;
+    if (m_running.load() ||
+        m_homingRhoActive.load(std::memory_order_acquire)) return;
 
-    // Create timer if not already created
-    if (m_timerHandle == nullptr) {
-        esp_timer_create_args_t timerArgs{};
-        timerArgs.callback = stepTimerISR;
-        timerArgs.arg = this;
-        timerArgs.dispatch_method = ESP_TIMER_TASK;
-        timerArgs.name = "step_timer";
-        timerArgs.skip_unhandled_events = true;
-        esp_timer_create(&timerArgs, (esp_timer_handle_t*)&m_timerHandle);
-    }
+    if (!ensureStepTimer()) return;
 
     m_running.store(true);
     m_segmentStartTime = micros();
@@ -935,7 +927,82 @@ void MotionPlanner::start() {
     }
 }
 
+bool MotionPlanner::ensureStepTimer() {
+    if (m_timerHandle != nullptr) return true;
+
+    esp_timer_create_args_t timerArgs{};
+    timerArgs.callback = stepTimerISR;
+    timerArgs.arg = this;
+    timerArgs.dispatch_method = ESP_TIMER_TASK;
+    timerArgs.name = "step_timer";
+    timerArgs.skip_unhandled_events = true;
+    return esp_timer_create(&timerArgs,
+                            (esp_timer_handle_t*)&m_timerHandle) == 0;
+}
+
+bool MotionPlanner::startRhoHoming(int8_t direction,
+                                   uint32_t stepsPerSecond,
+                                   uint32_t maxSteps) {
+    if (direction == 0 || m_running.load() || m_homingRhoActive.load() ||
+        !ensureStepTimer()) {
+        return false;
+    }
+
+    const uint32_t maxRate = 1000000U / STEP_TIMER_PERIOD_US;
+    if (stepsPerSecond == 0 || stepsPerSecond > maxRate) return false;
+
+    const uint32_t intervalUs = std::max<uint32_t>(
+        STEP_TIMER_PERIOD_US,
+        (1000000U + stepsPerSecond / 2U) / stepsPerSecond);
+    FastGPIO::setLow(R_STEP_PIN);
+    FastGPIO::write(R_DIR_PIN, direction > 0);
+    for (volatile int i = 0; i < 10; i++) {}
+
+    m_homingRhoStepCount.store(0, std::memory_order_relaxed);
+    m_homingRhoStepLimit.store(maxSteps, std::memory_order_relaxed);
+    m_homingRhoIntervalUs.store(intervalUs, std::memory_order_relaxed);
+    m_homingRhoNextStepUs.store(micros() + intervalUs,
+                                std::memory_order_relaxed);
+    m_homingRhoActive.store(true, std::memory_order_release);
+
+    if (esp_timer_start_periodic((esp_timer_handle_t)m_timerHandle,
+                                 STEP_TIMER_PERIOD_US) != 0) {
+        m_homingRhoActive.store(false, std::memory_order_release);
+        FastGPIO::setLow(R_STEP_PIN);
+        return false;
+    }
+    m_timerActive.store(true, std::memory_order_release);
+    return true;
+}
+
+bool MotionPlanner::setRhoHomingStepRate(uint32_t stepsPerSecond) {
+    const uint32_t maxRate = 1000000U / STEP_TIMER_PERIOD_US;
+    if (!m_homingRhoActive.load(std::memory_order_acquire) ||
+        stepsPerSecond == 0 || stepsPerSecond > maxRate) {
+        return false;
+    }
+
+    const uint32_t intervalUs = std::max<uint32_t>(
+        STEP_TIMER_PERIOD_US,
+        (1000000U + stepsPerSecond / 2U) / stepsPerSecond);
+    m_homingRhoIntervalUs.store(intervalUs, std::memory_order_release);
+    return true;
+}
+
+void MotionPlanner::stopRhoHoming() {
+    const bool wasHoming = m_homingRhoActive.exchange(
+        false, std::memory_order_acq_rel);
+    if (wasHoming && m_timerHandle != nullptr) {
+        esp_timer_stop((esp_timer_handle_t)m_timerHandle);
+    }
+    if (wasHoming) {
+        m_timerActive.store(false, std::memory_order_release);
+        FastGPIO::setLow(R_STEP_PIN);
+    }
+}
+
 void MotionPlanner::stop() {
+    m_homingRhoActive.store(false, std::memory_order_release);
     if (m_timerHandle != nullptr) {
         esp_timer_stop((esp_timer_handle_t)m_timerHandle);
     }
@@ -1548,6 +1615,40 @@ void IRAM_ATTR MotionPlanner::stepTimerISR(void* arg) {
 }
 
 void IRAM_ATTR MotionPlanner::handleStepTimer() {
+    if (m_homingRhoActive.load(std::memory_order_acquire)) {
+        const uint32_t now = micros();
+        const uint32_t nextStep =
+            m_homingRhoNextStepUs.load(std::memory_order_relaxed);
+        if (static_cast<int32_t>(now - nextStep) >= 0) {
+            FastGPIO::setHigh(R_STEP_PIN);
+            for (volatile int i = 0; i < 20; i++) {}
+            FastGPIO::setLow(R_STEP_PIN);
+            const uint32_t stepCount =
+                m_homingRhoStepCount.fetch_add(
+                    1, std::memory_order_release) + 1U;
+            const uint32_t stepLimit =
+                m_homingRhoStepLimit.load(std::memory_order_acquire);
+            if (stepLimit > 0 && stepCount >= stepLimit) {
+                m_homingRhoActive.store(false, std::memory_order_release);
+                m_timerActive.store(false, std::memory_order_release);
+                if (m_timerHandle != nullptr) {
+                    esp_timer_stop((esp_timer_handle_t)m_timerHandle);
+                }
+                return;
+            }
+
+            const uint32_t interval =
+                m_homingRhoIntervalUs.load(std::memory_order_acquire);
+            uint32_t following = nextStep + interval;
+            if (static_cast<int32_t>(now - following) >= 0) {
+                following = now + interval;
+            }
+            m_homingRhoNextStepUs.store(following,
+                                        std::memory_order_relaxed);
+        }
+        return;
+    }
+
     // Check if there's a step event ready to execute
     const int tail = m_stepQueueTail.load(std::memory_order_relaxed);
     if (m_stepQueueHead.load(std::memory_order_acquire) == tail) {

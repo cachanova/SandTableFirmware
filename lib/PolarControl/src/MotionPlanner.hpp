@@ -138,6 +138,20 @@ public:
     // Stop motion execution (decelerate to stop)
     void stop();
 
+    // Dedicated constant-rate rho pulse source for sensorless homing. This
+    // bypasses coordinate limits while retaining sole ownership of STEP/DIR.
+    // direction is -1 toward rho zero and +1 away from rho zero.
+    bool startRhoHoming(int8_t direction, uint32_t stepsPerSecond,
+                        uint32_t maxSteps = 0);
+    bool setRhoHomingStepRate(uint32_t stepsPerSecond);
+    void stopRhoHoming();
+    uint32_t getRhoHomingStepCount() const {
+        return m_homingRhoStepCount.load(std::memory_order_acquire);
+    }
+    bool isRhoHoming() const {
+        return m_homingRhoActive.load(std::memory_order_acquire);
+    }
+
     // Gracefully stop motion by interrupting current segment and decelerating to zero
     void stopGracefully();
 
@@ -264,6 +278,11 @@ private:
     std::atomic<bool> m_timerActive{false};
     std::atomic<bool> m_thetaAvailable{true};
     std::atomic<bool> m_rhoAvailable{true};
+    std::atomic<bool> m_homingRhoActive{false};
+    std::atomic<uint32_t> m_homingRhoIntervalUs{0};
+    std::atomic<uint32_t> m_homingRhoNextStepUs{0};
+    std::atomic<uint32_t> m_homingRhoStepCount{0};
+    std::atomic<uint32_t> m_homingRhoStepLimit{0};
     bool m_endOfPattern;
     bool m_stopEventQueued = false;
     uint32_t m_completedCount;
@@ -274,6 +293,7 @@ private:
 
     // Internal methods
     void calculateSegmentProfile(Segment& seg);
+    bool ensureStepTimer();
     FillStopReason fillStepQueue(uint32_t horizonUs);
     int getStepQueueSpace() const;
     bool queueStepEvent(uint32_t time, uint8_t stepMask, uint8_t dirMask);

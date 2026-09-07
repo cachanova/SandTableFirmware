@@ -255,6 +255,56 @@ bool testGracefulStopAfterFullGeneration() {
     return passed;
 }
 
+bool testBoundedRhoHomingPulses() {
+    std::cout << "\n=== Test: Bounded Rho Homing Pulses ===" << std::endl;
+    resetMock();
+    MotionPlanner planner;
+    planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
+                 R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
+                 T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
+
+    constexpr uint32_t rate = 200;
+    constexpr uint32_t limit = 20;
+    if (!planner.startRhoHoming(-1, rate, limit)) {
+        std::cout << "FAIL: bounded homing pulse source did not start" << std::endl;
+        return false;
+    }
+    if (planner.startRhoHoming(+1, rate, limit)) {
+        std::cout << "FAIL: a second homing pulse source started concurrently" << std::endl;
+        return false;
+    }
+    planner.start();
+    if (planner.isRunning()) {
+        std::cout << "FAIL: normal planner motion started during homing" << std::endl;
+        return false;
+    }
+
+    advanceMicros(200000);
+    const uint32_t boundedCount = planner.getRhoHomingStepCount();
+    if (boundedCount != limit || planner.isRhoHoming() || g_timerActive) {
+        std::cout << "FAIL: bounded move count=" << boundedCount
+                  << ", active=" << planner.isRhoHoming()
+                  << ", timer=" << g_timerActive << std::endl;
+        return false;
+    }
+
+    if (!planner.startRhoHoming(+1, rate)) {
+        std::cout << "FAIL: unbounded homing pulse source did not restart" << std::endl;
+        return false;
+    }
+    advanceMicros(30000);
+    const uint32_t countBeforeStop = planner.getRhoHomingStepCount();
+    planner.stopRhoHoming();
+    advanceMicros(30000);
+    const bool passed = countBeforeStop > 0 &&
+        planner.getRhoHomingStepCount() == countBeforeStop &&
+        !planner.isRhoHoming() && !g_timerActive;
+    std::cout << (passed ? "PASS" : "FAIL")
+              << ": bounded=" << boundedCount
+              << ", stopped-at=" << countBeforeStop << std::endl;
+    return passed;
+}
+
 // ============================================================================
 // Test: SCurve basic functionality
 // ============================================================================
@@ -873,6 +923,7 @@ int main(int argc, char* argv[]) {
     allPassed &= testDisconnectedAxisIsSkipped();
     allPassed &= testInvalidMotionInputs();
     allPassed &= testGracefulStopAfterFullGeneration();
+    allPassed &= testBoundedRhoHomingPulses();
     allPassed &= testSCurveBasic();
     allPassed &= testDecelDistance();
     allPassed &= testMaxEntryVel();

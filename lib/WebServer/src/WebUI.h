@@ -1647,26 +1647,36 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 } else if (status.state === 'INITIALIZED') {
                     homingMessage.textContent = 'Homing is required before a pattern can run.';
                 } else if (status.state === 'HOMING') {
-                    homingMessage.textContent = 'Homing is in progress. Keep clear and watch for an incorrect stop in a stiff part of the path.';
+                    homingMessage.textContent = 'Sequential rho homing is in progress. Keep clear and verify the inactive motor remains mechanically stationary.';
                 } else if (status.state === 'HOMING_REVIEW') {
-                    homingMessage.textContent = 'Visually verify that the carriage reached the physical center stop. Confirm only if it did; patterns remain locked out until then.';
+                    homingMessage.textContent = 'Visually verify that both rho mechanisms reached their physical center stops. Confirm only if they did; patterns remain locked out until then.';
                 } else if (status.state === 'HOMING_FAILED') {
                     const failures = {
-                        1: 'The rho driver is not communicating.',
+                        1: 'One or both rho drivers are not communicating.',
                         2: 'The coarse approach did not find a sustained stall before its timeout.',
                         3: 'The precision approach did not find a sustained stall before its timeout.',
                         4: 'The precision return distance did not match the backoff move.',
                         5: 'The controller could not start the homing task.',
                         6: 'The observed home position was rejected.',
-                        7: 'TMC2209 UART replies failed validation during homing.'
+                        7: 'TMC2209 UART replies failed validation during homing.',
+                        8: 'The bounded outward runway move did not complete.',
+                        9: 'A disabled driver electrical phase could not be restored safely.'
                     };
-                    const reason = failures[(status.homing || {}).failure] || 'The automatic result was not trustworthy.';
-                    homingMessage.textContent = reason + ' Inspect the mechanism and retry; pattern motion is locked out.';
+                    const homing = status.homing || {};
+                    const failedAxis = homing.failedAxis === 1 ? 'Rho: '
+                        : homing.failedAxis === 2 ? 'Rho companion: ' : '';
+                    const reason = failures[homing.failure] || 'The automatic result was not trustworthy.';
+                    homingMessage.textContent = failedAxis + reason + ' Inspect the mechanism and retry; pattern motion is locked out.';
                 }
                 const homing = status.homing || {};
-                homingDetails.textContent = homing.slowApproachMs
-                    ? `Precision pass: ${homing.slowApproachMs} ms, StallGuard ${homing.trigger}/${homing.baseline}`
-                    : '';
+                const homingPasses = [];
+                if (homing.slowApproachMs) {
+                    homingPasses.push(`Rho: ${homing.slowApproachMs} ms, StallGuard ${homing.trigger}/${homing.baseline}`);
+                }
+                if (homing.companionSlowApproachMs) {
+                    homingPasses.push(`Rho companion: ${homing.companionSlowApproachMs} ms, StallGuard ${homing.companionTrigger}/${homing.companionBaseline}`);
+                }
+                homingDetails.textContent = homingPasses.join(' | ');
 
                 document.getElementById('btn-home').disabled = !['INITIALIZED', 'HOMING_FAILED'].includes(status.state);
                 document.getElementById('btn-start').disabled = status.state !== 'IDLE' || !this.storageAvailable;
