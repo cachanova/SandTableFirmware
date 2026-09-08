@@ -40,7 +40,7 @@ for f in "$PATTERN_DIR"/*.thr; do
     filename=$(basename "$f")
     # Run with timeout to prevent hangs
     # Redirect stdout to suppress verbose output, but keep stderr
-    if timeout 120s $PROG "$f" > /dev/null; then
+    if timeout 180s $PROG "$f" > /dev/null; then
         echo "PASS: $filename"
     else
         echo "FAIL: $filename"

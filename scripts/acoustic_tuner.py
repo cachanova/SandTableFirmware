@@ -14,6 +14,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 import wave
 from dataclasses import asdict, dataclass
@@ -30,12 +31,20 @@ DEFAULT_SOURCE = "alsa_input.usb-Antlion_Audio_Antlion_USB_Microphone-00.mono-fa
 DEFAULT_RATE = 48000
 THETA_CURRENT_CEILING_MA = 1500
 RHO_CURRENT_CEILING_MA = 500
-RHO_TEST_EXCURSION_MM = 200.0
+RHO_TEST_MAX_EXCURSION_MM = 400.0
 RHO_POSITION_TOLERANCE_MM = 0.05
-RHO_PROFILE_DISTANCE_MM = {"continuous": 400.0, "stress": 2850.0}
+RHO_PROFILE_DISTANCE_MM = {"continuous": 800.0, "stress": 5950.0}
+RHO_SCREEN_GATE_COUNT = 4
+RHO_QUALIFICATION_GATE_COUNT = 8
+MINIMUM_GATE_CRUISE_S = 1.0
 HUMAN_AUDIBLE_MIN_HZ = 20.0
 HUMAN_AUDIBLE_MAX_HZ = 20000.0
 TONE_MATCH_TOLERANCE_HZ = 12.5
+TONE_MIN_PROMINENCE_DB = 6.0
+TELEMETRY_MAX_P95_GAP_S = 0.15
+TELEMETRY_MAX_GAP_S = 0.50
+TELEMETRY_MAX_TRANSITION_BRACKET_S = 0.25
+AUDIO_MAX_DURATION_SKEW_S = 0.10
 # The operator-accepted 0.25 rad/s reference at the fixed close-microphone
 # position. Trials can override this to build quieter performance profiles.
 DEFAULT_ACCEPTABLE_NEAR_HIGH_SPEED_CEILING_DBFS = -53.92
@@ -43,6 +52,22 @@ DEFAULT_ACCEPTABLE_NEAR_HIGH_SPEED_CEILING_DBFS = -53.92
 # reference.  Unlike the broadband level, this remains useful when unrelated
 # room sound occurs during the motion window.  Override it for quieter tiers.
 DEFAULT_ACCEPTABLE_NEAR_TONE_CEILING_DBFS = -58.45
+
+
+def rho_segment_targets(profile: str, excursion_mm: float) -> tuple[float, ...]:
+    gate_count = (
+        RHO_SCREEN_GATE_COUNT if profile == "screen" else RHO_QUALIFICATION_GATE_COUNT
+    )
+    return tuple(
+        excursion_mm if index % 2 == 0 else 0.0
+        for index in range(gate_count)
+    )
+
+
+def rho_profile_distance_mm(profile: str, excursion_mm: float) -> float:
+    if profile in ("screen", "gated"):
+        return len(rho_segment_targets(profile, excursion_mm)) * excursion_mm
+    return RHO_PROFILE_DISTANCE_MM[profile]
 
 
 @dataclass(frozen=True)
@@ -108,6 +133,7 @@ class AcousticMetrics:
 
 @dataclass
 class TimingLockedTone:
+    direction: str
     frequency_hz: float
     motion_level_dbfs: float
     gain_over_pre_idle_db: float
@@ -126,6 +152,7 @@ class TimedAcousticMetrics:
     motion_duration_s: float
     audible_peak_dbfs: float
     audible_rms_dbfs: float
+    clipping_detected: bool
     pre_idle_a_weighted_dbfs: float
     post_idle_a_weighted_dbfs: float
     motion_a_weighted_dbfs: float
@@ -135,6 +162,18 @@ class TimedAcousticMetrics:
     transient_gain_over_idle_p95_db: float
     motion_broadband_detected: bool
     motion_transient_detected: bool
+    broadband_excess_a_weighted_dbfs: float | None
+    broadband_gate_excess_a_weighted_dbfs: list[float]
+    loudest_broadband_gate_excess_a_weighted_dbfs: float | None
+    outbound_broadband_excess_a_weighted_dbfs: float | None
+    inbound_broadband_excess_a_weighted_dbfs: float | None
+    gate_peak_velocities: list[float]
+    gate_cruise_durations_s: list[float]
+    all_gates_sustain_commanded_velocity: bool | None
+    broadband_persistence: float
+    on_off_pair_count: int
+    on_off_consistent_count: int
+    on_off_consistency: float | None
     background_drift_db: float
     background_stable: bool
     timing_locked_a_weighted_dbfs: float | None
@@ -145,6 +184,20 @@ class TimedAcousticMetrics:
 
 def db(value: float, power: bool = False) -> float:
     return (10.0 if power else 20.0) * math.log10(max(float(value), 1e-20))
+
+
+def driver_current_quantization(
+    requested_ma: int, high_sensitivity: bool, sense_resistor_ohms: float
+) -> tuple[int, float]:
+    """Return the TMC2209 CS code and nominal RMS current it commands."""
+    vsense_v = 0.180 if high_sensitivity else 0.325
+    full_scale_ma = (
+        1000.0 * vsense_v / (sense_resistor_ohms + 0.020) / math.sqrt(2.0)
+    )
+    raw_code = requested_ma / full_scale_ma * 32.0 - 1.0
+    current_code = max(0, min(31, math.floor(raw_code + 0.5)))
+    actual_current_ma = (current_code + 1.0) / 32.0 * full_scale_ma
+    return current_code, actual_current_ma
 
 
 def read_wav(path: Path) -> tuple[np.ndarray, int]:
@@ -211,6 +264,12 @@ def analyze_timed(
     motion_end_s: float,
     minimum_gain_db: float = 6.0,
     minimum_persistence: float = 0.65,
+    telemetry: list[dict[str, Any]] | None = None,
+    recorder_launch_offset_s: float = 0.0,
+    axis: AxisConfig | None = None,
+    velocity_threshold: float = 0.002,
+    audio_epoch_uncertainty_s: float = 0.0,
+    expected_max_velocity: float | None = None,
 ) -> tuple[TimedAcousticMetrics, dict[str, np.ndarray]]:
     """Find audible tones whose presence is locked to measured motor motion.
 
@@ -222,12 +281,83 @@ def analyze_timed(
     times, frequencies, spectra = short_window_spectrogram(audio, rate)
     guard_s = max(0.15, 2.0 * (times[1] - times[0])) if len(times) > 1 else 0.15
     pre = times < motion_start_s - guard_s
-    moving = (times > motion_start_s + guard_s) & (times < motion_end_s - guard_s)
     post = times > motion_end_s + guard_s
+    moving = (times > motion_start_s + guard_s) & (times < motion_end_s - guard_s)
+    direction_windows: list[tuple[str, np.ndarray]] = []
+    confirmed_idle: np.ndarray | None = None
+    velocities: np.ndarray | None = None
+    if telemetry is not None and axis is not None:
+        host_times = times + recorder_launch_offset_s
+        telemetry_times = np.asarray([
+            float(item["hostOffsetS"]) for item in telemetry
+        ])
+        velocities = np.interp(
+            host_times, telemetry_times,
+            [float(item["velocity"][axis.name]) for item in telemetry],
+        )
+        moving &= np.abs(velocities) >= velocity_threshold
+        telemetry_velocities = np.asarray([
+            float(item["velocity"][axis.name]) for item in telemetry
+        ])
+        telemetry_moving = np.abs(telemetry_velocities) >= velocity_threshold
+        telemetry_direction = np.sign(telemetry_velocities)
+        transition_indexes = np.flatnonzero(
+            (telemetry_moving[1:] != telemetry_moving[:-1])
+            | (
+                telemetry_moving[1:]
+                & telemetry_moving[:-1]
+                & (telemetry_direction[1:] != telemetry_direction[:-1])
+            )
+        )
+        frame_half_width_s = 4096.0 / (2.0 * rate) + audio_epoch_uncertainty_s
+        transition_safe = np.ones(len(times), dtype=bool)
+        for index in transition_indexes:
+            transition_safe &= ~(
+                (host_times + frame_half_width_s >= telemetry_times[index])
+                & (host_times - frame_half_width_s <= telemetry_times[index + 1])
+            )
+        moving &= transition_safe
+        nearest = np.searchsorted(telemetry_times, host_times, side="left")
+        nearest = np.clip(nearest, 0, len(telemetry_times) - 1)
+        previous = np.maximum(nearest - 1, 0)
+        choose_previous = (
+            np.abs(host_times - telemetry_times[previous])
+            < np.abs(host_times - telemetry_times[nearest])
+        )
+        nearest[choose_previous] = previous[choose_previous]
+        confirmed_idle = (
+            np.abs(velocities) < velocity_threshold
+        ) & np.asarray([
+            telemetry[int(index)].get("state") == "IDLE" for index in nearest
+        ]) & transition_safe
+        idle_indexes = np.flatnonzero(confirmed_idle)
+        if len(idle_indexes) >= 10:
+            split_time = float(np.median(times[idle_indexes]))
+            pre = confirmed_idle & (times <= split_time)
+            post = confirmed_idle & (times > split_time)
+        direction_windows = [
+            ("outbound", moving & (velocities >= velocity_threshold)),
+            ("inbound", moving & (velocities <= -velocity_threshold)),
+        ]
     if min(int(np.sum(pre)), int(np.sum(moving)), int(np.sum(post))) < 5:
         raise ValueError(
             "Timed recording needs at least five spectrogram frames in each idle/motion window"
         )
+
+    sustained_moving = moving.copy()
+    sustained_direction_windows = direction_windows
+    if velocities is not None and expected_max_velocity is not None:
+        sustained_moving &= np.abs(velocities) >= 0.9 * expected_max_velocity
+        sustained_direction_windows = [
+            (
+                "outbound",
+                sustained_moving & (velocities >= 0.9 * expected_max_velocity),
+            ),
+            (
+                "inbound",
+                sustained_moving & (velocities <= -0.9 * expected_max_velocity),
+            ),
+        ]
 
     audible = (
         (frequencies >= HUMAN_AUDIBLE_MIN_HZ)
@@ -241,64 +371,167 @@ def analyze_timed(
     idle_ceiling = np.maximum(pre_p95, post_p95)
     gain_floor = 10.0 ** (minimum_gain_db / 10.0)
 
-    candidate_indexes = np.where(
-        audible
-        & (motion_median >= pre_median * gain_floor)
-        & (motion_median >= post_median * gain_floor)
-    )[0]
-    ordered = candidate_indexes[np.argsort(motion_median[candidate_indexes])[::-1]]
+    gate_windows: list[dict[str, Any]] = []
+    if confirmed_idle is not None:
+        moving_edges = np.diff(np.r_[False, moving, False].astype(np.int8))
+        starts = np.flatnonzero(moving_edges == 1)
+        stops = np.flatnonzero(moving_edges == -1)
+        for start, stop in zip(starts, stops, strict=True):
+            if stop - start < 5:
+                continue
+            before = confirmed_idle & (
+                (times >= times[start] - 3.0) & (times < times[start])
+            )
+            after = confirmed_idle & (
+                (times > times[stop - 1]) & (times <= times[stop - 1] + 3.0)
+            )
+            if min(int(np.sum(before)), int(np.sum(after))) < 3:
+                continue
+            direction = "both"
+            if velocities is not None:
+                direction = (
+                    "outbound"
+                    if float(np.median(velocities[start:stop])) >= 0.0
+                    else "inbound"
+                )
+            gate_windows.append({
+                "start": int(start), "stop": int(stop),
+                "before": before, "after": after, "direction": direction,
+            })
+
     accepted: list[TimingLockedTone] = []
     accepted_indexes: list[int] = []
     rejected = 0
     rejected_candidates: list[dict[str, Any]] = []
-    for index in ordered:
-        if index <= 0 or index >= len(frequencies) - 1:
+    # Tonal acceptance uses the same sustained-cruise frames as broadband
+    # acceptance. Otherwise a longer acceleration ramp can dilute a line and
+    # make an unchanged cruise condition appear quieter.
+    detection_windows = [("both", sustained_moving), *sustained_direction_windows]
+    for direction, detection_window in detection_windows:
+        if int(np.sum(detection_window)) < 5:
             continue
-        if motion_median[index] < max(motion_median[index - 1], motion_median[index + 1]):
-            continue
-        if any(abs(frequencies[index] - frequencies[other]) < 25.0 for other in accepted_indexes):
-            continue
-        # Count a frame as containing the line only when it clears the 95th
-        # percentile of both idle windows by 3 dB. This makes speech clicks and
-        # persistent room tones fail rather than inflate the motor score.
-        presence_threshold = max(idle_ceiling[index] * 2.0, 1e-20)
-        motion_presence = float(np.mean(spectra[moving, index] >= presence_threshold))
-        pre_presence = float(np.mean(spectra[pre, index] >= presence_threshold))
-        post_presence = float(np.mean(spectra[post, index] >= presence_threshold))
-        if motion_presence < minimum_persistence or pre_presence > 0.05 or post_presence > 0.05:
-            rejected += 1
-            if len(rejected_candidates) < 8:
-                rejected_candidates.append({
-                    "frequencyHz": round(float(frequencies[index]), 2),
-                    "motionLevelDbfs": round(db(float(motion_median[index]), power=True), 2),
-                    "gainOverPreIdleDb": round(
-                        db(float(motion_median[index] / max(pre_median[index], 1e-20)), power=True), 2
-                    ),
-                    "gainOverPostIdleDb": round(
-                        db(float(motion_median[index] / max(post_median[index], 1e-20)), power=True), 2
-                    ),
-                    "motionPersistence": round(motion_presence, 3),
-                    "rejectionReason": (
-                        "not persistent for enough measured motion"
-                        if motion_presence < minimum_persistence
-                        else "present during an idle window"
-                    ),
-                })
-            continue
-        accepted_indexes.append(int(index))
-        accepted.append(TimingLockedTone(
-            frequency_hz=round(float(frequencies[index]), 2),
-            motion_level_dbfs=round(db(float(motion_median[index]), power=True), 2),
-            gain_over_pre_idle_db=round(
-                db(float(motion_median[index] / max(pre_median[index], 1e-20)), power=True), 2
-            ),
-            gain_over_post_idle_db=round(
-                db(float(motion_median[index] / max(post_median[index], 1e-20)), power=True), 2
-            ),
-            motion_persistence=round(motion_presence, 3),
-            pre_idle_presence=round(pre_presence, 3),
-            post_idle_presence=round(post_presence, 3),
-        ))
+        window_median = np.median(spectra[detection_window], axis=0)
+        candidate_indexes = np.where(
+            audible
+            & (window_median >= pre_median * gain_floor)
+            & (window_median >= post_median * gain_floor)
+        )[0]
+        ordered = candidate_indexes[np.argsort(window_median[candidate_indexes])[::-1]]
+        for index in ordered:
+            if index <= 0 or index >= len(frequencies) - 1:
+                continue
+            if window_median[index] < max(
+                window_median[index - 1], window_median[index + 1]
+            ):
+                continue
+            neighborhood = window_median[max(0, index - 6):min(len(frequencies), index + 7)]
+            local_floor = float(np.median(neighborhood))
+            if db(window_median[index] / max(local_floor, 1e-20), power=True) \
+                    < TONE_MIN_PROMINENCE_DB:
+                continue
+            if any(abs(frequencies[index] - frequencies[other]) < 25.0
+                   for other in accepted_indexes):
+                continue
+            presence_threshold = max(idle_ceiling[index] * 2.0, 1e-20)
+            motion_presence = float(np.mean(
+                spectra[detection_window, index] >= presence_threshold
+            ))
+            gate_consistency: float | None = None
+            if gate_windows:
+                relevant_gates = [
+                    gate for gate in gate_windows
+                    if direction == "both" or gate["direction"] == direction
+                ]
+                gate_presence: list[float] = []
+                gate_consistent = 0
+                for gate in relevant_gates:
+                    start = int(gate["start"])
+                    stop = int(gate["stop"])
+                    local_idle_ceiling = max(
+                        float(np.percentile(spectra[gate["before"], index], 95)),
+                        float(np.percentile(spectra[gate["after"], index], 95)),
+                    )
+                    local_motion_values = spectra[start:stop, index]
+                    if velocities is not None and expected_max_velocity is not None:
+                        gate_cruise = (
+                            np.abs(velocities[start:stop])
+                            >= 0.9 * expected_max_velocity
+                        )
+                        local_motion_values = local_motion_values[gate_cruise]
+                    if len(local_motion_values) < 5:
+                        gate_presence.append(0.0)
+                        continue
+                    local_presence = float(np.mean(
+                        local_motion_values >= 2.0 * max(local_idle_ceiling, 1e-20)
+                    ))
+                    gate_presence.append(local_presence)
+                    local_motion_median = float(np.median(local_motion_values))
+                    local_gate_spectra = spectra[start:stop]
+                    if velocities is not None and expected_max_velocity is not None:
+                        local_gate_spectra = local_gate_spectra[gate_cruise]
+                    local_gate_spectrum = np.median(local_gate_spectra, axis=0)
+                    local_neighborhood = local_gate_spectrum[
+                        max(0, index - 6):min(len(frequencies), index + 7)
+                    ]
+                    local_prominence_db = db(
+                        local_motion_median
+                        / max(float(np.median(local_neighborhood)), 1e-20),
+                        power=True,
+                    )
+                    if (
+                        local_presence >= minimum_persistence
+                        and local_prominence_db >= TONE_MIN_PROMINENCE_DB
+                        and db(
+                            local_motion_median / max(local_idle_ceiling, 1e-20),
+                            power=True,
+                        ) >= minimum_gain_db
+                    ):
+                        gate_consistent += 1
+                if relevant_gates:
+                    gate_consistency = gate_consistent / len(relevant_gates)
+                    motion_presence = float(np.mean(gate_presence))
+            pre_presence = float(np.mean(spectra[pre, index] >= presence_threshold))
+            post_presence = float(np.mean(spectra[post, index] >= presence_threshold))
+            if (motion_presence < minimum_persistence or pre_presence > 0.05
+                    or post_presence > 0.05
+                    or (gate_consistency is not None and gate_consistency < 0.75)):
+                rejected += 1
+                if len(rejected_candidates) < 8:
+                    rejected_candidates.append({
+                        "direction": direction,
+                        "frequencyHz": round(float(frequencies[index]), 2),
+                        "motionLevelDbfs": round(
+                            db(float(window_median[index]), power=True), 2
+                        ),
+                        "motionPersistence": round(motion_presence, 3),
+                        "rejectionReason": (
+                            "not correlated across enough adjacent-idle gates"
+                            if gate_consistency is not None and gate_consistency < 0.75
+                            else (
+                                "not persistent for enough measured motion"
+                                if motion_presence < minimum_persistence
+                                else "present during an idle window"
+                            )
+                        ),
+                    })
+                continue
+            accepted_indexes.append(int(index))
+            accepted.append(TimingLockedTone(
+                direction=direction,
+                frequency_hz=round(float(frequencies[index]), 2),
+                motion_level_dbfs=round(db(float(window_median[index]), power=True), 2),
+                gain_over_pre_idle_db=round(
+                    db(float(window_median[index] / max(pre_median[index], 1e-20)), power=True), 2
+                ),
+                gain_over_post_idle_db=round(
+                    db(float(window_median[index] / max(post_median[index], 1e-20)), power=True), 2
+                ),
+                motion_persistence=round(motion_presence, 3),
+                pre_idle_presence=round(pre_presence, 3),
+                post_idle_presence=round(post_presence, 3),
+            ))
+            if len(accepted) == 8:
+                break
         if len(accepted) == 8:
             break
 
@@ -316,6 +549,87 @@ def analyze_timed(
     motion_gain_over_idle_db = motion_a_dbfs - idle_median_a_dbfs
     transient_gain_over_idle_p95_db = motion_p95_a_dbfs - idle_p95_a_dbfs
     background_drift_db = abs(pre_a_dbfs - post_a_dbfs)
+    background_spectrum = np.maximum(pre_median, post_median)
+    broadband_excess_spectrum = np.maximum(motion_median - background_spectrum, 0.0)
+    broadband_excess_power = float(np.sum(
+        broadband_excess_spectrum[audible] * weights[audible]
+    ))
+    broadband_persistence = float(np.mean(
+        frame_a_power[moving] >= 2.0 * max(
+            np.median(frame_a_power[pre]),
+            np.median(frame_a_power[post]),
+        )
+    ))
+    on_off_pair_count = 0
+    on_off_consistent_count = 0
+    local_excess_powers: list[float] = []
+    outbound_excess_powers: list[float] = []
+    inbound_excess_powers: list[float] = []
+    local_gain_db: list[float] = []
+    local_persistent_frames = 0
+    local_motion_frames = 0
+    gate_peak_velocities: list[float] = []
+    gate_cruise_durations_s: list[float] = []
+    frame_period_s = float(np.median(np.diff(times)))
+    for gate in gate_windows:
+        start = int(gate["start"])
+        stop = int(gate["stop"])
+        before = gate["before"]
+        after = gate["after"]
+        local_idle = max(
+            float(np.median(frame_a_power[before])),
+            float(np.median(frame_a_power[after])),
+        )
+        local_frames = frame_a_power[start:stop]
+        if velocities is not None and expected_max_velocity is not None:
+            gate_speeds = np.abs(velocities[start:stop])
+            gate_peak_velocities.append(round(float(np.max(gate_speeds)), 6))
+            cruise = gate_speeds >= 0.9 * expected_max_velocity
+            gate_cruise_durations_s.append(round(
+                float(np.sum(cruise)) * frame_period_s, 3,
+            ))
+            local_frames = local_frames[cruise]
+        if len(local_frames) == 0:
+            local_motion = 0.0
+        else:
+            local_motion = float(np.median(local_frames))
+        local_excess_power = max(local_motion - local_idle, 0.0)
+        local_excess_powers.append(local_excess_power)
+        if gate["direction"] == "outbound":
+            outbound_excess_powers.append(local_excess_power)
+        else:
+            inbound_excess_powers.append(local_excess_power)
+        segment_gain_db = db(
+            local_motion / max(local_idle, 1e-20), power=True
+        )
+        local_gain_db.append(segment_gain_db)
+        local_persistent_frames += int(np.sum(local_frames >= 2.0 * local_idle))
+        local_motion_frames += len(local_frames)
+        on_off_pair_count += 1
+        if segment_gain_db >= 3.0:
+            on_off_consistent_count += 1
+    if local_excess_powers:
+        # Each sustained-cruise window is compared only with the idle
+        # immediately around its movement gate. The median remains useful as a
+        # diagnostic; qualification separately uses the loudest gate.
+        broadband_excess_power = float(np.median(local_excess_powers))
+        motion_gain_over_idle_db = float(np.median(local_gain_db))
+        broadband_persistence = (
+            local_persistent_frames / local_motion_frames
+            if local_motion_frames else 0.0
+        )
+    on_off_consistency = (
+        on_off_consistent_count / on_off_pair_count if on_off_pair_count else None
+    )
+    all_gates_sustain_commanded_velocity: bool | None = None
+    if velocities is not None and gate_windows and expected_max_velocity is not None:
+        all_gates_sustain_commanded_velocity = all(
+            peak >= 0.9 * expected_max_velocity
+            and duration >= MINIMUM_GATE_CRUISE_S
+            for peak, duration in zip(
+                gate_peak_velocities, gate_cruise_durations_s, strict=True
+            )
+        )
     locked_power = 0.0
     for index in accepted_indexes:
         band = slice(max(0, index - 1), min(len(frequencies), index + 2))
@@ -332,6 +646,7 @@ def analyze_timed(
         motion_duration_s=round(motion_end_s - motion_start_s, 3),
         audible_peak_dbfs=round(db(float(np.max(np.abs(audio)))), 2),
         audible_rms_dbfs=round(db(float(np.sqrt(np.mean(np.square(centered))))), 2),
+        clipping_detected=bool(np.max(np.abs(audio)) >= 0.99),
         pre_idle_a_weighted_dbfs=round(pre_a_dbfs, 2),
         post_idle_a_weighted_dbfs=round(post_a_dbfs, 2),
         motion_a_weighted_dbfs=round(motion_a_dbfs, 2),
@@ -341,6 +656,34 @@ def analyze_timed(
         transient_gain_over_idle_p95_db=round(transient_gain_over_idle_p95_db, 2),
         motion_broadband_detected=motion_gain_over_idle_db >= 3.0,
         motion_transient_detected=transient_gain_over_idle_p95_db >= 6.0,
+        broadband_excess_a_weighted_dbfs=(
+            round(db(broadband_excess_power, power=True), 2)
+            if motion_gain_over_idle_db >= 3.0 else None
+        ),
+        broadband_gate_excess_a_weighted_dbfs=[
+            round(db(value, power=True), 2) for value in local_excess_powers
+        ],
+        loudest_broadband_gate_excess_a_weighted_dbfs=(
+            round(db(max(local_excess_powers), power=True), 2)
+            if local_excess_powers else None
+        ),
+        outbound_broadband_excess_a_weighted_dbfs=(
+            round(db(float(np.median(outbound_excess_powers)), power=True), 2)
+            if outbound_excess_powers else None
+        ),
+        inbound_broadband_excess_a_weighted_dbfs=(
+            round(db(float(np.median(inbound_excess_powers)), power=True), 2)
+            if inbound_excess_powers else None
+        ),
+        gate_peak_velocities=gate_peak_velocities,
+        gate_cruise_durations_s=gate_cruise_durations_s,
+        all_gates_sustain_commanded_velocity=all_gates_sustain_commanded_velocity,
+        broadband_persistence=round(broadband_persistence, 3),
+        on_off_pair_count=on_off_pair_count,
+        on_off_consistent_count=on_off_consistent_count,
+        on_off_consistency=(
+            round(on_off_consistency, 3) if on_off_consistency is not None else None
+        ),
         background_drift_db=round(background_drift_db, 2),
         background_stable=background_drift_db <= 2.0,
         timing_locked_a_weighted_dbfs=(
@@ -364,8 +707,24 @@ def high_speed_acoustic_level(
     telemetry: list[dict[str, Any]],
     axis: AxisConfig,
     acceptable_ceiling_dbfs: float | None = DEFAULT_ACCEPTABLE_NEAR_HIGH_SPEED_CEILING_DBFS,
+    *,
+    background_stable: bool = True,
+    timing_valid: bool = True,
+    gain_stable: bool = True,
+    clipping_detected: bool = False,
 ) -> dict[str, Any]:
     """Measure near-field level only while telemetry is near peak speed."""
+    invalid_reasons = []
+    if not background_stable:
+        invalid_reasons.append("pre/post background drift exceeds limit")
+    if not timing_valid:
+        invalid_reasons.append("telemetry timing quality failed")
+    if not gain_stable:
+        invalid_reasons.append("microphone gain fingerprint changed")
+    if clipping_detected:
+        invalid_reasons.append("audio clipping detected")
+    if invalid_reasons:
+        return {"valid": False, "invalidReasons": invalid_reasons}
     audio, rate = read_wav(path)
     times, frequencies, spectra = short_window_spectrogram(audio, rate)
     host_times = times + recorder_launch_offset_s
@@ -502,17 +861,130 @@ def capture(path: Path, source: str, duration: float, rate: int) -> None:
         )
 
 
+class TimestampedRecorder:
+    """Capture raw PCM while establishing the host time of audio sample zero."""
+
+    def __init__(self, path: Path, source: str, rate: int) -> None:
+        self.path = path
+        self.source = source
+        self.rate = rate
+        self.process: subprocess.Popen[bytes] | None = None
+        self.thread: threading.Thread | None = None
+        self.ready = threading.Event()
+        self.audio_start_monotonic: float | None = None
+        self.audio_end_monotonic: float | None = None
+        self.timestamp_uncertainty_s = float("inf")
+        self.priming_blocks_discarded = 0
+        self.error: BaseException | None = None
+
+    def start(self, timeout_s: float = 3.0) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.process = subprocess.Popen([
+            "pw-record", "--raw", "--target", self.source,
+            "--rate", str(self.rate), "--channels", "1", "--format", "s16",
+            "--latency", "10ms", "-",
+        ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+        self.thread = threading.Thread(target=self._drain, name="antlion-recorder", daemon=True)
+        self.thread.start()
+        if not self.ready.wait(timeout_s):
+            self.stop()
+            raise RuntimeError("The Antlion recorder did not deliver audio within 3 seconds")
+        if self.error is not None or self.audio_start_monotonic is None:
+            self.stop()
+            raise RuntimeError(f"The Antlion recorder failed during startup: {self.error}")
+
+    def _drain(self) -> None:
+        try:
+            assert self.process is not None and self.process.stdout is not None
+            with wave.open(str(self.path), "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(self.rate)
+                steady_priming_reads = 0
+                priming_complete = False
+                pipewire_block_bytes = 4096
+                while True:
+                    read_started_at = time.monotonic()
+                    # PipeWire delivers this source in 4096-byte blocks. Once
+                    # startup backlog is drained, each blocking read therefore
+                    # advances at the corresponding audio cadence.
+                    chunk = self.process.stdout.read(pipewire_block_bytes)
+                    received_at = time.monotonic()
+                    if not chunk:
+                        break
+                    if self.audio_start_monotonic is None:
+                        block_duration_s = len(chunk) / (2.0 * self.rate)
+                        read_duration_s = received_at - read_started_at
+                        full_block = len(chunk) == pipewire_block_bytes
+                        cadence_valid = (
+                            full_block
+                            and 0.5 * block_duration_s <= read_duration_s
+                            <= 2.5 * block_duration_s
+                        )
+                        if not priming_complete:
+                            # Drain any blocks queued during pw-record startup.
+                            # Only a blocking read with audio-rate wall cadence
+                            # demonstrates that the pipe backlog is gone.
+                            steady_priming_reads = (
+                                steady_priming_reads + 1 if cadence_valid else 0
+                            )
+                            self.priming_blocks_discarded += 1
+                            if steady_priming_reads >= 3:
+                                priming_complete = True
+                            continue
+                        if not cadence_valid:
+                            # Scheduling or a renewed backlog invalidated the
+                            # steady-state proof. Establish it again.
+                            priming_complete = False
+                            steady_priming_reads = 0
+                            self.priming_blocks_discarded += 1
+                            continue
+                        # Bound sample zero using both sides of the first
+                        # blocking read. The requested PipeWire latency is
+                        # added to the half-width as a conservative allowance.
+                        start_inferred_from_block_end = (
+                            received_at - block_duration_s
+                        )
+                        self.audio_start_monotonic = (
+                            read_started_at + start_inferred_from_block_end
+                        ) / 2.0
+                        self.timestamp_uncertainty_s = (
+                            abs(start_inferred_from_block_end - read_started_at) / 2.0
+                            + 0.010
+                        )
+                        self.ready.set()
+                    self.audio_end_monotonic = received_at
+                    wav.writeframesraw(chunk)
+        except BaseException as error:  # Propagate recorder-thread failures to the trial.
+            self.error = error
+            self.ready.set()
+
+    def stop(self) -> None:
+        if self.process is not None and self.process.poll() is None:
+            self.process.send_signal(signal.SIGINT)
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.terminate()
+                self.process.wait(timeout=2)
+        if self.thread is not None:
+            self.thread.join(timeout=5)
+        if self.error is not None:
+            raise RuntimeError(f"Antlion recorder failed: {self.error}")
+
+
 class Board:
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url.rstrip("/")
+        self.session = requests.Session()
 
-    def get(self, path: str) -> dict[str, Any]:
-        response = requests.get(self.base_url + path, timeout=3)
+    def get(self, path: str, timeout_s: float = 3.0) -> dict[str, Any]:
+        response = self.session.get(self.base_url + path, timeout=timeout_s)
         response.raise_for_status()
         return response.json()
 
     def post(self, path: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
-        response = requests.post(self.base_url + path, data=data, timeout=3)
+        response = self.session.post(self.base_url + path, data=data, timeout=3)
         if not response.ok:
             try:
                 message = response.json().get("message", response.text)
@@ -598,7 +1070,9 @@ def driver_is_healthy(diagnostic: dict[str, Any]) -> bool:
     )
 
 
-def preflight_rho_commissioning(board: Board) -> dict[str, Any]:
+def preflight_rho_commissioning(
+    board: Board, expected_interpolation: bool | None = None
+) -> dict[str, Any]:
     """Require the guarded image, temporary origin, and both healthy drivers."""
     status = board.get("/api/status")
     if status.get("state") != "IDLE":
@@ -623,11 +1097,32 @@ def preflight_rho_commissioning(board: Board) -> dict[str, Any]:
         if not driver_is_healthy(diagnostic):
             raise RuntimeError(f"{driver_role} driver failed commissioning preflight")
         verified_settings = diagnostic.get("settings", {})
-        if not verified_settings.get("chopconfReadValid") or not verified_settings.get(
-            "interpolationTo256"
+        if not verified_settings.get("chopconfReadValid"):
+            raise RuntimeError(
+                f"{driver_role} driver CHOPCONF could not be verified"
+            )
+        if (
+            expected_interpolation is not None
+            and bool(verified_settings.get("interpolationTo256"))
+            != expected_interpolation
         ):
             raise RuntimeError(
-                f"{driver_role} driver did not confirm interpolation-to-256"
+                f"{driver_role} driver did not confirm requested interpolation "
+                f"state ({'on' if expected_interpolation else 'off'})"
+            )
+        if verified_settings.get("analogCurrentScaling") is not False:
+            raise RuntimeError(
+                f"{driver_role} driver did not confirm UART digital current scaling"
+            )
+        if verified_settings.get("internalSenseResistors") is not False:
+            raise RuntimeError(
+                f"{driver_role} driver did not confirm external sense resistors"
+            )
+        if not verified_settings.get("otpReadValid"):
+            raise RuntimeError(f"{driver_role} driver OTP_READ could not be verified")
+        if verified_settings.get("otpInternalSenseResistors") is not False:
+            raise RuntimeError(
+                f"{driver_role} OTP selects internal sensing; expected FYSETC V3.0 external shunts"
             )
     return telemetry
 
@@ -648,6 +1143,23 @@ def apply_requested_settings(board: Board, args: argparse.Namespace) -> dict[str
         "holdCurrent": args.hold_current_ma,
         "microsteps": args.microsteps,
         "stealthChopThreshold": args.stealth_threshold,
+        "holdDelay": args.hold_delay,
+        "powerDownDelay": args.power_down_delay,
+        "chopperOffTime": args.chopper_off_time,
+        "hysteresisStart": args.hysteresis_start,
+        "hysteresisEnd": args.hysteresis_end,
+        "blankTime": args.blank_time,
+        "pwmFrequency": args.pwm_frequency,
+        "pwmRegulation": args.pwm_regulation,
+        "pwmLimit": args.pwm_limit,
+        "standstillMode": args.standstill_mode,
+        "pwmOffset": args.pwm_offset,
+        "pwmGradient": args.pwm_gradient,
+        "coolStepLowerThreshold": args.coolstep_lower,
+        "coolStepUpperThreshold": args.coolstep_upper,
+        "coolStepCurrentIncrement": args.coolstep_increment,
+        "coolStepMeasurementCount": args.coolstep_samples,
+        "coolStepThreshold": args.coolstep_threshold,
     }
     for key, value in motion_changes.items():
         if value is not None:
@@ -659,6 +1171,14 @@ def apply_requested_settings(board: Board, args: argparse.Namespace) -> dict[str
         driver["stealthChopEnabled"] = args.mode == "stealthchop"
     if args.coolstep:
         driver["coolStepEnabled"] = args.coolstep == "on"
+    if args.current_scale:
+        driver["highSensitivityCurrentScale"] = args.current_scale == "high"
+    if args.interpolation:
+        driver["interpolationEnabled"] = args.interpolation == "on"
+    if args.automatic_gradient:
+        driver["automaticGradientAdaptation"] = args.automatic_gradient == "on"
+    if args.automatic_current:
+        driver["automaticCurrentScaling"] = args.automatic_current == "on"
 
     requested_current = int(driver["runCurrent"])
     if requested_current > axis.current_ceiling_ma:
@@ -671,14 +1191,204 @@ def apply_requested_settings(board: Board, args: argparse.Namespace) -> dict[str
             f"Requested {axis.name} current {requested_current} mA exceeds the supplied motor rating "
             f"of {args.rated_current_ma} mA"
         )
+    limits = tuning.get("limits", {})
+    sense_resistor_ohms = float(limits.get("driverSenseResistorOhms", 0.0))
+    if sense_resistor_ohms <= 0.0:
+        raise ValueError("Firmware did not report a valid driver sense resistance")
+    current_code, actual_current_ma = driver_current_quantization(
+        requested_current,
+        bool(driver.get("highSensitivityCurrentScale", False)),
+        sense_resistor_ohms,
+    )
+    tolerance_adjusted_current_ma = actual_current_ma * 1.06
+    sense_verified = bool(limits.get("driverSenseResistorVerified", False))
+    if axis.name == "rho" and not sense_verified:
+        raise ValueError(
+            "Rho commissioning requires a verified driver sense resistance"
+        )
+    if axis.name == "rho" and current_code > int(
+        limits.get("rhoMaxUnmeasuredCurrentRegister", -1)
+    ):
+        raise ValueError(
+            f"Requested {requested_current} mA quantizes to CS={current_code}; "
+            "unmeasured FYSETC V3.0 operation is capped at CS=14"
+        )
+    if tolerance_adjusted_current_ma > min(axis.current_ceiling_ma, args.rated_current_ma):
+        raise ValueError(
+            f"Requested {requested_current} mA quantizes to {actual_current_ma:.0f} mA "
+            f"nominal (CS={current_code}); including tolerance it exceeds the safe "
+            "rating, so lower the request"
+        )
     if int(driver["holdCurrent"]) > requested_current:
         raise ValueError("Hold current must not exceed run current")
 
-    if any(value is not None for value in motion_changes.values()):
+    motion_requested = any(value is not None for value in motion_changes.values())
+    driver_requested = (
+        any(value is not None for value in driver_changes.values()) or args.mode
+        or args.coolstep or args.current_scale or args.interpolation
+        or args.automatic_gradient or args.automatic_current
+    )
+    if motion_requested and driver_requested:
+        # Microsteps and maximum velocity jointly determine the STEP rate. Keep
+        # the entire transition safe in both directions: lower velocity first,
+        # change driver registers, then install the requested final velocity.
+        transition_motion = dict(motion)
+        transition_motion[axis.motion_velocity_key] = min(
+            float(tuning["motion"][axis.motion_velocity_key]),
+            float(motion[axis.motion_velocity_key]),
+        )
+        post_form(board, "/api/tuning/motion", transition_motion)
+    elif motion_requested:
         post_form(board, "/api/tuning/motion", motion)
-    if any(value is not None for value in driver_changes.values()) or args.mode or args.coolstep:
+    if driver_requested:
         post_form(board, axis.tuning_path, driver)
+    if motion_requested and driver_requested:
+        post_form(board, "/api/tuning/motion", motion)
     return board.get("/api/tuning")
+
+
+def precondition_rho_stealthchop(
+    board: Board, velocity_mm_s: float, driver_settings: dict[str, Any],
+    sense_resistor_ohms: float,
+    excursion_mm: float = 100.0,
+) -> dict[str, Any]:
+    """Complete excluded AT#2 motion and return to the temporary origin."""
+    irun_code, _ = driver_current_quantization(
+        int(driver_settings["runCurrent"]),
+        bool(driver_settings.get("highSensitivityCurrentScale", False)),
+        sense_resistor_ohms,
+    )
+    automatic_stealth = (
+        bool(driver_settings.get("stealthChopEnabled"))
+        and bool(driver_settings.get("automaticCurrentScaling"))
+        and bool(driver_settings.get("automaticGradientAdaptation"))
+        and irun_code >= 8
+    )
+    validation: dict[str, Any] = {
+        "required": automatic_stealth,
+        "configuredIrunCode": irun_code,
+        "notRequiredReason": (
+            None if automatic_stealth else
+            "IRUN below 8 or automatic StealthChop calibration disabled"
+        ),
+        "byDriver": {},
+    }
+    if not automatic_stealth:
+        return {"motion": None, "samples": [], "at2Validation": validation}
+    if automatic_stealth and velocity_mm_s < 4.0:
+        raise RuntimeError(
+            "StealthChop AT#2 requires at least 4 mm/s (60 motor RPM)"
+        )
+    deadline_per_leg_s = excursion_mm / max(velocity_mm_s, 0.1) * 1.5 + 10.0
+    samples: list[dict[str, Any]] = []
+    for target_mm in (excursion_mm, 0.0):
+        board.post("/api/tuning/test/rho/segment", {"targetMm": target_mm})
+        deadline = time.monotonic() + deadline_per_leg_s
+        motion_seen = False
+        while time.monotonic() < deadline:
+            telemetry = board.get("/api/motion/telemetry")
+            position = float(telemetry["position"]["rho"])
+            velocity = abs(float(telemetry["velocity"]["rho"]))
+            if position < -RHO_POSITION_TOLERANCE_MM:
+                board.recovering_stop()
+                raise RuntimeError("Rho preconditioning moved inward of temporary zero")
+            motion_seen = motion_seen or velocity >= 0.002
+            if velocity >= 0.9 * velocity_mm_s:
+                for role, path in AXES["rho"].driver_dump_paths:
+                    diagnostic = board.get(path)
+                    if not driver_is_healthy(diagnostic):
+                        raise RuntimeError(
+                            f"{role} driver faulted during preconditioning"
+                        )
+                    samples.append({
+                        "legTargetMm": target_mm,
+                        "role": role,
+                        "cruise": True,
+                        "positionMm": round(position, 4),
+                        "diagnostic": diagnostic,
+                    })
+            if (motion_seen and telemetry.get("state") == "IDLE" and velocity < 0.002
+                    and abs(position - target_mm) <= RHO_POSITION_TOLERANCE_MM):
+                break
+            time.sleep(0.05)
+        else:
+            board.recovering_stop()
+            raise RuntimeError("Rho StealthChop preconditioning did not complete")
+        for role, path in AXES["rho"].driver_dump_paths:
+            diagnostic = board.get(path)
+            if not driver_is_healthy(diagnostic):
+                raise RuntimeError(f"{role} driver faulted during preconditioning")
+            samples.append({"legTargetMm": target_mm, "role": role,
+                            "cruise": False,
+                            "positionMm": round(target_mm, 4),
+                            "diagnostic": diagnostic})
+    final = board.get("/api/motion/telemetry")
+    if abs(float(final["position"]["rho"])) > RHO_POSITION_TOLERANCE_MM:
+        raise RuntimeError("Rho preconditioning did not return to temporary zero")
+    if automatic_stealth:
+        for role, _ in AXES["rho"].driver_dump_paths:
+            role_samples = [
+                item["diagnostic"] for item in samples
+                if item["role"] == role
+                and item.get("cruise") is True
+            ]
+            consecutive = 0
+            maximum_consecutive = 0
+            exact_zero_seen = False
+            checked: list[dict[str, Any]] = []
+            previous_gradient: int | None = None
+            for diagnostic in role_samples:
+                settings = diagnostic.get("settings", {})
+                dynamic = diagnostic.get("dynamic", {})
+                registers_valid = bool(dynamic.get("pwmScaleValid")) and bool(
+                    dynamic.get("pwmAutoValid")
+                )
+                irun = int(settings.get("irunRegister", -1))
+                offset = int(dynamic.get("pwmOffsetAuto", -1))
+                scale_sum = int(dynamic.get("pwmScaleSum", -1))
+                scale_auto = int(dynamic.get("pwmScaleAuto", 999))
+                gradient = int(dynamic.get("pwmGradientAuto", -1))
+                lower = 1.5 * offset * (irun + 1) / 32.0
+                upper = 4.0 * offset * (irun + 1) / 32.0
+                in_window = (
+                    registers_valid and irun >= 0 and offset >= 0 and
+                    lower < scale_sum < upper and scale_sum < 255
+                )
+                converged = in_window and abs(scale_auto) <= 1
+                gradient_stable = previous_gradient is None or gradient == previous_gradient
+                consecutive = consecutive + 1 if converged and gradient_stable else 0
+                maximum_consecutive = max(maximum_consecutive, consecutive)
+                exact_zero_seen = exact_zero_seen or (
+                    in_window and scale_auto == 0
+                )
+                previous_gradient = gradient
+                checked.append({
+                    "irun": irun, "pwmOffsetAuto": offset,
+                    "pwmScaleSum": scale_sum, "pwmScaleAuto": scale_auto,
+                    "pwmGradientAuto": gradient,
+                    "registersValid": registers_valid,
+                    "requiredScaleSumLowerExclusive": round(lower, 3),
+                    "requiredScaleSumUpperExclusive": round(upper, 3),
+                    "inWindow": in_window,
+                })
+            passed = exact_zero_seen and maximum_consecutive >= 3
+            validation["byDriver"][role] = {
+                "passed": passed,
+                "exactZeroSeen": exact_zero_seen,
+                "maximumConsecutiveConvergedSamples": maximum_consecutive,
+                "cruiseSampleCount": len(role_samples),
+                "samples": checked,
+            }
+            if not passed:
+                latest = checked[-1] if checked else None
+                raise RuntimeError(
+                    f"{role} StealthChop AT#2 did not converge during the excluded "
+                    f"+{excursion_mm:g} mm -> 0 warm-up; "
+                    f"cruiseSamples={len(role_samples)}, "
+                    f"maxConsecutive={maximum_consecutive}, latest={latest}"
+                )
+    return {"motion": f"+{excursion_mm:g}mm -> 0mm", "samples": samples,
+            "at2Validation": validation}
 
 
 def microphone_metadata(source: str) -> dict[str, str]:
@@ -707,13 +1417,115 @@ def microphone_metadata(source: str) -> dict[str, str]:
     return metadata
 
 
-def _telemetry_sample(board: Board, recording_zero: float) -> dict[str, Any] | None:
+def _telemetry_sample(
+    board: Board, recording_zero: float, timeout_s: float = 0.15
+) -> dict[str, Any] | None:
     try:
-        sample = board.get("/api/motion/telemetry")
-        sample["hostOffsetS"] = round(time.monotonic() - recording_zero, 6)
+        request_start = time.monotonic()
+        # A late response has an ambiguous midpoint and can span a meaningful
+        # part of a short gate. Drop it quickly and let timing validation judge
+        # the resulting bracket instead of recording a misleading timestamp.
+        sample = board.get("/api/motion/telemetry", timeout_s=timeout_s)
+        request_end = time.monotonic()
+        sample["hostOffsetS"] = round(
+            ((request_start + request_end) / 2.0) - recording_zero, 6
+        )
+        sample["hostRequestRttS"] = round(request_end - request_start, 6)
         return sample
     except requests.RequestException:
         return None
+
+
+def telemetry_timing_quality(
+    telemetry: list[dict[str, Any]], axis: AxisConfig, velocity_threshold: float,
+) -> dict[str, Any]:
+    times = np.asarray([float(sample["hostOffsetS"]) for sample in telemetry])
+    moving = np.asarray([
+        abs(float(sample["velocity"][axis.name])) >= velocity_threshold
+        for sample in telemetry
+    ])
+    gaps = np.diff(times)
+    moving_indexes = np.flatnonzero(moving)
+    reasons: list[str] = []
+    if len(times) < 3 or len(gaps) < 2 or len(moving_indexes) < 2:
+        reasons.append("insufficient telemetry samples")
+        p95_gap = maximum_gap = float("inf")
+        start_bracket = stop_bracket = float("inf")
+    else:
+        p95_gap = float(np.percentile(gaps, 95))
+        maximum_gap = float(np.max(gaps))
+        critical_gaps: list[float] = []
+        interpolated_steady_gaps = 0
+        for index, gap in enumerate(gaps):
+            if gap <= TELEMETRY_MAX_GAP_S:
+                continue
+            before = telemetry[index]
+            after = telemetry[index + 1]
+            before_velocity = float(before["velocity"][axis.name])
+            after_velocity = float(after["velocity"][axis.name])
+            mean_velocity = (before_velocity + after_velocity) / 2.0
+            before_position = before.get("position", {}).get(axis.name)
+            after_position = after.get("position", {}).get(axis.name)
+            observed_velocity = (
+                (float(after_position) - float(before_position)) / gap
+                if before_position is not None and after_position is not None
+                else float("inf")
+            )
+            steady_interpolation_safe = (
+                before.get("state") == "RUNNING"
+                and after.get("state") == "RUNNING"
+                and abs(before_velocity) >= velocity_threshold
+                and before_velocity * after_velocity > 0.0
+                and abs(after_velocity - before_velocity)
+                <= max(velocity_threshold, abs(mean_velocity) * 0.05)
+                and abs(observed_velocity - mean_velocity)
+                <= max(velocity_threshold, abs(mean_velocity) * 0.10)
+            )
+            if steady_interpolation_safe:
+                interpolated_steady_gaps += 1
+            else:
+                critical_gaps.append(float(gap))
+        maximum_critical_gap = max(critical_gaps, default=0.0)
+        transitions = np.diff(moving.astype(np.int8))
+        start_indexes = np.flatnonzero(transitions == 1) + 1
+        stop_indexes = np.flatnonzero(transitions == -1)
+        start_bracket = max(
+            (float(times[index] - times[index - 1]) for index in start_indexes),
+            default=float("inf"),
+        )
+        stop_bracket = max(
+            (float(times[index + 1] - times[index]) for index in stop_indexes
+             if index + 1 < len(times)),
+            default=float("inf"),
+        )
+        if p95_gap > TELEMETRY_MAX_P95_GAP_S:
+            reasons.append("telemetry p95 gap exceeds limit")
+        if maximum_critical_gap > TELEMETRY_MAX_GAP_S:
+            reasons.append("telemetry classification-critical gap exceeds limit")
+        if max(start_bracket, stop_bracket) > TELEMETRY_MAX_TRANSITION_BRACKET_S:
+            reasons.append("motion transition bracket exceeds limit")
+    maximum_rtt = max(
+        (float(sample.get("hostRequestRttS", 0.0)) for sample in telemetry),
+        default=float("inf"),
+    )
+    return {
+        "valid": not reasons,
+        "sampleCount": len(telemetry),
+        "p95GapS": round(p95_gap, 6),
+        "maximumGapS": round(maximum_gap, 6),
+        "maximumClassificationCriticalGapS": round(
+            maximum_critical_gap if len(times) >= 3 else float("inf"), 6
+        ),
+        "interpolatedSteadyGapCount": (
+            interpolated_steady_gaps if len(times) >= 3 else 0
+        ),
+        "motionStartBracketS": round(start_bracket, 6),
+        "motionStopBracketS": round(stop_bracket, 6),
+        "motionStartCount": int(len(start_indexes)) if len(times) >= 3 else 0,
+        "motionStopCount": int(len(stop_indexes)) if len(times) >= 3 else 0,
+        "maximumRequestRttS": round(maximum_rtt, 6),
+        "invalidReasons": reasons,
+    }
 
 
 def save_timing_plot(
@@ -774,11 +1586,17 @@ def save_timing_plot(
     axes[2].set_ylabel("Tone power\n(dBFS/bin)")
     axes[2].set_xlabel("Seconds from recorder start")
     axes[2].grid(alpha=0.25)
+    motion_flags = np.asarray([abs(velocity) >= 0.002 for velocity in velocities])
+    motion_edges = np.diff(np.r_[False, motion_flags, False].astype(np.int8))
+    motion_starts = np.flatnonzero(motion_edges == 1)
+    motion_stops = np.flatnonzero(motion_edges == -1)
     for axis in axes:
-        axis.axvspan(
-            metrics.actual_motion_start_s, metrics.actual_motion_end_s,
-            color="#4caf50", alpha=0.10,
-        )
+        for start, stop in zip(motion_starts, motion_stops, strict=True):
+            stop_index = min(int(stop), len(telemetry_times) - 1)
+            axis.axvspan(
+                telemetry_times[int(start)], telemetry_times[stop_index],
+                color="#4caf50", alpha=0.10,
+            )
         axis.axvline(metrics.actual_motion_start_s, color="#228b22", linestyle="--")
         axis.axvline(metrics.actual_motion_end_s, color="#b22222", linestyle="--")
     fig.suptitle("ESP32 telemetry-aligned acoustic validation")
@@ -793,11 +1611,18 @@ def run_timed_repeat(
     output_dir: Path,
     prefix: str,
     profile: str,
+    expected_max_velocity: float,
 ) -> dict[str, Any]:
     axis = AXES[args.axis]
+    rho_envelope_mm = (
+        args.rho_excursion_mm
+        if profile in ("screen", "gated")
+        else RHO_TEST_MAX_EXCURSION_MM
+    )
     board.recovering_stop()
     time.sleep(args.settle)
-    start_sample = _telemetry_sample(board, time.monotonic())
+    recording_zero = time.monotonic()
+    start_sample = _telemetry_sample(board, recording_zero, timeout_s=3.0)
     if not start_sample or start_sample.get("state") != "IDLE":
         raise RuntimeError(f"Board must be IDLE before a {axis.name} repeat")
     start_position = float(start_sample["position"][axis.name])
@@ -809,19 +1634,29 @@ def run_timed_repeat(
     telemetry: list[dict[str, Any]] = []
     driver_samples: list[dict[str, Any]] = []
     gain_before = microphone_metadata(args.source)
-    recording_zero = time.monotonic()
-    recorder_launch_offset = time.monotonic() - recording_zero
-    recorder_process = subprocess.Popen([
-        "pw-record", "--target", args.source, "--rate", str(args.rate),
-        "--channels", "1", "--format", "s16", "--latency", "10ms", str(audio_path),
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    recorder = TimestampedRecorder(audio_path, args.source, args.rate)
+    recorder.start()
+    assert recorder.audio_start_monotonic is not None
+    recorder_launch_offset = recorder.audio_start_monotonic - recording_zero
     command_offset = 0.0
     stop_request_offset: float | None = None
     next_poll = recording_zero
-    next_driver_poll = recording_zero
+
+    def sample_drivers(phase: str) -> None:
+        """Read UART only while stopped so it cannot blind motion telemetry."""
+        for driver_role, dump_path in axis.driver_dump_paths:
+            driver = board.get(dump_path)
+            driver["driverRole"] = driver_role
+            driver["samplePhase"] = phase
+            driver["hostOffsetS"] = round(time.monotonic() - recording_zero, 6)
+            driver_samples.append(driver)
+            if not driver_is_healthy(driver):
+                raise RuntimeError(
+                    f"{driver_role} driver reported a fault at {phase}"
+                )
 
     def collect_for(duration_s: float) -> None:
-        nonlocal next_poll, next_driver_poll
+        nonlocal next_poll
         deadline = time.monotonic() + duration_s
         while time.monotonic() < deadline:
             now = time.monotonic()
@@ -837,10 +1672,10 @@ def run_timed_repeat(
                                 f"{start_position:.3f} mm"
                             )
                         if rho_position > (
-                            start_position + RHO_TEST_EXCURSION_MM + RHO_POSITION_TOLERANCE_MM
+                            start_position + rho_envelope_mm + RHO_POSITION_TOLERANCE_MM
                         ):
                             raise RuntimeError(
-                                f"Rho exceeded its +{RHO_TEST_EXCURSION_MM:.0f} mm envelope"
+                                f"Rho exceeded its +{rho_envelope_mm:.0f} mm envelope"
                             )
                         if (
                             abs(float(sample["position"]["theta"]) - other_start_position)
@@ -848,40 +1683,18 @@ def run_timed_repeat(
                             or abs(float(sample["velocity"]["theta"])) > 0.002
                         ):
                             raise RuntimeError("Theta changed during a rho-only trial")
-                next_poll = now + args.telemetry_interval
-            if now >= next_driver_poll:
-                for driver_role, dump_path in axis.driver_dump_paths:
-                    try:
-                        driver = board.get(dump_path)
-                        driver["driverRole"] = driver_role
-                        driver["hostOffsetS"] = round(
-                            time.monotonic() - recording_zero, 6
-                        )
-                        driver_samples.append(driver)
-                        if not driver_is_healthy(driver):
-                            raise RuntimeError(
-                                f"{driver_role} driver reported a fault during motion"
-                            )
-                    except requests.RequestException as error:
-                        raise RuntimeError(
-                            f"Lost {driver_role} driver diagnostics during motion"
-                        ) from error
-                next_driver_poll = now + 0.5
-            time.sleep(0.01)
+                # Schedule from completion, not the stale pre-request timestamp.
+                next_poll = time.monotonic() + args.telemetry_interval
+            time.sleep(0.005)
 
-    try:
-        time.sleep(0.25)
-        if recorder_process.poll() is not None:
-            raise RuntimeError("The Antlion recorder exited before the trial began")
-        collect_for(args.pre_idle)
-        board.post(f"{axis.test_path_prefix}/{profile}")
-        command_offset = time.monotonic() - recording_zero
-        motion_deadline = time.monotonic() + args.duration
+    def wait_for_motion_completion(motion_deadline: float) -> None:
         motion_seen = False
         consecutive_idle = 0
+        evaluated_sample_count = len(telemetry)
         while time.monotonic() < motion_deadline and consecutive_idle < 3:
             collect_for(args.telemetry_interval)
-            if telemetry:
+            if len(telemetry) > evaluated_sample_count:
+                evaluated_sample_count = len(telemetry)
                 last = telemetry[-1]
                 moving = (
                     abs(float(last["velocity"][axis.name]))
@@ -889,43 +1702,52 @@ def run_timed_repeat(
                 )
                 if moving or last.get("state") in ("RUNNING", "STOPPING"):
                     motion_seen = True
-                is_idle = (
-                    motion_seen and last.get("state") == "IDLE"
-                    and not moving
-                )
+                is_idle = motion_seen and last.get("state") == "IDLE" and not moving
                 consecutive_idle = consecutive_idle + 1 if is_idle else 0
         if not motion_seen:
             raise RuntimeError(f"ESP32 telemetry did not confirm {axis.name} motion")
         if consecutive_idle < 3:
+            raise TimeoutError
+
+    try:
+        sample_drivers("before-motion")
+        collect_for(args.pre_idle)
+        motion_deadline = time.monotonic() + args.duration
+        try:
+            if profile in ("screen", "gated"):
+                if axis.name != "rho":
+                    raise RuntimeError("The screen and gated profiles are rho-only")
+                for target_mm in rho_segment_targets(
+                    profile, args.rho_excursion_mm
+                ):
+                    board.post(
+                        f"{axis.test_path_prefix}/segment",
+                        {"targetMm": target_mm},
+                    )
+                    if command_offset == 0.0:
+                        command_offset = time.monotonic() - recording_zero
+                    wait_for_motion_completion(motion_deadline)
+                    sample_drivers(f"after-segment-{target_mm:g}mm")
+                    collect_for(args.gated_idle)
+            else:
+                board.post(f"{axis.test_path_prefix}/{profile}")
+                command_offset = time.monotonic() - recording_zero
+                wait_for_motion_completion(motion_deadline)
+                sample_drivers("after-motion")
+        except TimeoutError:
             board.stop()
             stop_request_offset = time.monotonic() - recording_zero
-            idle_deadline = time.monotonic() + args.stop_timeout
-            while time.monotonic() < idle_deadline and consecutive_idle < 3:
-                collect_for(args.telemetry_interval)
-                if telemetry:
-                    last = telemetry[-1]
-                    is_idle = (
-                        last.get("state") == "IDLE"
-                        and abs(float(last["velocity"][axis.name]))
-                        < args.motion_velocity_threshold
-                    )
-                    consecutive_idle = consecutive_idle + 1 if is_idle else 0
             raise RuntimeError(
                 f"{axis.name.capitalize()} {profile} test did not complete within {args.duration:.1f}s; "
                 "the partial run was stopped and cannot qualify a profile"
             )
         collect_for(args.post_idle)
+        sample_drivers("after-post-idle")
     finally:
         try:
             board.recovering_stop()
         finally:
-            if recorder_process.poll() is None:
-                recorder_process.send_signal(signal.SIGINT)
-                try:
-                    recorder_process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    recorder_process.terminate()
-                    recorder_process.wait(timeout=2)
+            recorder.stop()
 
     audio, captured_rate = read_wav(audio_path)
     gain_after = microphone_metadata(args.source)
@@ -955,22 +1777,66 @@ def run_timed_repeat(
                 f"Rho {profile} commanded inward of its start: "
                 f"{minimum_position:.3f} < {start_position:.3f} mm"
             )
-        if maximum_position > start_position + RHO_TEST_EXCURSION_MM + RHO_POSITION_TOLERANCE_MM:
+        if maximum_position > start_position + rho_envelope_mm + RHO_POSITION_TOLERANCE_MM:
             raise RuntimeError(
-                f"Rho {profile} exceeded its +{RHO_TEST_EXCURSION_MM:.0f} mm envelope"
+                f"Rho {profile} exceeded its +{rho_envelope_mm:.0f} mm envelope"
             )
     motion_start = float(moving_samples[0]["hostOffsetS"])
     motion_end = float(moving_samples[-1]["hostOffsetS"])
+    timing_quality = telemetry_timing_quality(
+        telemetry, axis, args.motion_velocity_threshold,
+    )
+    timing_quality["audioEpochUncertaintyS"] = recorder.timestamp_uncertainty_s
+    timing_quality["audioPrimingBlocksDiscarded"] = (
+        recorder.priming_blocks_discarded
+    )
+    audio_duration_s = len(audio) / captured_rate
+    host_audio_duration_s = (
+        recorder.audio_end_monotonic - recorder.audio_start_monotonic
+        if recorder.audio_end_monotonic is not None
+        and recorder.audio_start_monotonic is not None
+        else float("inf")
+    )
+    audio_duration_skew_s = abs(audio_duration_s - host_audio_duration_s)
+    timing_quality["audioDurationS"] = round(audio_duration_s, 6)
+    timing_quality["hostAudioDurationS"] = round(host_audio_duration_s, 6)
+    timing_quality["audioDurationSkewS"] = round(audio_duration_skew_s, 6)
+    if recorder.timestamp_uncertainty_s > 0.025:
+        timing_quality["valid"] = False
+        timing_quality["invalidReasons"].append(
+            "audio sample-zero uncertainty exceeds limit"
+        )
+    if audio_duration_skew_s > AUDIO_MAX_DURATION_SKEW_S:
+        timing_quality["valid"] = False
+        timing_quality["invalidReasons"].append(
+            "audio duration disagrees with host capture time"
+        )
     recording_motion_start = motion_start - recorder_launch_offset
     recording_motion_end = motion_end - recorder_launch_offset
     metrics, analysis = analyze_timed(
         audio_path, recording_motion_start, recording_motion_end,
         minimum_gain_db=args.minimum_gain_db,
         minimum_persistence=args.minimum_persistence,
+        telemetry=telemetry,
+        recorder_launch_offset_s=recorder_launch_offset,
+        axis=axis,
+        velocity_threshold=args.motion_velocity_threshold,
+        audio_epoch_uncertainty_s=recorder.timestamp_uncertainty_s,
+        expected_max_velocity=(
+            expected_max_velocity if profile in ("screen", "gated") else None
+        ),
     )
     near_high_speed = high_speed_acoustic_level(
         audio_path, recorder_launch_offset, telemetry, axis,
-        None if args.reference_only else args.acceptable_ceiling_dbfs,
+        (
+            None
+            if args.reference_only or axis.name == "rho"
+            else args.acceptable_ceiling_dbfs
+        ),
+        background_stable=metrics.background_stable,
+        timing_valid=bool(timing_quality["valid"]),
+        gain_stable=gain_before == gain_after,
+        clipping_detected=metrics.clipping_detected,
     )
     recording_telemetry = [
         {**sample, "hostOffsetS": float(sample["hostOffsetS"]) - recorder_launch_offset}
@@ -980,6 +1846,7 @@ def run_timed_repeat(
     timeline = {
         "clock": "host monotonic seconds from capture orchestration start",
         "recorderLaunchOffsetS": round(recorder_launch_offset, 6),
+        "recorderTimestampUncertaintyS": recorder.timestamp_uncertainty_s,
         "commandOffsetS": round(command_offset, 6),
         "stopRequestOffsetS": (
             round(stop_request_offset, 6) if stop_request_offset is not None else None
@@ -989,8 +1856,10 @@ def run_timed_repeat(
         "startPosition": round(start_position, 6),
         "finalPosition": round(final_position, 6),
         "returnError": round(return_error, 6),
+        "rhoExcursionMm": rho_envelope_mm if axis.name == "rho" else None,
         "actualMotionStartS": round(motion_start, 6),
         "actualMotionEndS": round(motion_end, 6),
+        "timingQuality": timing_quality,
         "telemetry": telemetry,
         "driverSamples": driver_samples,
     }
@@ -1005,6 +1874,7 @@ def run_timed_repeat(
         "gainFingerprintBefore": gain_before,
         "gainFingerprintAfter": gain_after,
         "gainFingerprintStable": gain_before == gain_after,
+        "timingQuality": timing_quality,
         "nearHighSpeed": near_high_speed,
         "testCompletedNaturally": True,
         "axis": axis.name,
@@ -1026,7 +1896,7 @@ def confirmed_tones(repeats: list[dict[str, Any]]) -> list[dict[str, Any]]:
         matches = [seed]
         for tones in tone_sets[1:]:
             nearby = min(
-                tones,
+                (tone for tone in tones if tone.get("direction") == seed.get("direction")),
                 key=lambda tone: abs(tone["frequency_hz"] - seed["frequency_hz"]),
                 default=None,
             )
@@ -1037,6 +1907,7 @@ def confirmed_tones(repeats: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         levels = [float(tone["motion_level_dbfs"]) for tone in matches]
         confirmed.append({
+            "direction": seed.get("direction", "both"),
             "frequencyHz": round(float(np.median([tone["frequency_hz"] for tone in matches])), 2),
             "medianMotionLevelDbfs": round(float(np.median(levels)), 2),
             "repeatLevelSpreadDb": round(max(levels) - min(levels), 2),
@@ -1047,6 +1918,39 @@ def confirmed_tones(repeats: list[dict[str, Any]]) -> list[dict[str, Any]]:
             ),
         })
     return sorted(confirmed, key=lambda tone: tone["medianMotionLevelDbfs"], reverse=True)
+
+
+def repeat_confirmation_satisfied(
+    profile_summaries: dict[str, dict[str, Any]], requested_repeats: int,
+) -> bool:
+    """Require multiple valid, motor-correlated qualification repeats."""
+    return (
+        requested_repeats >= 2
+        and bool(profile_summaries)
+        and all(
+            not summary["provisionalScreen"]
+            and summary["nearField"]["acceptedAsMotorNoise"]
+            for summary in profile_summaries.values()
+        )
+    )
+
+
+def interpolation_readback_confirmed(
+    driver_samples: list[dict[str, Any]], expected_roles: set[str],
+    expected_enabled: bool,
+) -> bool:
+    """Confirm every sampled driver reports the requested interpolation state."""
+    sampled_roles = {sample.get("driverRole") for sample in driver_samples}
+    return (
+        bool(driver_samples)
+        and sampled_roles == expected_roles
+        and all(
+            sample.get("settings", {}).get("chopconfReadValid", False)
+            and bool(sample.get("settings", {}).get("interpolationTo256"))
+            == expected_enabled
+            for sample in driver_samples
+        )
+    )
 
 
 def cmd_trial(args: argparse.Namespace) -> int:
@@ -1065,10 +1969,18 @@ def cmd_trial(args: argparse.Namespace) -> int:
             args.tone_ceiling_dbfs = DEFAULT_ACCEPTABLE_NEAR_TONE_CEILING_DBFS
     if args.repeats < 1 or args.repeats > 5:
         raise ValueError("--repeats must be between 1 and 5")
-    if args.duration <= 0 or args.pre_idle <= 0 or args.post_idle <= 0:
-        raise ValueError("--duration, --pre-idle, and --post-idle must be positive")
+    if (args.duration <= 0 or args.pre_idle <= 0 or args.post_idle <= 0
+            or args.gated_idle <= 0):
+        raise ValueError(
+            "--duration, --pre-idle, --post-idle, and --gated-idle must be positive"
+        )
     if args.rated_current_ma <= 0:
         raise ValueError("--rated-current-ma must be positive")
+    if not 1.0 <= args.rho_excursion_mm <= RHO_TEST_MAX_EXCURSION_MM:
+        raise ValueError(
+            f"--rho-excursion-mm must be between 1 and "
+            f"{RHO_TEST_MAX_EXCURSION_MM:.0f}"
+        )
     board = Board(args.board)
     board.recovering_stop()
     if axis.name == "rho":
@@ -1083,21 +1995,49 @@ def cmd_trial(args: argparse.Namespace) -> int:
     if axis.name == "rho":
         # Recheck after applying current/microstep settings. In commissioning,
         # a microstep change deliberately re-establishes logical zero.
-        preflight_rho_commissioning(board)
+        preflight_rho_commissioning(
+            board, bool(driver_settings["interpolationEnabled"])
+        )
         requested_profiles = (
             ("continuous", "stress") if args.profile == "both" else (args.profile,)
         )
         minimum_motion_s = max(
-            RHO_PROFILE_DISTANCE_MM[profile]
+            rho_profile_distance_mm(profile, args.rho_excursion_mm)
             / float(tuning["motion"][axis.motion_velocity_key])
             for profile in requested_profiles
         )
         minimum_timeout_s = minimum_motion_s * 1.25 + 10.0
+        gated_profiles = [
+            profile for profile in requested_profiles
+            if profile in ("screen", "gated")
+        ]
+        if gated_profiles:
+            minimum_timeout_s += max(
+                len(rho_segment_targets(profile, args.rho_excursion_mm))
+                for profile in gated_profiles
+            ) * args.gated_idle
         if args.duration < minimum_timeout_s:
             raise ValueError(
                 f"--duration {args.duration:.1f}s is too short for the requested rho profile; "
                 f"use at least {minimum_timeout_s:.0f}s (includes 25% ramp margin)"
             )
+        preconditioning = precondition_rho_stealthchop(
+            board, float(tuning["motion"][axis.motion_velocity_key]),
+            driver_settings,
+            float(tuning["limits"]["driverSenseResistorOhms"]),
+        )
+        if preconditioning["at2Validation"]["required"]:
+            print(
+                "[precondition] excluded +100 mm -> 0 StealthChop calibration motion",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "[precondition] AT#2 motion not required for this driver mode",
+                file=sys.stderr,
+            )
+    else:
+        preconditioning = []
 
     output_dir = Path(args.output_dir)
     stamp = utc_stamp()
@@ -1112,6 +2052,7 @@ def cmd_trial(args: argparse.Namespace) -> int:
             print(f"[{profile} repeat {repeat_index}/{args.repeats}] recording idle -> motion -> idle", file=sys.stderr)
             repeat_results.append(run_timed_repeat(
                 board, args, output_dir, prefix, profile,
+                float(tuning["motion"][axis.motion_velocity_key]),
             ))
 
     profile_summaries: dict[str, dict[str, Any]] = {}
@@ -1122,12 +2063,61 @@ def cmd_trial(args: argparse.Namespace) -> int:
             item["metrics"]["timing_locked_a_weighted_dbfs"] for item in profile_repeats
             if item["metrics"]["timing_locked_a_weighted_dbfs"] is not None
         ]
-        valid_detection = bool(tones) and all(
-            item["gainFingerprintStable"] for item in profile_repeats
+        all_gain_stable = all(item["gainFingerprintStable"] for item in profile_repeats)
+        all_timing_valid = all(
+            item["timingQuality"]["valid"] for item in profile_repeats
         )
-        level_valid = valid_detection and all(
+        required_pair_count = (
+            len(rho_segment_targets(profile, args.rho_excursion_mm))
+            if profile in ("screen", "gated") else 1
+        )
+        # Qualification is fail-closed on the loudest telemetry-confirmed
+        # cruise gate in every repeat. The across-gate median remains a useful
+        # diagnostic, but must never let quiet acceleration ramps or quieter
+        # positions hide a loud sustained operating point.
+        sustained_cruise_levels = [
+            float(item["metrics"]["loudest_broadband_gate_excess_a_weighted_dbfs"])
+            for item in profile_repeats
+            if item["metrics"]["broadband_excess_a_weighted_dbfs"] is not None
+            and item["metrics"]["loudest_broadband_gate_excess_a_weighted_dbfs"] is not None
+            and item["metrics"]["background_stable"]
+            and item["metrics"]["broadband_persistence"] >= args.minimum_persistence
+            and item["metrics"]["on_off_pair_count"] == required_pair_count
+            and item["metrics"]["on_off_consistency"] is not None
+            and item["metrics"]["on_off_consistency"] >= 0.75
+            and item["metrics"]["all_gates_sustain_commanded_velocity"] is True
+            and not item["metrics"]["clipping_detected"]
+            and item["timingQuality"]["valid"]
+            and item["gainFingerprintStable"]
+        ]
+        valid_broadband = len(sustained_cruise_levels) == len(profile_repeats)
+        all_background_stable = all(
             item["metrics"]["background_stable"] for item in profile_repeats
         )
+        all_unclipped = all(
+            not item["metrics"]["clipping_detected"] for item in profile_repeats
+        )
+        complete_pair_sets = all(
+            item["metrics"]["on_off_pair_count"] == required_pair_count
+            for item in profile_repeats
+        )
+        correlated_pair_sets = all(
+            item["metrics"]["on_off_consistency"] is not None
+            and item["metrics"]["on_off_consistency"] >= 0.75
+            for item in profile_repeats
+        )
+        all_gates_sustain_velocity = all(
+            item["metrics"]["all_gates_sustain_commanded_velocity"] is True
+            for item in profile_repeats
+        )
+        valid_tones = (
+            bool(tones) and all_gain_stable and all_timing_valid
+            and all_background_stable and all_unclipped
+            and complete_pair_sets and correlated_pair_sets
+            and all_gates_sustain_velocity
+        )
+        valid_detection = valid_broadband or valid_tones
+        level_valid = valid_broadband
         near_high_speed_levels = [
             float(item["nearHighSpeed"]["medianAWeightedDbfs"])
             for item in profile_repeats
@@ -1143,10 +2133,14 @@ def cmd_trial(args: argparse.Namespace) -> int:
             for tone in tones
         ]
         profile_summaries[profile] = {
+            "provisionalScreen": profile == "screen",
+            "qualificationEligible": profile != "screen",
             "nearField": {
                 "microphone": "Antlion close to motor",
                 "acceptedAsMotorNoise": valid_detection,
                 "levelValidForComparison": level_valid,
+                "broadbandMotorNoiseAccepted": valid_broadband,
+                "timingLockedToneNoiseAccepted": valid_tones,
                 "confirmedTimingLockedTones": tones,
                 "acceptableTimingLockedToneCeilingDbfs": (
                     None if args.reference_only else args.tone_ceiling_dbfs
@@ -1167,9 +2161,17 @@ def cmd_trial(args: argparse.Namespace) -> int:
                     and all(level <= args.tone_ceiling_dbfs for level in repeat_tone_levels)
                     )
                 ),
-                "motorNoiseLevelAWeightedDbfs": (
+                "loudestSustainedCruiseMotorExcessAWeightedDbfs": (
+                    round(max(sustained_cruise_levels), 2)
+                    if level_valid else None
+                ),
+                "motorNoiseMetric": (
+                    "loudest telemetry-confirmed >=90% commanded-velocity gate, "
+                    "minus louder adjacent-idle A-weighted power"
+                ),
+                "timingLockedToneBandAWeightedDbfs": (
                     round(float(np.median(locked_levels)), 2)
-                    if level_valid and locked_levels else None
+                    if valid_tones and locked_levels else None
                 ),
                 "allBackgroundWindowsStable": all(
                     item["metrics"]["background_stable"] for item in profile_repeats
@@ -1177,24 +2179,39 @@ def cmd_trial(args: argparse.Namespace) -> int:
                 "gainFingerprintStable": all(
                     item["gainFingerprintStable"] for item in profile_repeats
                 ),
-                "highSpeedMedianAWeightedDbfs": (
+                "allTelemetryTimingValid": all_timing_valid,
+                "minimumOnOffPairCount": min(
+                    int(item["metrics"]["on_off_pair_count"])
+                    for item in profile_repeats
+                ),
+                "requiredOnOffPairCount": required_pair_count,
+                "allGatesSustainCommandedVelocity": all_gates_sustain_velocity,
+                "minimumOnOffConsistency": min(
+                    float(item["metrics"]["on_off_consistency"])
+                    for item in profile_repeats
+                    if item["metrics"]["on_off_consistency"] is not None
+                ) if any(
+                    item["metrics"]["on_off_consistency"] is not None
+                    for item in profile_repeats
+                ) else None,
+                "rawHighSpeedAWeightedDbfsDiagnostic": (
                     round(float(np.median(near_high_speed_levels)), 2)
                     if near_high_speed_levels else None
                 ),
-                "loudestRepeatHighSpeedAWeightedDbfs": (
+                "rawLoudestRepeatHighSpeedAWeightedDbfsDiagnostic": (
                     round(max(near_high_speed_levels), 2)
                     if near_high_speed_levels else None
                 ),
-                "acceptableHighSpeedCeilingAWeightedDbfs": (
+                "rawHighSpeedMetricUsedForAcceptance": False,
+                "acceptableMotorExcessCeilingAWeightedDbfs": (
                     None if args.reference_only else args.acceptable_ceiling_dbfs
                 ),
                 "everyRepeatWithinAcceptableReference": (
                     None if args.reference_only else (
-                    bool(near_high_speed_levels)
-                    and len(near_high_speed_levels) == len(profile_repeats)
+                    valid_broadband
                     and all(
                         level <= args.acceptable_ceiling_dbfs
-                        for level in near_high_speed_levels
+                        for level in sustained_cruise_levels
                     )
                     )
                 ),
@@ -1237,9 +2254,12 @@ def cmd_trial(args: argparse.Namespace) -> int:
         "recordedAt": stamp,
         "microphone": microphone_metadata(args.source),
         "settings": {"motion": tuning["motion"], axis.driver_key: driver_settings},
+        "preconditioning": preconditioning,
         "summary": {
             "referenceOnly": args.reference_only,
-            "repeatConfirmationSatisfied": args.repeats >= 2,
+            "repeatConfirmationSatisfied": repeat_confirmation_satisfied(
+                profile_summaries, args.repeats
+            ),
             "allTestsCompletedNaturally": all(
                 item["testCompletedNaturally"] for item in repeat_results
             ),
@@ -1277,11 +2297,15 @@ def cmd_trial(args: argparse.Namespace) -> int:
             "allDriverUartResponsesValid": bool(all_drivers) and all(
                 sample.get("uartResponseValid", False) for sample in all_drivers
             ) and sampled_driver_roles == expected_driver_roles,
-            "allDriverInterpolationTo256Confirmed": bool(all_drivers) and all(
-                sample.get("settings", {}).get("chopconfReadValid", False)
-                and sample.get("settings", {}).get("interpolationTo256", False)
-                for sample in all_drivers
-            ) and sampled_driver_roles == expected_driver_roles,
+            "requestedDriverInterpolationTo256": bool(
+                driver_settings["interpolationEnabled"]
+            ),
+            "allDriverInterpolationReadbackConfirmed": (
+                interpolation_readback_confirmed(
+                    all_drivers, expected_driver_roles,
+                    bool(driver_settings["interpolationEnabled"]),
+                )
+            ),
             "allDriversFaultFree": bool(all_drivers) and all(
                 driver_is_healthy(sample) for sample in all_drivers
             ) and sampled_driver_roles == expected_driver_roles,
@@ -1317,6 +2341,60 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 
 def cmd_self_test(_: argparse.Namespace) -> int:
+    expected_rho_currents = {8: 275, 10: 337, 12: 398, 13: 428, 14: 459}
+    for expected_code, request_ma in expected_rho_currents.items():
+        code, nominal_ma = driver_current_quantization(request_ma, True, 0.11)
+        if code != expected_code or abs(nominal_ma - request_ma) > 1.0:
+            raise RuntimeError(
+                f"0.11 ohm current conversion failed for CS={expected_code}: "
+                f"got CS={code}, {nominal_ma:.1f} mA"
+            )
+
+    valid_summary = {
+        "gated": {
+            "provisionalScreen": False,
+            "nearField": {"acceptedAsMotorNoise": True},
+        }
+    }
+    invalid_summary = {
+        "gated": {
+            "provisionalScreen": False,
+            "nearField": {"acceptedAsMotorNoise": False},
+        }
+    }
+    screen_summary = {
+        "screen": {
+            "provisionalScreen": True,
+            "nearField": {"acceptedAsMotorNoise": True},
+        }
+    }
+    if not repeat_confirmation_satisfied(valid_summary, 2):
+        raise RuntimeError("Two valid qualification repeats were not confirmed")
+    if (repeat_confirmation_satisfied(invalid_summary, 2)
+            or repeat_confirmation_satisfied(valid_summary, 1)
+            or repeat_confirmation_satisfied(screen_summary, 2)):
+        raise RuntimeError("Invalid/provisional acoustic repeats were confirmed")
+
+    interpolation_samples = [
+        {
+            "driverRole": role,
+            "settings": {
+                "chopconfReadValid": True,
+                "interpolationTo256": enabled,
+            },
+        }
+        for role, enabled in (("primary", False), ("companion", False))
+    ]
+    expected_roles = {"primary", "companion"}
+    if not interpolation_readback_confirmed(
+        interpolation_samples, expected_roles, False
+    ):
+        raise RuntimeError("Requested interpolation-off readback was rejected")
+    if interpolation_readback_confirmed(
+        interpolation_samples, expected_roles, True
+    ):
+        raise RuntimeError("Mismatched interpolation readback was accepted")
+
     rate = 32000
     duration = 8.0
     motion_start = 2.0
@@ -1347,6 +2425,166 @@ def cmd_self_test(_: argparse.Namespace) -> int:
         raise RuntimeError(f"Timed self-test did not recover the 1250 Hz motor tone: {tones}")
     if any(abs(tone - 700.0) <= 12.5 or abs(tone - 2100.0) <= 12.5 for tone in tones):
         raise RuntimeError(f"Timed self-test accepted an idle tone or transient: {tones}")
+
+    # Adversarial gated case: changing random background, broadband-only motor
+    # energy, and a tone that exists only while moving outbound. Four separate
+    # on/off pairs must correlate with telemetry rather than one long time span.
+    gated_duration = 12.0
+    gated_samples = np.arange(round(rate * gated_duration)) / rate
+    gated_rng = np.random.default_rng(7)
+    # Vary both random and tonal room noise throughout the run, while ending
+    # near the starting level so a simple pre/post check cannot solve the test.
+    room_envelope = 1.0 + 0.55 * np.sin(2.0 * np.pi * gated_samples / 5.0)
+    gated_background = gated_rng.normal(
+        0.0, 0.0006 * room_envelope, len(gated_samples)
+    )
+    gated_background += (
+        0.0008 * (1.0 + 0.35 * np.sin(2.0 * np.pi * gated_samples / 4.0))
+        * np.sin(2.0 * np.pi * 900.0 * gated_samples)
+    )
+    gated_audio = gated_background.copy()
+    intervals = ((2.0, 3.5, 0.1), (4.5, 6.0, -0.1),
+                 (7.0, 8.5, 0.1), (9.5, 11.0, -0.1))
+    gated_motion = np.zeros(len(gated_samples), dtype=bool)
+    outbound = np.zeros(len(gated_samples), dtype=bool)
+    for start, stop, velocity in intervals:
+        mask = (gated_samples >= start) & (gated_samples < stop)
+        cruise = (gated_samples >= start + 0.25) & (
+            gated_samples < stop - 0.25
+        )
+        gated_motion |= mask
+        outbound |= mask & (velocity > 0)
+        # Long, quiet ramps must not dilute the louder sustained cruise metric.
+        gated_audio[mask] += gated_rng.normal(0.0, 0.0008, int(np.sum(mask)))
+        gated_audio[cruise] += gated_rng.normal(
+            0.0, 0.004, int(np.sum(cruise))
+        )
+    gated_audio[outbound] += 0.008 * np.sin(
+        2.0 * np.pi * 1375.0 * gated_samples[outbound]
+    )
+    # A loud, sustained sound in only one motion gate is unrelated and must
+    # not become a persistent motor tone or a passing background-only result.
+    unrelated_burst = (gated_samples >= 7.1) & (gated_samples < 7.8)
+    gated_audio[unrelated_burst] += 0.006 * np.sin(
+        2.0 * np.pi * 2400.0 * gated_samples[unrelated_burst]
+    )
+    gated_path = output_dir / "gated.wav"
+    gated_pcm = np.clip(gated_audio * 32768.0, -32768, 32767).astype("<i2")
+    with wave.open(str(gated_path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(gated_pcm.tobytes())
+    telemetry = []
+    for sample_time in np.arange(0.0, gated_duration + 0.001, 0.05):
+        velocity = 0.0
+        for start, stop, candidate_velocity in intervals:
+            if start <= sample_time < stop:
+                edge_distance = min(sample_time - start, stop - sample_time)
+                velocity = candidate_velocity * (
+                    1.0 if edge_distance >= 0.25 else 0.5
+                )
+                break
+        telemetry.append({
+            "hostOffsetS": round(float(sample_time), 6),
+            "hostRequestRttS": 0.004,
+            "state": "RUNNING" if velocity else "IDLE",
+            "velocity": {"theta": velocity, "rho": 0.0},
+        })
+    gated_metrics, _ = analyze_timed(
+        gated_path, 2.0, 11.0, telemetry=telemetry, axis=AXES["theta"],
+        velocity_threshold=0.002, expected_max_velocity=0.1,
+    )
+    gated_tones = gated_metrics.timing_locked_tones
+    if not any(
+        tone.direction == "outbound" and abs(tone.frequency_hz - 1375.0) <= 8.0
+        for tone in gated_tones
+    ):
+        raise RuntimeError(f"Direction-specific tone was not recovered: {gated_tones}")
+    if any(abs(tone.frequency_hz - 2400.0) <= 12.5 for tone in gated_tones):
+        raise RuntimeError(f"Unrelated sustained burst was accepted: {gated_tones}")
+    if (gated_metrics.on_off_pair_count != 4
+            or gated_metrics.on_off_consistency < 0.75
+            or gated_metrics.broadband_persistence < 0.65
+            or not gated_metrics.all_gates_sustain_commanded_velocity):
+        raise RuntimeError(f"Gated broadband correlation failed: {gated_metrics}")
+    if (len(gated_metrics.broadband_gate_excess_a_weighted_dbfs) != 4
+            or min(gated_metrics.gate_cruise_durations_s) < MINIMUM_GATE_CRUISE_S
+            or gated_metrics.loudest_broadband_gate_excess_a_weighted_dbfs is None
+            or gated_metrics.broadband_excess_a_weighted_dbfs is None
+            or gated_metrics.broadband_excess_a_weighted_dbfs < -47.0):
+        raise RuntimeError(
+            "Quiet acceleration ramps diluted the sustained-cruise metric: "
+            f"{gated_metrics}"
+        )
+
+    background_only = gated_background.copy()
+    # Preserve the single unrelated burst while removing the synthetic motor.
+    background_only[unrelated_burst] += 0.006 * np.sin(
+        2.0 * np.pi * 2400.0 * gated_samples[unrelated_burst]
+    )
+    background_only_path = output_dir / "gated-background-only.wav"
+    background_only_pcm = np.clip(
+        background_only * 32768.0, -32768, 32767
+    ).astype("<i2")
+    with wave.open(str(background_only_path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(background_only_pcm.tobytes())
+    background_only_metrics, _ = analyze_timed(
+        background_only_path, 2.0, 11.0, telemetry=telemetry,
+        axis=AXES["theta"], velocity_threshold=0.002,
+    )
+    if (background_only_metrics.on_off_consistency is not None
+            and background_only_metrics.on_off_consistency >= 0.75):
+        raise RuntimeError(
+            "Changing background without motor noise passed gated correlation"
+        )
+    quality = telemetry_timing_quality(telemetry, AXES["theta"], 0.002)
+    if not quality["valid"] or quality["motionStartCount"] != 4:
+        raise RuntimeError(f"Good synthetic telemetry failed timing validation: {quality}")
+    telemetry_with_gap = [
+        sample for sample in telemetry
+        if not 5.5 < float(sample["hostOffsetS"]) < 6.5
+    ]
+    bad_quality = telemetry_timing_quality(
+        telemetry_with_gap, AXES["theta"], 0.002,
+    )
+    if bad_quality["valid"]:
+        raise RuntimeError("Telemetry timing validation accepted a one-second gap")
+
+    drift_audio = audio.copy()
+    drift_audio[samples > motion_end] *= 12.0
+    drift_path = output_dir / "drifting-background.wav"
+    drift_pcm = np.clip(drift_audio * 32768.0, -32768, 32767).astype("<i2")
+    with wave.open(str(drift_path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(drift_pcm.tobytes())
+    drift_metrics, _ = analyze_timed(drift_path, motion_start, motion_end)
+    if drift_metrics.background_stable:
+        raise RuntimeError("Drifting-background self-test was incorrectly accepted")
+    invalid_level = high_speed_acoustic_level(
+        gated_path, 0.0, telemetry, AXES["theta"],
+        background_stable=False,
+    )
+    if invalid_level.get("valid"):
+        raise RuntimeError("High-speed level accepted an unstable background")
+
+    clipped_audio = audio.copy()
+    clipped_audio[0] = 1.0
+    clipped_path = output_dir / "clipped.wav"
+    clipped_pcm = np.clip(clipped_audio * 32768.0, -32768, 32767).astype("<i2")
+    with wave.open(str(clipped_path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(clipped_pcm.tobytes())
+    clipped_metrics, _ = analyze_timed(clipped_path, motion_start, motion_end)
+    if not clipped_metrics.clipping_detected:
+        raise RuntimeError("Clipping self-test was not detected")
     save_timing_plot(
         output_dir / "timing.png", analysis,
         [
@@ -1390,10 +2628,24 @@ def build_parser() -> argparse.ArgumentParser:
     trial.add_argument("--axis", choices=sorted(AXES), default="theta")
     trial.add_argument("--label", required=True)
     trial.add_argument("--rated-current-ma", type=int, required=True)
-    trial.add_argument("--profile", choices=["continuous", "stress", "both"], default="both")
+    trial.add_argument(
+        "--profile", choices=["continuous", "screen", "gated", "stress", "both"],
+        default="both",
+    )
+    trial.add_argument(
+        "--rho-excursion-mm", type=float, default=50.0,
+        help=(
+            "outward excursion for rho screen/gated segments; screens use four "
+            "full out/back legs and qualification uses eight"
+        ),
+    )
     trial.add_argument("--repeats", type=int, default=3)
     trial.add_argument("--pre-idle", type=float, default=5.0)
     trial.add_argument("--post-idle", type=float, default=5.0)
+    trial.add_argument(
+        "--gated-idle", type=float, default=2.0,
+        help="confirmed idle interval after every segment in the gated rho profile",
+    )
     trial.add_argument("--stop-timeout", type=float, default=15.0)
     trial.add_argument("--telemetry-interval", type=float, default=0.05)
     trial.add_argument("--motion-velocity-threshold", type=float, default=0.002)
@@ -1422,6 +2674,27 @@ def build_parser() -> argparse.ArgumentParser:
     trial.add_argument("--mode", choices=["stealthchop", "spreadcycle"])
     trial.add_argument("--coolstep", choices=["on", "off"])
     trial.add_argument("--stealth-threshold", type=int)
+    trial.add_argument("--current-scale", choices=["high", "standard"])
+    trial.add_argument("--interpolation", choices=["on", "off"])
+    trial.add_argument("--hold-delay", type=int, choices=range(16))
+    trial.add_argument("--power-down-delay", type=int)
+    trial.add_argument("--chopper-off-time", type=int, choices=range(1, 16))
+    trial.add_argument("--hysteresis-start", type=int, choices=range(8))
+    trial.add_argument("--hysteresis-end", type=int, choices=range(16))
+    trial.add_argument("--blank-time", type=int, choices=range(4))
+    trial.add_argument("--pwm-frequency", type=int, choices=range(4))
+    trial.add_argument("--pwm-regulation", type=int, choices=range(1, 16))
+    trial.add_argument("--pwm-limit", type=int, choices=range(16))
+    trial.add_argument("--standstill-mode", type=int, choices=range(4))
+    trial.add_argument("--automatic-gradient", choices=["on", "off"])
+    trial.add_argument("--automatic-current", choices=["on", "off"])
+    trial.add_argument("--pwm-offset", type=int, choices=range(256))
+    trial.add_argument("--pwm-gradient", type=int, choices=range(256))
+    trial.add_argument("--coolstep-lower", type=int, choices=range(1, 16))
+    trial.add_argument("--coolstep-upper", type=int, choices=range(16))
+    trial.add_argument("--coolstep-increment", type=int, choices=range(4))
+    trial.add_argument("--coolstep-samples", type=int, choices=range(4))
+    trial.add_argument("--coolstep-threshold", type=int)
     trial.set_defaults(func=cmd_trial)
 
     analyze_parser = subparsers.add_parser("analyze", help="analyze existing WAV files")

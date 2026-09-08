@@ -54,13 +54,30 @@ struct DriverSettings {
   uint16_t runCurrent = 800;          // Run current in mA
   uint16_t holdCurrent = 400;         // Hold current in mA
   uint8_t holdDelay = 8;              // Delay before switching to hold current (0-15)
+  uint8_t powerDownDelay = 20;        // Standstill delay before hold reduction (0-255)
+  bool highSensitivityCurrentScale = false; // CHOPCONF.VSENSE: 180mV instead of 325mV
+
+  // Chopper timing. Hysteresis values use the raw CHOPCONF field encoding.
+  uint8_t chopperOffTime = 3;       // TOFF while enabled (1-15)
+  uint8_t hysteresisStart = 5;      // HSTRT (0-7)
+  uint8_t hysteresisEnd = 0;        // HEND register value (0-15 means -3..12)
+  uint8_t blankTime = 2;            // TBL (0-3)
 
   // Microstepping
   uint16_t microsteps = 2;            // Microsteps per full step (1,2,4,8,16,32,64,128,256)
+  bool interpolationEnabled = true;   // Interpolate external microsteps to 256
 
   // StealthChop settings
   bool stealthChopEnabled = true;     // true=StealthChop, false=SpreadCycle
   uint32_t stealthChopThreshold = 0;  // Velocity threshold for StealthChop (0=always)
+  uint8_t pwmFrequency = 1;           // PWM_FREQ (0-3)
+  uint8_t pwmRegulation = 1;          // PWM_REG (1-15)
+  uint8_t pwmLimit = 12;              // PWM_LIM (0-15)
+  uint8_t standstillMode = 0;         // FREEWHEEL (0=normal, 1-3 freewheel/braking)
+  bool automaticCurrentScaling = true;
+  bool automaticGradientAdaptation = true;
+  uint8_t pwmOffset = 36;              // Feed-forward offset (0-255)
+  uint8_t pwmGradient = 0;             // Feed-forward gradient (0-255)
 
   // CoolStep settings (current reduction at low load)
   bool coolStepEnabled = false;       // Enable CoolStep
@@ -214,6 +231,7 @@ public:
   bool testThetaStress();
   bool testRhoContinuous();
   bool testRhoStress();
+  bool testRhoSegment(float targetRhoMm);
 
   // Driver diagnostics
   void writeThetaDriverSettings(Print& out);

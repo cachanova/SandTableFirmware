@@ -51,10 +51,11 @@ static constexpr uint8_t kRhoDriverAddress = 1;
 static constexpr uint8_t kRhoCDriverAddress = 0;
 static constexpr uint8_t kThetaDriverAddress = 2;
 
-// Verify this against the R-sense marking fitted to the actual TMC2209 module.
-// It determines the conversion between the driver's IRUN/IHOLD registers and
-// RMS coil current.
-static constexpr float kDriverSenseResistorOhms = 0.12f;
+// FYSETC TMC2209 V3.0 uses 0.11 ohm external sense resistors. UART operation
+// disables analog current scaling, so the onboard VREF potentiometer does not
+// set coil current. Keep this value aligned with the fitted module revision.
+static constexpr float kDriverSenseResistorOhms = 0.11f;
+static constexpr bool kDriverSenseResistorVerified = true;
 
 // Project safety ceiling for the theta motor. This is an RMS phase-current
 // limit, not a tuning target; commissioning works upward from the quietest
@@ -65,6 +66,10 @@ static constexpr uint16_t kThetaMaxRunCurrentMa = 1500;
 // this in firmware as well as the browser so direct API calls cannot bypass
 // the hardware limit.
 static constexpr uint16_t kRhoMaxRunCurrentMa = 500;
+// Until coil current or the fitted shunt tolerance is measured, cap the raw
+// TMC2209 current setting at CS=14. On 0.11 ohm shunts with VSENSE=1 this is
+// about 459 mA nominal and remains below 500 mA with the 6% firmware margin.
+static constexpr uint8_t kRhoMaxUnmeasuredCurrentRegister = 14;
 
 // Theta-only commissioning always boots at a conservative current and motion
 // envelope, regardless of settings saved by a previous production run.
@@ -75,6 +80,9 @@ static constexpr uint16_t kThetaCommissioningStartupHoldCurrentMa = 100;
 // The operator establishes the physical start point before power-up; firmware
 // treats it as a temporary logical zero and only permits outward-positive test
 // trajectories that return to that point.
-static constexpr uint16_t kRhoCommissioningStartupCurrentMa = 150;
+// CS=8 is the lowest current code recommended for StealthChop automatic
+// tuning. With VSENSE=1 and the V3.0 module's 0.11 ohm shunts it is about
+// 275 mA RMS.
+static constexpr uint16_t kRhoCommissioningStartupCurrentMa = 275;
 static constexpr uint16_t kRhoCommissioningStartupHoldCurrentMa = 100;
 }

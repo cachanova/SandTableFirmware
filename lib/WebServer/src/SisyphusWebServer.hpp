@@ -32,7 +32,8 @@ private:
         THETA_CONTINUOUS,
         THETA_STRESS,
         RHO_CONTINUOUS,
-        RHO_STRESS
+        RHO_STRESS,
+        RHO_SEGMENT
     };
     MotionOwner m_activeMotion = MotionOwner::NONE;
     PendingMotion m_pendingMotion = PendingMotion::NONE;
@@ -40,6 +41,7 @@ private:
     float m_pendingManualRho = 0.0f;
     float m_pendingJogTheta = 0.0f;
     float m_pendingJogRho = 0.0f;
+    float m_pendingRhoSegmentTarget = 0.0f;
 
     // Pattern queue management
     String m_queuedPattern;
@@ -117,6 +119,7 @@ private:
     void handleTuningTestThetaStress(AsyncWebServerRequest *request);
     void handleTuningTestRhoContinuous(AsyncWebServerRequest *request);
     void handleTuningTestRhoStress(AsyncWebServerRequest *request);
+    void handleTuningTestRhoSegment(AsyncWebServerRequest *request);
 
     // Helper methods
     void processPatternQueue();

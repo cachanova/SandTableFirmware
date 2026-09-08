@@ -22,9 +22,10 @@ PolarControl::PolarControl() {
     m_tDriverSettings.runCurrent = 700;
     m_tDriverSettings.holdCurrent = 200;
     m_tDriverSettings.microsteps = 64;
-    m_rDriverSettings.runCurrent = 500;    // Rho motor - lower current (mA)
+    m_rDriverSettings.runCurrent = 425;    // CS=13: about 428mA nominal on 0.11 ohm shunts
     m_rDriverSettings.holdCurrent = 200;
     m_rDriverSettings.microsteps = 2;
+    m_rDriverSettings.highSensitivityCurrentScale = true;
 }
 
 PolarControl::~PolarControl() {
@@ -74,6 +75,7 @@ static bool readTmcRegisterCheckedOnce(uint8_t driverAddress,
                           static_cast<uint8_t>(registerAddress & 0x7F), 0};
     request[3] = tmcCrc(request, 3);
 
+    Serial1.flush();
     while (Serial1.available() > 0) Serial1.read();
     if (Serial1.write(request, sizeof(request)) != sizeof(request)) return false;
     Serial1.flush();
@@ -124,6 +126,76 @@ static bool readTmcRegisterChecked(uint8_t driverAddress,
     return false;
 }
 
+// The upstream TMC2209 library does not expose CHOPCONF.VSENSE or the full
+// PWMCONF tuning surface. Use the same datagram/CRC format here and rely on
+// IFCNT plus masked register readback in verifyDriverSettings().
+static bool writeTmcRegister(uint8_t driverAddress, uint8_t registerAddress,
+                             uint32_t value) {
+    constexpr uint8_t kSync = 0x05;
+    constexpr uint32_t kEchoTimeoutUs = 4000;
+    uint8_t datagram[8] = {
+        kSync,
+        driverAddress,
+        static_cast<uint8_t>((registerAddress & 0x7F) | 0x80),
+        static_cast<uint8_t>(value >> 24),
+        static_cast<uint8_t>(value >> 16),
+        static_cast<uint8_t>(value >> 8),
+        static_cast<uint8_t>(value),
+        0,
+    };
+    datagram[7] = tmcCrc(datagram, 7);
+    Serial1.flush();
+    while (Serial1.available() > 0) Serial1.read();
+    if (Serial1.write(datagram, sizeof(datagram)) != sizeof(datagram)) {
+        return false;
+    }
+    Serial1.flush();
+    uint8_t echo[sizeof(datagram)] = {};
+    size_t echoCount = 0;
+    const uint32_t started = micros();
+    while (echoCount < sizeof(echo) && (micros() - started) < kEchoTimeoutUs) {
+        if (Serial1.available() > 0) {
+            echo[echoCount++] = static_cast<uint8_t>(Serial1.read());
+        }
+    }
+    return echoCount == sizeof(echo) &&
+        memcmp(echo, datagram, sizeof(datagram)) == 0;
+}
+
+static bool setDriverEnabled(TMC2209& driver, uint8_t driverAddress,
+                             const DriverSettings& settings, bool enabled) {
+    (void)driver;
+    // Never call the library's enable()/disable(): its cached CHOPCONF has
+    // VSENSE=0, which would create an over-current transient before a second
+    // corrective write. Change TOFF, VSENSE, and interpolation atomically.
+    uint32_t chopconf = 0;
+    if (!readTmcRegisterChecked(driverAddress, 0x6C, chopconf)) {
+        LOG("Driver address %u CHOPCONF enable read failed\r\n",
+            driverAddress);
+        return false;
+    }
+    chopconf = (chopconf & ~0x0FUL) |
+        (enabled ? static_cast<uint32_t>(settings.chopperOffTime) : 0UL);
+    chopconf = settings.highSensitivityCurrentScale
+        ? (chopconf | (1UL << 17))
+        : (chopconf & ~(1UL << 17));
+    chopconf = settings.interpolationEnabled
+        ? (chopconf | (1UL << 28))
+        : (chopconf & ~(1UL << 28));
+    if (!writeTmcRegister(driverAddress, 0x6C, chopconf)) {
+        LOG("Driver address %u CHOPCONF enable write echo failed\r\n",
+            driverAddress);
+        return false;
+    }
+    uint32_t verified = 0;
+    return readTmcRegisterChecked(driverAddress, 0x6C, verified) &&
+        (verified & 0x0FU) ==
+            (enabled ? settings.chopperOffTime : 0U) &&
+        (((verified & (1UL << 17)) != 0) ==
+         settings.highSensitivityCurrentScale) &&
+        (((verified & (1UL << 28)) != 0) == settings.interpolationEnabled);
+}
+
 static bool tmcDriverPresent(uint8_t driverAddress) {
     uint32_t ioInput = 0;
     return readTmcRegisterChecked(driverAddress, 0x06, ioInput) &&
@@ -164,6 +236,7 @@ bool PolarControl::begin() {
     // Never inherit an aggressive saved value when a single motor is being
     // attached and commissioned. Runtime changes remain possible after the
     // operator supplies the actual motor rating to the measurement harness.
+    m_tDriverSettings = DriverSettings{};
     m_tDriverSettings.runCurrent = Config::kThetaCommissioningStartupCurrentMa;
     m_tDriverSettings.holdCurrent = Config::kThetaCommissioningStartupHoldCurrentMa;
     m_tDriverSettings.microsteps = 64;
@@ -178,15 +251,19 @@ bool PolarControl::begin() {
     // Do not inherit an aggressive saved value before the paired rho motors
     // and mechanism have been observed. A trial can apply a higher value only
     // after the operator supplies the motor rating to the host-side tool.
+    // Rebuild the complete driver profile so an extreme-but-valid chopper or
+    // PWM trial cannot become the next commissioning boot configuration.
+    m_rDriverSettings = DriverSettings{};
     m_rDriverSettings.runCurrent = Config::kRhoCommissioningStartupCurrentMa;
     m_rDriverSettings.holdCurrent = Config::kRhoCommissioningStartupHoldCurrentMa;
     m_rDriverSettings.microsteps = 2;
+    m_rDriverSettings.highSensitivityCurrentScale = true;
     m_rDriverSettings.stealthChopEnabled = true;
     m_rDriverSettings.coolStepEnabled = false;
     m_motionSettings.rMaxVelocity = 1.0f;
     m_motionSettings.rMaxAccel = 2.0f;
     m_motionSettings.rMaxJerk = 10.0f;
-    LOG("RHO COMMISSIONING: forced safe boot envelope (150mA, 1mm/s)\r\n");
+    LOG("RHO COMMISSIONING: forced safe envelope (VSENSE=1, IRUN=8, 275mA, 1mm/s)\r\n");
 #endif
 
 #ifndef SISYPHUS_SKIP_MOTOR_HARDWARE
@@ -285,8 +362,7 @@ bool PolarControl::setupDrivers() {
                                      "Driver configuration did not verify", name);
             return false;
         }
-        driver.enable();
-        return true;
+        return setDriverEnabled(driver, address, settings, true);
     };
 
     bool thetaReady = false;
@@ -295,7 +371,7 @@ bool PolarControl::setupDrivers() {
     // OTA reboot does not power-cycle a TMC2209. Explicitly turn theta off and
     // read it back so a previously running production image cannot leave the
     // stationary axis energized during rho acoustic measurements.
-    m_tDriver.disable();
+    setDriverEnabled(m_tDriver, T_ADDR, m_tDriverSettings, false);
     uint32_t thetaChopconf = 0;
     thetaSafe = readTmcRegisterChecked(T_ADDR, 0x6C, thetaChopconf) &&
         (thetaChopconf & 0x0FU) == 0;
@@ -328,8 +404,8 @@ bool PolarControl::setupDrivers() {
 
 #ifdef SISYPHUS_RHO_COMMISSIONING
     if (!thetaSafe || !rhoReady || !rhoCompanionReady) {
-        m_rDriver.disable();
-        m_rCDriver.disable();
+        setDriverEnabled(m_rDriver, R_ADDR, m_rDriverSettings, false);
+        setDriverEnabled(m_rCDriver, RC_ADDR, m_rDriverSettings, false);
         m_state = INITIALIZED;
         ErrorLog::instance().log(
             "ERROR", "MOTOR", "RHO_COMMISSIONING_PREFLIGHT",
@@ -506,17 +582,24 @@ DriverAvailability PolarControl::getDriverAvailability() const {
     return availability;
 }
 
-static float driverFullScaleCurrentMa() {
-    constexpr float kVsenseVolts = 0.325f;
-    return 1000.0f * kVsenseVolts /
+static float driverFullScaleCurrentMa(bool highSensitivityCurrentScale) {
+    const float vsenseVolts = highSensitivityCurrentScale ? 0.180f : 0.325f;
+    return 1000.0f * vsenseVolts /
         (Config::kDriverSenseResistorOhms + 0.020f) / std::sqrt(2.0f);
 }
 
-static uint8_t currentMaToDriverRegister(uint16_t currentMa) {
+static uint8_t currentMaToDriverRegister(uint16_t currentMa,
+                                         bool highSensitivityCurrentScale) {
     const float rawCs = static_cast<float>(currentMa) /
-        driverFullScaleCurrentMa() * 32.0f - 1.0f;
+        driverFullScaleCurrentMa(highSensitivityCurrentScale) * 32.0f - 1.0f;
     return static_cast<uint8_t>(
         std::max(0, std::min(31, static_cast<int>(std::lround(rawCs)))));
+}
+
+static float driverRegisterCurrentMa(uint8_t currentRegister,
+                                     bool highSensitivityCurrentScale) {
+    return (static_cast<float>(currentRegister) + 1.0f) / 32.0f *
+        driverFullScaleCurrentMa(highSensitivityCurrentScale);
 }
 
 // The TMC2209 library accepts percentages, then floors them into register
@@ -575,15 +658,33 @@ static bool verifyDriverSettings(uint8_t driverAddress,
     const bool writesOk = writesObserved == expectedWrites ||
         writesObserved == static_cast<uint8_t>(expectedWrites + 3U);
     const bool microstepsOk = (chopconf & 0x0F000000U) == expectedMres;
+    const bool chopperTimingOk =
+        ((chopconf >> 4) & 0x07U) == settings.hysteresisStart &&
+        ((chopconf >> 7) & 0x0FU) == settings.hysteresisEnd &&
+        ((chopconf >> 15) & 0x03U) == settings.blankTime;
     const bool interpolationOk = (chopconf & (1UL << 28)) != 0;
+    const bool expectedInterpolation = settings.interpolationEnabled;
+    const bool currentScaleOk = ((chopconf & (1UL << 17)) != 0) ==
+        settings.highSensitivityCurrentScale;
     const bool modeOk = ((gconf & (1U << 2)) == 0) == settings.stealthChopEnabled;
+    const bool uartCurrentScaleOk = (gconf & (1U << 0)) == 0;
     const bool senseOk = (gconf & (1U << 1)) == 0;
-    const bool pwmOk = !settings.stealthChopEnabled ||
-        (pwmconf & ((1U << 18) | (1U << 19))) ==
-            ((1U << 18) | (1U << 19));
+    constexpr uint32_t kPwmSettingsMask = 0xFF3FFFFFU;
+    const uint32_t expectedPwmconf =
+        static_cast<uint32_t>(settings.pwmOffset) |
+        (static_cast<uint32_t>(settings.pwmGradient) << 8) |
+        (static_cast<uint32_t>(settings.pwmFrequency) << 16) |
+        (static_cast<uint32_t>(settings.automaticCurrentScaling) << 18) |
+        (static_cast<uint32_t>(settings.automaticGradientAdaptation) << 19) |
+        (static_cast<uint32_t>(settings.standstillMode) << 20) |
+        (static_cast<uint32_t>(settings.pwmRegulation) << 24) |
+        (static_cast<uint32_t>(settings.pwmLimit) << 28);
+    const bool pwmOk =
+        (pwmconf & kPwmSettingsMask) == (expectedPwmconf & kPwmSettingsMask);
 
-    const bool verified = writesOk && microstepsOk && interpolationOk &&
-        modeOk && senseOk && pwmOk;
+    const bool verified = writesOk && microstepsOk && chopperTimingOk &&
+        (interpolationOk == expectedInterpolation) && currentScaleOk &&
+        modeOk && uartCurrentScaleOk && senseOk && pwmOk;
     if (!verified) {
         LOG("Driver %s readback mismatch: writes=%u/%u GCONF=%08lX "
             "CHOPCONF=%08lX PWMCONF=%08lX\r\n",
@@ -605,28 +706,60 @@ bool PolarControl::applyDriverSettings(TMC2209 &driver,
         return false;
     }
 
-    // Set microstepping first
-    driver.setMicrostepsPerStep(settings.microsteps);
+    // Set MRES, VSENSE, and interpolation together while the bridge is still
+    // disabled. The library's cached CHOPCONF may contain TOFF>0 after a
+    // diagnostic read, so using its microstep setter here could briefly
+    // re-enable the bridge with the wrong current range.
+    uint32_t chopconf = 0;
+    if (!readTmcRegisterChecked(driverAddress, 0x6C, chopconf)) {
+        LOG("Driver %s CHOPCONF pre-write read failed\r\n", driverName);
+        return false;
+    }
+    chopconf = (chopconf & ~0x0F0187F0UL) |
+        (static_cast<uint32_t>(settings.hysteresisStart) << 4) |
+        (static_cast<uint32_t>(settings.hysteresisEnd) << 7) |
+        (static_cast<uint32_t>(settings.blankTime) << 15) |
+        (static_cast<uint32_t>(microstepsToMres(settings.microsteps)) << 24);
+    chopconf = settings.highSensitivityCurrentScale
+        ? (chopconf | (1UL << 17))
+        : (chopconf & ~(1UL << 17));
+    chopconf = settings.interpolationEnabled
+        ? (chopconf | (1UL << 28))
+        : (chopconf & ~(1UL << 28));
+    if (!writeTmcRegister(driverAddress, 0x6C, chopconf)) {
+        LOG("Driver %s CHOPCONF write echo failed\r\n", driverName);
+        return false;
+    }
 
-    // TMC2209 datasheet equation (default 325 mV VFS):
+    // TMC2209 datasheet equation (325 mV or high-sensitivity 180 mV VFS):
     // I_RMS = (CS + 1) / 32 * VFS / (R_SENSE + 20mOhm) / sqrt(2).
-    const float maxCurrentMa = driverFullScaleCurrentMa();
+    const float maxCurrentMa = driverFullScaleCurrentMa(
+        settings.highSensitivityCurrentScale);
+    const uint8_t runRegister = currentMaToDriverRegister(
+        settings.runCurrent, settings.highSensitivityCurrentScale);
+    const uint8_t holdRegister = currentMaToDriverRegister(
+        settings.holdCurrent, settings.highSensitivityCurrentScale);
     const uint8_t runPercent = driverRegisterToLibraryPercent(
-        currentMaToDriverRegister(settings.runCurrent), 31);
+        runRegister, 31);
     const uint8_t holdPercent = driverRegisterToLibraryPercent(
-        currentMaToDriverRegister(settings.holdCurrent), 31);
+        holdRegister, 31);
 
     driver.setRunCurrent(runPercent);
     driver.setHoldCurrent(holdPercent);
 
-    LOG("Driver current request run=%umA hold=%umA (R_sense=%.3fohm, full-scale=%.0fmA RMS)\r\n",
+    LOG("Driver current request run=%umA hold=%umA; actual run=%.0fmA hold=%.0fmA "
+        "(VSENSE=%u, R_sense=%.3fohm, full-scale=%.0fmA RMS)\r\n",
         settings.runCurrent, settings.holdCurrent,
+        driverRegisterCurrentMa(runRegister, settings.highSensitivityCurrentScale),
+        driverRegisterCurrentMa(holdRegister, settings.highSensitivityCurrentScale),
+        settings.highSensitivityCurrentScale ? 1U : 0U,
         Config::kDriverSenseResistorOhms, maxCurrentMa);
 
     // Hold delay (0-15 mapped to 0-100%)
     const uint8_t delayPercent = driverRegisterToLibraryPercent(
         settings.holdDelay, 15);
     driver.setHoldDelay(delayPercent);
+    driver.setPowerDownDelay(settings.powerDownDelay);
 
     // Use external sense resistors
     driver.useExternalSenseResistors();
@@ -636,8 +769,6 @@ bool PolarControl::applyDriverSettings(TMC2209 &driver,
         driver.enableStealthChop();
         driver.setStealthChopDurationThreshold(settings.stealthChopThreshold);
 
-        driver.enableAutomaticCurrentScaling();
-        driver.enableAutomaticGradientAdaptation();
     } else {
         // SpreadCycle mode (louder but more torque at high speeds)
         driver.disableStealthChop();
@@ -656,8 +787,24 @@ bool PolarControl::applyDriverSettings(TMC2209 &driver,
     // Use step/dir interface for motion (not UART velocity mode)
     driver.moveUsingStepDirInterface();
 
+    // Apply the complete StealthChop PWM surface and standstill mode in one
+    // register write. Reserved bits stay clear during commissioning.
+    const uint32_t pwmconf =
+        static_cast<uint32_t>(settings.pwmOffset) |
+        (static_cast<uint32_t>(settings.pwmGradient) << 8) |
+        (static_cast<uint32_t>(settings.pwmFrequency) << 16) |
+        (static_cast<uint32_t>(settings.automaticCurrentScaling) << 18) |
+        (static_cast<uint32_t>(settings.automaticGradientAdaptation) << 19) |
+        (static_cast<uint32_t>(settings.standstillMode) << 20) |
+        (static_cast<uint32_t>(settings.pwmRegulation) << 24) |
+        (static_cast<uint32_t>(settings.pwmLimit) << 28);
+    if (!writeTmcRegister(driverAddress, 0x70, pwmconf)) {
+        LOG("Driver %s PWMCONF write echo failed\r\n", driverName);
+        return false;
+    }
+
     const uint8_t expectedWrites = static_cast<uint8_t>(
-        6U + (settings.stealthChopEnabled ? 4U : 1U) +
+        8U + (settings.stealthChopEnabled ? 2U : 1U) +
         (settings.coolStepEnabled ? 4U : 1U));
     const bool verified = verifyDriverSettings(
         driverAddress, settings, driverName,
@@ -673,8 +820,10 @@ bool PolarControl::applyDriverSettings(TMC2209 &driver,
 }
 
 bool PolarControl::disableRhoDriversLocked() {
-    m_rDriver.disable();
-    m_rCDriver.disable();
+    const bool primaryCommanded = setDriverEnabled(
+        m_rDriver, R_ADDR, m_rDriverSettings, false);
+    const bool companionCommanded = setDriverEnabled(
+        m_rCDriver, RC_ADDR, m_rDriverSettings, false);
 
     uint32_t primaryChopconf = 0;
     uint32_t companionChopconf = 0;
@@ -684,7 +833,8 @@ bool PolarControl::disableRhoDriversLocked() {
     const bool companionDisabled =
         readTmcRegisterChecked(RC_ADDR, 0x6C, companionChopconf) &&
         (companionChopconf & 0x0FU) == 0;
-    return primaryDisabled && companionDisabled;
+    return primaryCommanded && companionCommanded &&
+        primaryDisabled && companionDisabled;
 }
 
 bool PolarControl::rampRhoStepRate(int8_t direction,
@@ -995,8 +1145,10 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
     if (phaseRead) {
         activeDriver.moveUsingStepDirInterface();
         inactiveDriver.moveUsingStepDirInterface();
-        inactiveDriver.disable();
-        activeDriver.enable();
+        setDriverEnabled(inactiveDriver, inactiveAddress,
+                         m_rDriverSettings, false);
+        setDriverEnabled(activeDriver, activeAddress,
+                         m_rDriverSettings, true);
     }
     uint32_t activeChopconf = 0;
     uint32_t inactiveChopconf = 0;
@@ -1113,7 +1265,7 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
 axis_cleanup:
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     m_planner.stopRhoHoming();
-    activeDriver.disable();
+    setDriverEnabled(activeDriver, activeAddress, m_rDriverSettings, false);
     xSemaphoreGive(m_mutex);
     if (!restoreDisabledDriverPhase(
             inactiveDriver, inactiveAddress,
@@ -1182,12 +1334,14 @@ bool PolarControl::homeDrivers() {
             m_rCDriver, normalSettings, RC_ADDR, "rho-companion");
         bool stateVerified = primaryApplied && companionApplied;
         if (stateVerified && enableDrivers) {
-            m_rDriver.enable();
-            m_rCDriver.enable();
+            const bool primaryEnabled = setDriverEnabled(
+                m_rDriver, R_ADDR, normalSettings, true);
+            const bool companionEnabled = setDriverEnabled(
+                m_rCDriver, RC_ADDR, normalSettings, true);
 
             uint32_t primaryChopconf = 0;
             uint32_t companionChopconf = 0;
-            stateVerified =
+            stateVerified = primaryEnabled && companionEnabled &&
                 readTmcRegisterChecked(R_ADDR, 0x6C, primaryChopconf) &&
                 readTmcRegisterChecked(RC_ADDR, 0x6C, companionChopconf) &&
                 (primaryChopconf & 0x0FU) != 0 &&
@@ -1907,13 +2061,40 @@ static bool validMicrosteps(uint16_t microsteps) {
 
 static bool validDriverSettings(const DriverSettings& settings,
                                 uint16_t configuredMaxCurrentMa) {
-    constexpr float kVsenseVolts = 0.325f;
-    const uint16_t driverMaxCurrentMa = static_cast<uint16_t>(1000.0f * kVsenseVolts /
-        (Config::kDriverSenseResistorOhms + 0.020f) / std::sqrt(2.0f));
-    const uint16_t maxCurrentMa = std::min(driverMaxCurrentMa, configuredMaxCurrentMa);
-    return settings.runCurrent >= 100 && settings.runCurrent <= maxCurrentMa &&
+    constexpr float kCurrentToleranceMargin = 1.06f;
+    const uint8_t runRegister = currentMaToDriverRegister(
+        settings.runCurrent, settings.highSensitivityCurrentScale);
+    const uint8_t holdRegister = currentMaToDriverRegister(
+        settings.holdCurrent, settings.highSensitivityCurrentScale);
+    const float actualRunCurrentMa = driverRegisterCurrentMa(
+        runRegister, settings.highSensitivityCurrentScale);
+    const float actualHoldCurrentMa = driverRegisterCurrentMa(
+        holdRegister, settings.highSensitivityCurrentScale);
+    // The board revision identifies the nominal shunt value but does not state
+    // its tolerance. Keep rho below CS=15 until current is measured.
+    if (configuredMaxCurrentMa == Config::kRhoMaxRunCurrentMa &&
+        runRegister > Config::kRhoMaxUnmeasuredCurrentRegister) {
+        return false;
+    }
+    return settings.runCurrent >= 100 &&
+        actualRunCurrentMa * kCurrentToleranceMargin <=
+            static_cast<float>(configuredMaxCurrentMa) &&
         settings.holdCurrent <= settings.runCurrent &&
-        settings.holdDelay <= 15 && validMicrosteps(settings.microsteps) &&
+        actualHoldCurrentMa <= actualRunCurrentMa &&
+        settings.holdDelay <= 15 && settings.powerDownDelay >= 12 &&
+        settings.chopperOffTime >= 1 && settings.chopperOffTime <= 15 &&
+        settings.hysteresisStart <= 7 && settings.hysteresisEnd <= 15 &&
+        settings.hysteresisStart + settings.hysteresisEnd <= 18 &&
+        settings.blankTime <= 3 &&
+        (settings.chopperOffTime != 1 || settings.blankTime >= 2) &&
+        settings.standstillMode <= 3 &&
+        validMicrosteps(settings.microsteps) &&
+        settings.pwmFrequency <= 3 && settings.pwmRegulation >= 1 &&
+        settings.pwmRegulation <= 15 && settings.pwmLimit <= 15 &&
+        (!settings.automaticGradientAdaptation ||
+            settings.automaticCurrentScaling) &&
+        (!settings.stealthChopEnabled || settings.automaticCurrentScaling ||
+            settings.pwmOffset > 0) &&
         settings.stealthChopThreshold <= 0x000FFFFFU &&
         (!settings.coolStepEnabled || settings.coolStepLowerThreshold >= 1) &&
         settings.coolStepLowerThreshold <= 15 &&
@@ -1985,9 +2166,13 @@ TuningUpdateResult PolarControl::saveThetaDriverSettings(const DriverSettings& s
     const bool driverReady = m_thetaDriverConnected.load();
     auto restoreDriver = [&]() {
         if (!driverReady) return true;
+        const bool disabled = setDriverEnabled(
+            m_tDriver, T_ADDR, settings, false);
         const bool restored = applyDriverSettings(
             m_tDriver, previousSettings, T_ADDR, "theta");
-        if (!restored) {
+        const bool enabled = restored && setDriverEnabled(
+            m_tDriver, T_ADDR, previousSettings, true);
+        if (!disabled || !restored || !enabled) {
             m_state.store(INITIALIZED);
             ErrorLog::instance().log("ERROR", "TUNING", "THETA_ROLLBACK_FAILED",
                                      "Could not restore theta settings after a failed update");
@@ -1995,11 +2180,19 @@ TuningUpdateResult PolarControl::saveThetaDriverSettings(const DriverSettings& s
         return restored;
     };
 
-    if (driverReady &&
-        !applyDriverSettings(m_tDriver, settings, T_ADDR, "theta")) {
-        restoreDriver();
-        xSemaphoreGive(m_mutex);
-        return TuningUpdateResult::DRIVER_VERIFY_FAILED;
+    if (driverReady) {
+        const bool disabled = setDriverEnabled(
+            m_tDriver, T_ADDR, previousSettings, false);
+        const bool applied = applyDriverSettings(
+            m_tDriver, settings, T_ADDR, "theta");
+        const bool enabled = applied && setDriverEnabled(
+            m_tDriver, T_ADDR, settings, true);
+        if (!disabled || !applied || !enabled) {
+            restoreDriver();
+            xSemaphoreGive(m_mutex);
+            return TuningUpdateResult::DRIVER_VERIFY_FAILED;
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
     if (!writeTuningSettingsLocked(m_motionSettings, settings,
                                    m_rDriverSettings, m_homingSettings)) {
@@ -2057,11 +2250,20 @@ TuningUpdateResult PolarControl::saveRhoDriverSettings(const DriverSettings& set
     const bool driversReady = primaryReady || companionReady;
     auto restoreDrivers = [&]() {
         if (!driversReady) return true;
+        const bool primaryDisabled = !primaryReady || setDriverEnabled(
+            m_rDriver, R_ADDR, settings, false);
+        const bool companionDisabled = !companionReady || setDriverEnabled(
+            m_rCDriver, RC_ADDR, settings, false);
         const bool primaryRestored = !primaryReady || applyDriverSettings(
             m_rDriver, previousSettings, R_ADDR, "rho");
         const bool companionRestored = !companionReady || applyDriverSettings(
             m_rCDriver, previousSettings, RC_ADDR, "rho-companion");
-        if (!primaryRestored || !companionRestored) {
+        const bool primaryEnabled = !primaryReady || (primaryRestored &&
+            setDriverEnabled(m_rDriver, R_ADDR, previousSettings, true));
+        const bool companionEnabled = !companionReady || (companionRestored &&
+            setDriverEnabled(m_rCDriver, RC_ADDR, previousSettings, true));
+        if (!primaryDisabled || !companionDisabled || !primaryRestored ||
+            !companionRestored || !primaryEnabled || !companionEnabled) {
             m_state.store(INITIALIZED);
             ErrorLog::instance().log("ERROR", "TUNING", "RHO_ROLLBACK_FAILED",
                                      "Could not restore rho settings after a failed update");
@@ -2071,15 +2273,28 @@ TuningUpdateResult PolarControl::saveRhoDriverSettings(const DriverSettings& set
     };
 
     if (driversReady) {
+        // A fresh disable/apply/enable cycle gives StealthChop a repeatable
+        // AT#1 standstill calibration at IRUN. TPOWERDOWN remains longer than
+        // the 200 ms wait, so the driver cannot drop to IHOLD prematurely.
+        const bool primaryDisabled = !primaryReady || setDriverEnabled(
+            m_rDriver, R_ADDR, previousSettings, false);
+        const bool companionDisabled = !companionReady || setDriverEnabled(
+            m_rCDriver, RC_ADDR, previousSettings, false);
         const bool primaryApplied = !primaryReady || applyDriverSettings(
             m_rDriver, settings, R_ADDR, "rho");
         const bool companionApplied = !companionReady || applyDriverSettings(
             m_rCDriver, settings, RC_ADDR, "rho-companion");
-        if (!primaryApplied || !companionApplied) {
+        const bool primaryEnabled = !primaryReady || (primaryApplied &&
+            setDriverEnabled(m_rDriver, R_ADDR, settings, true));
+        const bool companionEnabled = !companionReady || (companionApplied &&
+            setDriverEnabled(m_rCDriver, RC_ADDR, settings, true));
+        if (!primaryDisabled || !companionDisabled || !primaryApplied ||
+            !companionApplied || !primaryEnabled || !companionEnabled) {
             restoreDrivers();
             xSemaphoreGive(m_mutex);
             return TuningUpdateResult::DRIVER_VERIFY_FAILED;
         }
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
     if (!writeTuningSettingsLocked(m_motionSettings, m_tDriverSettings,
                                    settings, m_homingSettings)) {
@@ -2152,13 +2367,28 @@ static void saveDriverSettingsToJson(JsonObject& obj, const DriverSettings& sett
     obj["runCurrent"] = settings.runCurrent;
     obj["holdCurrent"] = settings.holdCurrent;
     obj["holdDelay"] = settings.holdDelay;
+    obj["powerDownDelay"] = settings.powerDownDelay;
+    obj["highSensitivityCurrentScale"] = settings.highSensitivityCurrentScale;
+    obj["chopperOffTime"] = settings.chopperOffTime;
+    obj["hysteresisStart"] = settings.hysteresisStart;
+    obj["hysteresisEnd"] = settings.hysteresisEnd;
+    obj["blankTime"] = settings.blankTime;
 
     // Microstepping
     obj["microsteps"] = settings.microsteps;
+    obj["interpolationEnabled"] = settings.interpolationEnabled;
 
     // StealthChop settings
     obj["stealthChopEnabled"] = settings.stealthChopEnabled;
     obj["stealthChopThreshold"] = settings.stealthChopThreshold;
+    obj["pwmFrequency"] = settings.pwmFrequency;
+    obj["pwmRegulation"] = settings.pwmRegulation;
+    obj["pwmLimit"] = settings.pwmLimit;
+    obj["standstillMode"] = settings.standstillMode;
+    obj["automaticCurrentScaling"] = settings.automaticCurrentScaling;
+    obj["automaticGradientAdaptation"] = settings.automaticGradientAdaptation;
+    obj["pwmOffset"] = settings.pwmOffset;
+    obj["pwmGradient"] = settings.pwmGradient;
 
     // CoolStep settings
     obj["coolStepEnabled"] = settings.coolStepEnabled;
@@ -2273,13 +2503,32 @@ static void loadDriverSettingsFromJson(JsonObjectConst obj, DriverSettings& sett
     settings.runCurrent = obj["runCurrent"] | settings.runCurrent;
     settings.holdCurrent = obj["holdCurrent"] | settings.holdCurrent;
     settings.holdDelay = obj["holdDelay"] | settings.holdDelay;
+    settings.powerDownDelay = obj["powerDownDelay"] | settings.powerDownDelay;
+    settings.highSensitivityCurrentScale = obj["highSensitivityCurrentScale"] |
+        settings.highSensitivityCurrentScale;
+    settings.chopperOffTime = obj["chopperOffTime"] | settings.chopperOffTime;
+    settings.hysteresisStart = obj["hysteresisStart"] | settings.hysteresisStart;
+    settings.hysteresisEnd = obj["hysteresisEnd"] | settings.hysteresisEnd;
+    settings.blankTime = obj["blankTime"] | settings.blankTime;
 
     // Microstepping
     settings.microsteps = obj["microsteps"] | settings.microsteps;
+    settings.interpolationEnabled = obj["interpolationEnabled"] |
+        settings.interpolationEnabled;
 
     // StealthChop settings
     settings.stealthChopEnabled = obj["stealthChopEnabled"] | settings.stealthChopEnabled;
     settings.stealthChopThreshold = obj["stealthChopThreshold"] | settings.stealthChopThreshold;
+    settings.pwmFrequency = obj["pwmFrequency"] | settings.pwmFrequency;
+    settings.pwmRegulation = obj["pwmRegulation"] | settings.pwmRegulation;
+    settings.pwmLimit = obj["pwmLimit"] | settings.pwmLimit;
+    settings.standstillMode = obj["standstillMode"] | settings.standstillMode;
+    settings.automaticCurrentScaling = obj["automaticCurrentScaling"] |
+        settings.automaticCurrentScaling;
+    settings.automaticGradientAdaptation = obj["automaticGradientAdaptation"] |
+        settings.automaticGradientAdaptation;
+    settings.pwmOffset = obj["pwmOffset"] | settings.pwmOffset;
+    settings.pwmGradient = obj["pwmGradient"] | settings.pwmGradient;
 
     // CoolStep settings
     settings.coolStepEnabled = obj["coolStepEnabled"] | settings.coolStepEnabled;
@@ -2636,6 +2885,28 @@ bool PolarControl::testRhoStress() {
         startPosition.theta, startPosition.rho));
 }
 
+bool PolarControl::testRhoSegment(float targetRhoMm) {
+#ifndef SISYPHUS_RHO_COMMISSIONING
+    (void)targetRhoMm;
+    return false;
+#else
+    if (m_state != IDLE || !m_rhoDriverConnected.load() ||
+        !m_rhoCompanionDriverConnected.load() || !std::isfinite(targetRhoMm) ||
+        targetRhoMm < 0.0f || targetRhoMm > RhoAcousticProfile::kExcursionMm) {
+        return false;
+    }
+    const PolarCord_t current = getCurrentPosition();
+    if (current.rho < 0.0f ||
+        current.rho > RhoAcousticProfile::kExcursionMm) {
+        return false;
+    }
+    LOG("Starting bounded rho segment to %.2fmm...\r\n", targetRhoMm);
+    m_commissioningStartPermit.store(true);
+    return start(std_patch::make_unique<SingleTargetGen>(
+        current.theta, targetRhoMm));
+#endif
+}
+
 // ============================================================================
 // Driver Diagnostics
 // ============================================================================
@@ -2685,13 +2956,45 @@ static void fillDriverJson(TMC2209& driver, uint8_t driverAddress,
         settingsObj["coolStepEnabled"] = settings.cool_step_enabled;
         settingsObj["analogCurrentScaling"] = settings.analog_current_scaling_enabled;
         settingsObj["internalSenseResistors"] = settings.internal_sense_resistors_enabled;
+        uint32_t otpRead = 0;
+        const bool otpReadValid =
+            readTmcRegisterChecked(driverAddress, 0x05, otpRead);
+        settingsObj["otpReadValid"] = otpReadValid;
+        if (otpReadValid) {
+            settingsObj["otpInternalSenseResistors"] =
+                (otpRead & (1UL << 6)) != 0;
+            settingsObj["otpReadRaw"] = otpRead;
+        }
         uint32_t chopconf = 0;
         const bool chopconfValid =
             readTmcRegisterChecked(driverAddress, 0x6C, chopconf);
         settingsObj["chopconfReadValid"] = chopconfValid;
         if (chopconfValid) {
             settingsObj["interpolationTo256"] = (chopconf & (1UL << 28)) != 0;
+            settingsObj["highSensitivityCurrentScale"] =
+                (chopconf & (1UL << 17)) != 0;
+            settingsObj["chopperOffTime"] = chopconf & 0x0FU;
+            settingsObj["hysteresisStart"] = (chopconf >> 4) & 0x07U;
+            settingsObj["hysteresisEnd"] = (chopconf >> 7) & 0x0FU;
+            settingsObj["blankTime"] = (chopconf >> 15) & 0x03U;
             settingsObj["chopconfRaw"] = chopconf;
+        }
+        uint32_t pwmconf = 0;
+        const bool pwmconfValid =
+            readTmcRegisterChecked(driverAddress, 0x70, pwmconf);
+        settingsObj["pwmconfReadValid"] = pwmconfValid;
+        if (pwmconfValid) {
+            settingsObj["pwmOffset"] = pwmconf & 0xFFU;
+            settingsObj["pwmGradient"] = (pwmconf >> 8) & 0xFFU;
+            settingsObj["pwmFrequency"] = (pwmconf >> 16) & 0x03U;
+            settingsObj["automaticCurrentScaling"] =
+                (pwmconf & (1UL << 18)) != 0;
+            settingsObj["automaticGradientAdaptation"] =
+                (pwmconf & (1UL << 19)) != 0;
+            settingsObj["standstillMode"] = (pwmconf >> 20) & 0x03U;
+            settingsObj["pwmRegulation"] = (pwmconf >> 24) & 0x0FU;
+            settingsObj["pwmLimit"] = (pwmconf >> 28) & 0x0FU;
+            settingsObj["pwmconfRaw"] = pwmconf;
         }
 
         // Get status from driver
@@ -2722,6 +3025,11 @@ static void fillDriverJson(TMC2209& driver, uint8_t driverAddress,
 
         // Get dynamic values
         JsonObject dynamicObj = doc["dynamic"].to<JsonObject>();
+        uint32_t tstep = 0;
+        const bool tstepValid =
+            readTmcRegisterChecked(driverAddress, 0x12, tstep);
+        dynamicObj["tstepValid"] = tstepValid;
+        if (tstepValid) dynamicObj["tstep"] = tstep & 0x000FFFFFU;
         uint32_t stallGuard = 0;
         const bool stallGuardValid =
             readTmcRegisterChecked(driverAddress, 0x41, stallGuard);
@@ -2729,10 +3037,27 @@ static void fillDriverJson(TMC2209& driver, uint8_t driverAddress,
         if (stallGuardValid) {
             dynamicObj["stallGuardResult"] = stallGuard & 0x03FF;
         }
-        dynamicObj["pwmScaleSum"] = driver.getPwmScaleSum();
-        dynamicObj["pwmScaleAuto"] = driver.getPwmScaleAuto();
-        dynamicObj["pwmOffsetAuto"] = driver.getPwmOffsetAuto();
-        dynamicObj["pwmGradientAuto"] = driver.getPwmGradientAuto();
+        uint32_t pwmScale = 0;
+        const bool pwmScaleValid =
+            readTmcRegisterChecked(driverAddress, 0x71, pwmScale);
+        dynamicObj["pwmScaleValid"] = pwmScaleValid;
+        if (pwmScaleValid) {
+            const uint16_t rawScaleAuto = (pwmScale >> 16) & 0x01FFU;
+            dynamicObj["pwmScaleSum"] = pwmScale & 0xFFU;
+            dynamicObj["pwmScaleAuto"] = (rawScaleAuto & 0x0100U)
+                ? static_cast<int16_t>(rawScaleAuto) - 0x0200
+                : static_cast<int16_t>(rawScaleAuto);
+            dynamicObj["pwmScaleRaw"] = pwmScale;
+        }
+        uint32_t pwmAuto = 0;
+        const bool pwmAutoValid =
+            readTmcRegisterChecked(driverAddress, 0x72, pwmAuto);
+        dynamicObj["pwmAutoValid"] = pwmAutoValid;
+        if (pwmAutoValid) {
+            dynamicObj["pwmOffsetAuto"] = pwmAuto & 0xFFU;
+            dynamicObj["pwmGradientAuto"] = (pwmAuto >> 16) & 0xFFU;
+            dynamicObj["pwmAutoRaw"] = pwmAuto;
+        }
         dynamicObj["microstepCounter"] = driver.getMicrostepCounter();
         uint32_t microstepCounter = 0;
         const bool microstepCounterValid =

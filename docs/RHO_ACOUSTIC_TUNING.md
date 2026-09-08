@@ -5,16 +5,22 @@ before tuning sensorless homing. It uses the same Antlion USB microphone and
 the telemetry-aligned analysis in `scripts/acoustic_tuner.py`.
 
 This procedure deliberately does **not** home rho. The operator places the
-mechanism about 30 mm outward from the physical home stop before commissioning
-firmware boots. Firmware assigns that position temporary logical `rho=0`.
-Every test target is between logical 0 and +200 mm, and every successfully
+mechanism at a known, marked physical start before commissioning firmware
+boots. Firmware assigns that position temporary logical `rho=0`.
+Every test target is between logical 0 and +400 mm, and every successfully
 completed test returns to logical 0. No test commands an inward-negative rho
 position.
 
 ## Test trajectories
 
-- Continuous: `start -> start+200 mm -> start`.
-- Stress: reversal-heavy moves through offsets from 0 to +200 mm, followed by
+- Screen: four complete 50 mm legs, `0 -> 50 -> 0 -> 50 -> 0`, with an idle
+  gap after each leg. If every leg does not sustain at least 90% of commanded
+  velocity for one second, repeat the screen at 100 mm.
+- Continuous: `start -> start+400 mm -> start`.
+- Gated qualification: eight complete 50 or 100 mm legs with confirmed idle
+  gaps after every leg. This is the primary numeric acoustic trajectory in a
+  changing room environment.
+- Stress: reversal-heavy moves through offsets from 0 to +400 mm, followed by
   an explicit return to start.
 - Theta remains stationary and its driver is not enabled by rho-commissioning
   firmware.
@@ -35,15 +41,52 @@ Use only `esp32dev_rho_commissioning` or
 - explicitly disables the theta driver and verifies `TOFF=0` over UART, which
   also makes warm OTA transitions safe;
 - enables only the paired rho drivers;
-- boots with a conservative 150 mA run / 100 mA hold, 2 external microsteps,
+- boots with `VSENSE=1`, `IRUN=8`, about 275 mA RMS run current, 100 mA hold,
+  2 external microsteps,
   StealthChop, CoolStep off, 1 mm/s velocity, 2 mm/s² acceleration, and
   10 mm/s³ jerk;
+- resets the full chopper, PWM, interpolation, hold-delay, and standstill
+  profile to its checked baseline on every commissioning boot instead of
+  inheriting the previous trial;
 - assumes the physical boot position is temporary logical rho zero;
-- permits only the bounded rho continuous and stress generators.
+- permits only bounded rho continuous/stress generators and commissioning-only
+  absolute segment targets from logical 0 through +400 mm.
 
 A trial may apply different settings after the operator supplies the motor's
-rated RMS phase current. Firmware independently enforces the project rho
-ceiling of 500 mA. The 500 mA ceiling is not a tuning target.
+rated RMS phase current. The current conversion uses the FYSETC V3.0
+manufacturer value of 0.11 ohm for its external sense resistors. Firmware sets
+`GCONF.I_SCALE_ANALOG=0`, so UART controls current and the onboard VREF
+potentiometer does not set running current after configuration. Both rho
+drivers must confirm digital current scaling and external sensing over UART.
+
+The 500 mA motor rating remains a ceiling. Until you measure coil current or
+confirm the shunt tolerance, firmware caps rho at raw current code CS=14. With
+`VSENSE=1`, the useful commissioning points are:
+
+| CS | Nominal RMS current |
+|---:|---:|
+| 8 | 275 mA |
+| 10 | 337 mA |
+| 12 | 398 mA |
+| 13 | 428 mA |
+| 14 | 459 mA |
+
+CS=14 is the high-current tuning point: about 486 mA after the firmware's 6%
+uncertainty allowance. CS=15 commands about 490 mA nominal and about 519 mA
+with the same allowance, so the API and host tool reject it.
+
+UART cannot protect the interval before the controller configures the driver
+after a cold power-on. Hold the module's active-low `ENN` pin high during boot,
+or set VREF to a conservative current as a bootstrap limit if the carrier ties
+`ENN` low. Do not tune VREF for normal operation; UART owns the operating
+current.
+
+On this machine, `IOIN.ENN` read low on both RHO drivers during commissioning.
+Set each module to about 0.39 V VREF before reconnecting a motor. FYSETC's
+`VREF = I_RMS * 1.41` formula maps 275 mA RMS to 0.388 V. Keep the motor phases
+disconnected, apply VM power, measure VREF to GND, adjust with an insulated
+tool, then remove power before reconnecting the phases. This setting limits a
+cold-boot interval; UART still sets CS8 after startup.
 
 Do not use the general bench-motion build for this procedure. It does not
 provide the rho-only motion lockout or the host-side commissioning identity
@@ -51,9 +94,9 @@ check.
 
 ## Hard safety rules
 
-1. With driver power off, put the mechanism at the marked test start about
-   30 mm outward from the physical home stop. Confirm at least 200 mm of clear
-   outward travel remains.
+1. With driver power off, put the mechanism at the marked, repeatable test
+   start near physical home. Confirm at least 400 mm of clear outward travel
+   remains.
 2. Proceed only if the installed machine's existing `+rho` STEP/DIR direction
    is already known to move physically outward. This test cannot safely
    discover a reversed direction without first violating the inward boundary.
@@ -140,6 +183,11 @@ production or theta-commissioning firmware.
 
 ## Establish a new rho acoustic reference
 
+Discard the old `-55 dBFS` provisional limit and the later `-58.1 dBFS`
+working limit for acceptance. The operator heard the last tested profile, and
+the load, wiring, current model, and driver settings have since changed. Those
+artifacts describe earlier sessions; they do not set a ceiling for this one.
+
 First record stationary room/mechanism noise:
 
 ```bash
@@ -147,49 +195,69 @@ python scripts/acoustic_tuner.py baseline \
   --duration 10 --settle 3
 ```
 
-For the first observed movement, use a conservative continuous-only screen.
-Replace `RATED_CURRENT` with the lower of the motor's rated RMS phase current
-and 500 mA. The 600-second timeout allows the 400 mm round trip at 1 mm/s to
-finish naturally.
+Use a 50 mm gated screen for coarse candidates. It remains provisional after a
+pass.
 
 ```bash
 python scripts/acoustic_tuner.py trial \
   --axis rho --reference-only \
-  --label rho-smoke-2u-150ma-v1-a2-j10 \
-  --rated-current-ma RATED_CURRENT \
-  --profile continuous --repeats 1 \
-  --pre-idle 5 --duration 600 --post-idle 5 \
-  --run-current-ma 150 --hold-current-ma 100 \
-  --velocity 1 --accel 2 --jerk 10 \
-  --microsteps 2 --mode stealthchop --coolstep off
+  --label rho-screen-4u-cs8-v4-a20-j100 \
+  --rated-current-ma 500 \
+  --profile screen --rho-excursion-mm 50 --repeats 1 \
+  --pre-idle 5 --gated-idle 2 --duration 120 --post-idle 5 \
+  --run-current-ma 275 --hold-current-ma 100 \
+  --current-scale high \
+  --velocity 4 --accel 20 --jerk 100 \
+  --microsteps 4 --mode stealthchop --coolstep off
 ```
 
-If 150 mA cannot move both motors cleanly, stop, restore the physical start,
-reboot, and increase current in bounded steps within the motor rating. Do not
-interpret a stalled low-current run as an acoustic candidate.
+If this setting cannot move both motors cleanly, stop and inspect mechanics,
+wiring, and current telemetry. Do not interpret a stalled low-current run as an
+acoustic candidate. Increase current only through the staged CS8, CS10, CS12,
+CS13, and CS14 points.
 
-Once motion is visibly healthy, record at least two continuous and two stress
-repeats using the current known-reliable profile and `--reference-only`. This
-creates rho-specific broadband and timing-locked tonal references:
+Once motion is visibly healthy, record at least two gated repeats using the
+current known-reliable profile and `--reference-only`. The repeated motor-on /
+motor-off intervals allow broadband motor energy to be distinguished from a
+changing background:
 
 ```bash
 python scripts/acoustic_tuner.py trial \
   --axis rho --reference-only \
   --label rho-reference \
   --rated-current-ma RATED_CURRENT \
-  --profile both --repeats 2 \
-  --pre-idle 5 --duration DURATION --post-idle 5 \
+  --profile gated --rho-excursion-mm 50 --repeats 2 \
+  --pre-idle 5 --gated-idle 2 --duration DURATION --post-idle 5 \
   --run-current-ma CURRENT --hold-current-ma HOLD \
   --velocity VELOCITY --accel ACCEL --jerk JERK \
   --microsteps MICROSTEPS --mode stealthchop --coolstep off
 ```
 
 Select the louder repeatable motion-locked line as the baseline tone ceiling.
-Use high-speed A-weighted dBFS only as a secondary broadband ceiling when both
-idle windows are stable. All readings are relative digital dBFS, not SPL.
+The qualifying broadband value is the loudest gate in any repeat, measured only
+while telemetry confirms at least 90% of commanded velocity. The analyzer
+subtracts the louder adjacent-idle A-weighted power in linear units before
+converting that gate's motor excess to dBFS. Quiet acceleration ramps therefore
+cannot dilute the result. A gated broadband result qualifies only when every
+expected local on/off pair is available, at least 75% show the sound rising with
+motion and falling at idle, every gate sustains cruise for at least one second,
+background halves are stable, microphone gain is unchanged, audio is not
+clipped, and telemetry timing passes. The separately named raw high-speed value
+is room-plus-motor diagnostic data and is never the acceptance metric. All
+readings are relative digital dBFS, not SPL.
+
+Re-establish the reference ceiling after this cruise-only metric is installed.
+Thresholds derived from earlier whole-leg averages are not comparable.
+
+The recorder captures raw PCM and timestamps the first delivered audio block;
+it does not assume process launch equals sample zero. Telemetry GETs are timed
+at the midpoint of their request and run independently from slower driver
+diagnostics. The tool stores request RTT, p95/max sample gaps, every start/stop
+bracket, and audio epoch uncertainty. Any failed timing check invalidates the
+acoustic comparison even if the motion itself completed safely.
 
 `--duration` is a per-sequence safety timeout, not the recording duration. The
-continuous sequence travels 400 mm total; the stress sequence travels 2,850 mm
+continuous sequence travels 800 mm total; the stress sequence travels 5,950 mm
 total. The tool rejects a timeout shorter than 125% of `distance / velocity`
 plus 10 seconds, but short reversal ramps can require more time. Increase the
 timeout rather than increasing velocity merely to fit a recording window.
@@ -205,18 +273,19 @@ python scripts/acoustic_tuner.py trial \
   --rated-current-ma RATED_CURRENT \
   --acceptable-ceiling-dbfs BROADBAND_CEILING \
   --tone-ceiling-dbfs TONE_CEILING \
-  --minimum-persistence 0.35 \
-  --profile both --repeats 1 \
-  --pre-idle 5 --duration DURATION --post-idle 5 \
+  --minimum-persistence 0.65 \
+  --profile gated --repeats 2 \
+  --pre-idle 5 --gated-idle 2 --duration DURATION --post-idle 5 \
   --run-current-ma CURRENT --hold-current-ma HOLD \
   --velocity VELOCITY --accel ACCEL --jerk JERK \
   --microsteps MICROSTEPS --mode stealthchop --coolstep off
 ```
 
 The tool sets the UI speed multiplier to 10/10, persists requested values,
-records one continuous Antlion file, polls motion telemetry, samples both rho
-driver dumps, and writes WAV, timeline JSON, timing plot, detailed result JSON,
-and append-only `results.jsonl` artifacts under `tuning-recordings/`.
+records one timestamped Antlion stream per repeat, polls motion telemetry on a
+path independent from both driver dumps, and writes WAV, timeline JSON, timing
+plot, detailed result JSON, and append-only `results.jsonl` artifacts under
+`tuning-recordings/`.
 
 ## Search order
 
@@ -227,18 +296,117 @@ Change one family at a time:
    resonances rather than simply changing volume.
 2. **External microsteps:** compare 2, 4, 8, and 16 first. Higher values sharply
    reduce the available velocity under the 10 kHz step budget. Require
-   interpolation-to-256 readback on both drivers.
+   both drivers to read back the requested interpolation state.
 3. **Velocity:** bracket upward and downward around repeatable tonal peaks. Do
    not assume slower is quieter. Use continuous runs to judge sustained sound.
 4. **Acceleration and jerk:** tune with the stress profile at fixed current,
    microsteps, and velocity. A gentler ramp can dwell in a resonance; test both
    sides of any apparent improvement.
-5. Keep StealthChop and automatic PWM calibration as the first quiet mode.
-   Keep CoolStep off until fixed-current behavior is repeatable. Test
-   SpreadCycle or hybrid thresholds only if torque/stability requires it.
+5. Keep StealthChop and automatic current scaling as the first quiet mode.
+   Automatic gradient adaptation is a separate choice: retain it only when
+   both paired drivers converge under representative loads. Keep CoolStep off
+   until fixed-current behavior is repeatable. Test SpreadCycle or hybrid
+   thresholds only if torque/stability requires it.
+
+After the motion envelope passes, screen the driver controls in this order:
+
+1. Compare all four `PWM_FREQ` values with automatic current scaling enabled.
+   Try automatic gradient adaptation only after confirming that both motors
+   converge rather than fighting their different loads.
+2. Bracket `PWM_REG` and `PWM_LIM`, then test adjacent values around the best
+   pair.
+3. Record `PWM_OFS_AUTO`, `PWM_GRAD_AUTO`, `PWM_SCALE_SUM`, and
+   `PWM_SCALE_AUTO` during sustained cruise. Use those automatic values as the
+   center of a manual `PWM_OFS`/`PWM_GRAD` sweep.
+4. Test `TOFF`, `TBL`, `HSTRT`, and `HEND` only for SpreadCycle or hybrid
+   candidates. Reject `TOFF=1` with `TBL<2`, and keep raw
+   `HSTRT + HEND <= 18` (effective hysteresis sum at most 16 for rho's capped
+   current range). Keep protection-disable bits unchanged.
+5. Tune `IHOLD`, `IHOLDDELAY`, `TPOWERDOWN`, and `FREEWHEEL` against idle sound,
+   stop transients, and required holding torque. Keep `TPOWERDOWN >= 12` so
+   the 200 ms AT#1 standstill interval completes before hold-current reduction.
+6. Test CoolStep last. Sweep `SEMIN`, `SEMAX`, `SEUP`, `SEDN`, and
+   `TCOOLTHRS` as a family after a fixed-current baseline passes.
+
+The tool exposes these fields through `--pwm-*`, `--automatic-current`,
+`--automatic-gradient`, `--chopper-off-time`, `--blank-time`,
+`--hysteresis-*`, `--hold-delay`, `--power-down-delay`, `--standstill-mode`,
+and `--coolstep-*`. Change one field or coupled pair per screen. Run the 400 mm
+continuous and stress profiles for finalists.
 
 Use one repeat for screening, two independent repeats for confirmation, and
 five continuous plus five stress repeats for the selected soak profile.
+Use gated repeats—not continuous runs—for numeric broadband acceptance whenever
+the room background changes. Continuous runs remain useful for operator A/B
+listening and position-dependent spectrograms.
+
+## 2026-09-08 provisional asymmetric-load result
+
+This result is a commissioning baseline, not a production default. The RHO-CW
+motor carried its load while the main RHO motor was unloaded. The operator had
+also observed low-current slipping near home, so this session deliberately
+held both run and standstill current at the highest allowed CS14 point. Do not
+reduce current or enable CoolStep until that mechanical issue is resolved.
+
+The operator-audible reference was reprocessed with the sustained-cruise
+metric described above. Its loudest cruise gate was -34.56 dBFS and its
+cruise-locked tone was -52.00 dBFS. The provisional limits are 3 dB quieter:
+-37.56 dBFS broadband motor excess and -55.00 dBFS for a locked tone. These
+limits replace all earlier whole-leg and pre-load rho thresholds.
+
+The selected asymmetric-load profile is:
+
+| Setting | Selected value |
+|---|---:|
+| Velocity | 14.5 mm/s |
+| Acceleration | 5 mm/s² |
+| Jerk | 100 mm/s³ |
+| Run / hold current | CS14 / CS14, about 459 mA RMS nominal |
+| Current sense range | high sensitivity, external 0.11 ohm shunts |
+| External microsteps | 2, with interpolation to 256 enabled |
+| Chopper mode | StealthChop at all tested speeds |
+| `PWM_FREQ` | 0 |
+| `PWM_REG` / `PWM_LIM` | 15 / 15 |
+| Automatic current scaling | enabled |
+| Automatic gradient adaptation | disabled |
+| Manual `PWM_OFS` / `PWM_GRAD` | 119 / 10 |
+| CoolStep | disabled |
+| Hold delay / power-down delay | 8 / 20 |
+| Standstill mode | normal |
+
+CS14 is intentionally close to the 500 mA RMS motor rating: about 459 mA
+nominal and about 486 mA at the firmware's conservative 6% uncertainty edge.
+CS15 remains prohibited because that same calculation reaches about 519 mA.
+
+Two independent, timing-valid 100 mm gated samples passed both provisional
+limits at CS14 run and hold current:
+
+| Recording | Broadband motor excess | Loudest locked tone |
+|---|---:|---:|
+| `20260908T092621Z-...-qualified`, valid repeat 2 | -39.49 dBFS | -56.73 dBFS |
+| `20260908T093628Z-...-qualification-final` | -38.81 dBFS | -56.54 dBFS |
+
+The exact profile also completed a 400 mm continuous round trip and the full
+5,950 mm reversal stress trajectory. Both ended at logical zero, never
+commanded inward of zero, kept theta stationary, reported no planner underruns,
+and left both RHO drivers UART-valid and fault-free. Continuous and stress
+recordings are safety and listening evidence only; without adjacent idle gates
+they are not numeric acoustic qualifications.
+
+The sweep selected 2 external microsteps with interpolation, `PWM_FREQ=0`,
+`PWM_REG=15`, `PWM_LIM=15`, automatic current scaling, and manual gradient
+values. Automatic gradient adaptation could not converge both differently
+loaded motors. SpreadCycle was about 5.2 dB louder in the controlled baseline
+and was rejected. Speeds at and above 15 mm/s were marginal or failed the
+corrected limits on qualification; 14.5 mm/s is the fastest confirmed point.
+
+Before promotion, attach the main RHO load, restore the same microphone
+position and gain, establish a new operator-audible reference, and rerun the
+parameter screens plus gated qualification, 400 mm continuous, stress, and
+soak tests. Current reduction, CoolStep, hold-current reduction, automatic
+gradient adaptation, and final production defaults all remain deferred. The
+eventual full-load acoustic profile must be frozen before RHO homing thresholds
+are tuned.
 
 ## Acceptance rules
 
@@ -255,7 +423,12 @@ A candidate passes only when:
 - no driver fault or thermal warning appeared;
 - planner underruns and maximum consecutive underruns stayed zero;
 - repeated timing-locked tones stayed beneath the selected rho ceiling;
-- any broadband rejection used stable pre/post idle windows;
+- the loudest adjacent-idle-subtracted sustained-cruise gate in every repeated
+  gated trial stayed beneath its selected ceiling, with every expected on/off
+  pair present and at least 75% on/off consistency;
+- telemetry cadence, transition brackets, and audio sample-zero uncertainty
+  passed their timing limits;
+- changing-background, clipping, and gain checks all passed;
 - microphone gain and placement stayed unchanged;
 - the board returned to `IDLE` after every repeat.
 

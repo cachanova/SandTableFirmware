@@ -10,6 +10,7 @@
 #include <SDCard.hpp>
 #include <ClearingPatternGen.hpp>
 #include <ErrorLog.hpp>
+#include <RhoAcousticProfile.hpp>
 #include <algorithm>
 #include <cerrno>
 #include <climits>
@@ -618,6 +619,11 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
         handleTuningTestRhoStress(request);
     });
 
+    m_server.on("/api/tuning/test/rho/segment", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handleTuningTestRhoSegment(request);
+    });
+
     // Driver dump routes (for diagnostics)
     m_server.on("/api/tuning/dump/theta", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
@@ -884,6 +890,7 @@ void SisyphusWebServer::processPatternQueue() {
         const float rho = m_pendingManualRho;
         const float jogTheta = m_pendingJogTheta;
         const float jogRho = m_pendingJogRho;
+        const float rhoSegmentTarget = m_pendingRhoSegmentTarget;
         m_pendingMotion = PendingMotion::NONE;
 
         bool started = false;
@@ -910,6 +917,10 @@ void SisyphusWebServer::processPatternQueue() {
                 break;
             case PendingMotion::RHO_STRESS:
                 started = m_polarControl->testRhoStress();
+                m_activeMotion = MotionOwner::TUNING;
+                break;
+            case PendingMotion::RHO_SEGMENT:
+                started = m_polarControl->testRhoSegment(rhoSegmentTarget);
                 m_activeMotion = MotionOwner::TUNING;
                 break;
             case PendingMotion::NONE:
@@ -2161,13 +2172,28 @@ static void driverSettingsToJson(JsonObject& obj, const DriverSettings& settings
     obj["runCurrent"] = settings.runCurrent;
     obj["holdCurrent"] = settings.holdCurrent;
     obj["holdDelay"] = settings.holdDelay;
+    obj["powerDownDelay"] = settings.powerDownDelay;
+    obj["highSensitivityCurrentScale"] = settings.highSensitivityCurrentScale;
+    obj["chopperOffTime"] = settings.chopperOffTime;
+    obj["hysteresisStart"] = settings.hysteresisStart;
+    obj["hysteresisEnd"] = settings.hysteresisEnd;
+    obj["blankTime"] = settings.blankTime;
 
     // Microstepping
     obj["microsteps"] = settings.microsteps;
+    obj["interpolationEnabled"] = settings.interpolationEnabled;
 
     // StealthChop settings
     obj["stealthChopEnabled"] = settings.stealthChopEnabled;
     obj["stealthChopThreshold"] = settings.stealthChopThreshold;
+    obj["pwmFrequency"] = settings.pwmFrequency;
+    obj["pwmRegulation"] = settings.pwmRegulation;
+    obj["pwmLimit"] = settings.pwmLimit;
+    obj["standstillMode"] = settings.standstillMode;
+    obj["automaticCurrentScaling"] = settings.automaticCurrentScaling;
+    obj["automaticGradientAdaptation"] = settings.automaticGradientAdaptation;
+    obj["pwmOffset"] = settings.pwmOffset;
+    obj["pwmGradient"] = settings.pwmGradient;
 
     // CoolStep settings
     obj["coolStepEnabled"] = settings.coolStepEnabled;
@@ -2225,7 +2251,18 @@ static bool parseDriverSettings(AsyncWebServerRequest *request, DriverSettings& 
     uint32_t runCurrent = settings.runCurrent;
     uint32_t holdCurrent = settings.holdCurrent;
     uint32_t holdDelay = settings.holdDelay;
+    uint32_t powerDownDelay = settings.powerDownDelay;
+    uint32_t chopperOffTime = settings.chopperOffTime;
+    uint32_t hysteresisStart = settings.hysteresisStart;
+    uint32_t hysteresisEnd = settings.hysteresisEnd;
+    uint32_t blankTime = settings.blankTime;
     uint32_t microsteps = settings.microsteps;
+    uint32_t pwmFrequency = settings.pwmFrequency;
+    uint32_t pwmRegulation = settings.pwmRegulation;
+    uint32_t pwmLimit = settings.pwmLimit;
+    uint32_t standstillMode = settings.standstillMode;
+    uint32_t pwmOffset = settings.pwmOffset;
+    uint32_t pwmGradient = settings.pwmGradient;
     uint32_t stealthThreshold = settings.stealthChopThreshold;
     uint32_t coolLower = settings.coolStepLowerThreshold;
     uint32_t coolUpper = settings.coolStepUpperThreshold;
@@ -2236,14 +2273,29 @@ static bool parseDriverSettings(AsyncWebServerRequest *request, DriverSettings& 
     if (!parseUnsignedParam(request, "runCurrent", runCurrent) || runCurrent > UINT16_MAX ||
         !parseUnsignedParam(request, "holdCurrent", holdCurrent) || holdCurrent > UINT16_MAX ||
         !parseUnsignedParam(request, "holdDelay", holdDelay) || holdDelay > UINT8_MAX ||
+        !parseUnsignedParam(request, "powerDownDelay", powerDownDelay) || powerDownDelay > UINT8_MAX ||
+        !parseUnsignedParam(request, "chopperOffTime", chopperOffTime) || chopperOffTime > UINT8_MAX ||
+        !parseUnsignedParam(request, "hysteresisStart", hysteresisStart) || hysteresisStart > UINT8_MAX ||
+        !parseUnsignedParam(request, "hysteresisEnd", hysteresisEnd) || hysteresisEnd > UINT8_MAX ||
+        !parseUnsignedParam(request, "blankTime", blankTime) || blankTime > UINT8_MAX ||
         !parseUnsignedParam(request, "microsteps", microsteps) || microsteps > UINT16_MAX ||
+        !parseUnsignedParam(request, "pwmFrequency", pwmFrequency) || pwmFrequency > UINT8_MAX ||
+        !parseUnsignedParam(request, "pwmRegulation", pwmRegulation) || pwmRegulation > UINT8_MAX ||
+        !parseUnsignedParam(request, "pwmLimit", pwmLimit) || pwmLimit > UINT8_MAX ||
+        !parseUnsignedParam(request, "standstillMode", standstillMode) || standstillMode > UINT8_MAX ||
+        !parseUnsignedParam(request, "pwmOffset", pwmOffset) || pwmOffset > UINT8_MAX ||
+        !parseUnsignedParam(request, "pwmGradient", pwmGradient) || pwmGradient > UINT8_MAX ||
         !parseUnsignedParam(request, "stealthChopThreshold", stealthThreshold) ||
         !parseUnsignedParam(request, "coolStepLowerThreshold", coolLower) || coolLower > UINT8_MAX ||
         !parseUnsignedParam(request, "coolStepUpperThreshold", coolUpper) || coolUpper > UINT8_MAX ||
         !parseUnsignedParam(request, "coolStepCurrentIncrement", coolIncrement) || coolIncrement > UINT8_MAX ||
         !parseUnsignedParam(request, "coolStepMeasurementCount", coolCount) || coolCount > UINT8_MAX ||
         !parseUnsignedParam(request, "coolStepThreshold", coolThreshold) ||
+        !parseBoolParam(request, "highSensitivityCurrentScale", settings.highSensitivityCurrentScale) ||
+        !parseBoolParam(request, "interpolationEnabled", settings.interpolationEnabled) ||
         !parseBoolParam(request, "stealthChopEnabled", settings.stealthChopEnabled) ||
+        !parseBoolParam(request, "automaticCurrentScaling", settings.automaticCurrentScaling) ||
+        !parseBoolParam(request, "automaticGradientAdaptation", settings.automaticGradientAdaptation) ||
         !parseBoolParam(request, "coolStepEnabled", settings.coolStepEnabled)) {
         return false;
     }
@@ -2251,7 +2303,18 @@ static bool parseDriverSettings(AsyncWebServerRequest *request, DriverSettings& 
     settings.runCurrent = static_cast<uint16_t>(runCurrent);
     settings.holdCurrent = static_cast<uint16_t>(holdCurrent);
     settings.holdDelay = static_cast<uint8_t>(holdDelay);
+    settings.powerDownDelay = static_cast<uint8_t>(powerDownDelay);
+    settings.chopperOffTime = static_cast<uint8_t>(chopperOffTime);
+    settings.hysteresisStart = static_cast<uint8_t>(hysteresisStart);
+    settings.hysteresisEnd = static_cast<uint8_t>(hysteresisEnd);
+    settings.blankTime = static_cast<uint8_t>(blankTime);
     settings.microsteps = static_cast<uint16_t>(microsteps);
+    settings.pwmFrequency = static_cast<uint8_t>(pwmFrequency);
+    settings.pwmRegulation = static_cast<uint8_t>(pwmRegulation);
+    settings.pwmLimit = static_cast<uint8_t>(pwmLimit);
+    settings.standstillMode = static_cast<uint8_t>(standstillMode);
+    settings.pwmOffset = static_cast<uint8_t>(pwmOffset);
+    settings.pwmGradient = static_cast<uint8_t>(pwmGradient);
     settings.stealthChopThreshold = stealthThreshold;
     settings.coolStepLowerThreshold = static_cast<uint8_t>(coolLower);
     settings.coolStepUpperThreshold = static_cast<uint8_t>(coolUpper);
@@ -2313,6 +2376,11 @@ void SisyphusWebServer::handleTuningGet(AsyncWebServerRequest *request) {
     JsonObject limitsObj = doc["limits"].to<JsonObject>();
     limitsObj["thetaMaxRunCurrentMa"] = Config::kThetaMaxRunCurrentMa;
     limitsObj["rhoMaxRunCurrentMa"] = Config::kRhoMaxRunCurrentMa;
+    limitsObj["driverSenseResistorOhms"] = Config::kDriverSenseResistorOhms;
+    limitsObj["driverSenseResistorVerified"] =
+        Config::kDriverSenseResistorVerified;
+    limitsObj["rhoMaxUnmeasuredCurrentRegister"] =
+        Config::kRhoMaxUnmeasuredCurrentRegister;
     doc["persistenceAvailable"] = m_polarControl->tuningPersistenceAvailable();
 
     AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
@@ -2433,4 +2501,34 @@ void SisyphusWebServer::handleTuningTestRhoStress(AsyncWebServerRequest *request
         return;
     }
     request->send(202, "application/json", "{\"success\":true,\"message\":\"Test queued\"}");
+}
+
+void SisyphusWebServer::handleTuningTestRhoSegment(AsyncWebServerRequest *request) {
+#ifndef SISYPHUS_RHO_COMMISSIONING
+    request->send(409, "application/json",
+        "{\"success\":false,\"message\":\"Segmented rho tests require rho commissioning mode\"}");
+    return;
+#else
+    if (!request->hasParam("targetMm", true)) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Missing targetMm\"}");
+        return;
+    }
+    float target = 0.0f;
+    if (!parseStrictFloat(request->getParam("targetMm", true)->value(), target) ||
+        target < 0.0f || target > RhoAcousticProfile::kExcursionMm) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"targetMm must be within 0..400\"}");
+        return;
+    }
+    SemaphoreGuard stateLock(m_stateMutex);
+    if (!queueTuningTestLocked(PendingMotion::RHO_SEGMENT)) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"Rho segment is unavailable\"}");
+        return;
+    }
+    m_pendingRhoSegmentTarget = target;
+    request->send(202, "application/json",
+        "{\"success\":true,\"message\":\"Rho segment queued\"}");
+#endif
 }

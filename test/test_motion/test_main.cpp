@@ -91,7 +91,7 @@ bool testRhoAcousticProfiles() {
             reachedExcursion |= offset == RhoAcousticProfile::kExcursionMm;
         }
         if (!reachedExcursion) {
-            std::cout << "FAIL: " << name << " never reaches the 200mm endpoint" << std::endl;
+            std::cout << "FAIL: " << name << " never reaches the configured endpoint" << std::endl;
             return false;
         }
         return true;
@@ -99,8 +99,9 @@ bool testRhoAcousticProfiles() {
 
     const bool passed =
         validate(RhoAcousticProfile::kContinuousOffsetsMm, "continuous") &&
+        validate(RhoAcousticProfile::kGatedOffsetsMm, "gated") &&
         validate(RhoAcousticProfile::kStressOffsetsMm, "stress");
-    if (passed) std::cout << "PASS: both profiles stay in [0,+200mm] and return to zero" << std::endl;
+    if (passed) std::cout << "PASS: all profiles stay in the outward-only envelope and return to zero" << std::endl;
     return passed;
 }
 

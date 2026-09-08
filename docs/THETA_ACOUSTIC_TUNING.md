@@ -215,8 +215,9 @@ pio run -e esp32dev_theta_commissioning_ota -t upload
 
 After reboot, wait for HTTP and repeat preflight. Commissioning firmware
 intentionally forces a safe 250 mA, 64-microstep, 0.05 rad/s boot envelope even
-when more aggressive tuning is saved. Runtime trials apply requested values
-after the operator provides the motor rating.
+when more aggressive tuning is saved. It also restores the full baseline
+chopper, PWM, interpolation, hold-delay, and standstill profile. Runtime trials
+apply requested values after the operator provides the motor rating.
 
 ## Calibrate the acceptable reference
 
@@ -282,6 +283,37 @@ Use one repetition for screening and at least two independent repetitions for
 confirmation. `--duration` is a completion timeout, not a request to truncate
 motion. Every finalist must finish both `continuous` and `stress` naturally.
 
+### Short-screen, full-confirmation sequence
+
+Do not spend a full rotation on every coarse parameter candidate. Use a short,
+reversing angular screen first, with multiple complete motion/rest gates in one
+continuous microphone recording. Each moving segment must be long enough for
+telemetry to show at least 90% of the configured maximum velocity continuously
+for at least one second. A short screen is invalid for acoustic comparison if
+any segment fails that cruise requirement; increase the angular travel and
+repeat it rather than comparing acceleration-dominated recordings.
+
+A screening pass is provisional even when its microphone and operator checks
+pass. Promote only the best candidates to this sequence:
+
+1. repeat the short screen independently to reject room-noise coincidences;
+2. run complete forward-and-back rotations to measure sustained sound across
+   the mechanism's full position range;
+3. run the full reversal-heavy stress profile;
+4. confirm at least twice, then perform the five-repeat soak described below.
+
+Every short or full sequence must end at its exact logical and physical start.
+Correlate audio with every measured start and stop, compare each motion gate
+with the idle immediately before and after it, and reject recordings with
+missing gates, clipping, microphone-gain changes, unstable timing, or
+unexplained background drift. The operator's audible verdict overrides a
+numeric pass.
+
+The current segmented screen endpoint is rho-only. Add and validate the theta
+equivalent before the next theta session. Until then, use one full continuous
+repeat as the theta screening pass; do not invoke `--profile screen` or
+`--profile gated` with `--axis theta`.
+
 1. Establish one known pass.
 2. Change only one family at a time: microsteps, current, velocity, or ramp.
 3. Use coarse steps to find a bracket, then test midpoints.
@@ -323,6 +355,37 @@ Recommended search order:
 5. Keep StealthChop and automatic PWM calibration as primary quiet mode. Test
    SpreadCycle/hybrid only if torque or stability requires it. Keep CoolStep
    off until reproducible fixed-current profiles exist.
+
+### TMC2209 parameter matrix
+
+Keep the motion profile and all other registers fixed while screening each
+row. Run the short gated screen first, then promote the best setting to full
+rotation and stress. Record the raw register dump with each artifact.
+
+| Stage | Parameters | Initial sweep | Qualification rule |
+|---|---|---|---|
+| Current representation | `VSENSE`, `IRUN`, `IHOLD` | Compare standard and high-sensitivity ranges at the same nominal current; search current in coarse steps, then adjacent CS codes | Respect the motor rating after register quantization; prefer the range that represents the target with a higher CS code |
+| Step resolution | `MRES`, `INTPOL` | 32, 64, 128 external microsteps; interpolation on/off | Keep at least 20% STEP-rate headroom; require exact CHOPCONF readback |
+| StealthChop carrier | `PWM_FREQ` | 0, 1, 2, 3 | Compare motion-locked tones and broadband excess in both directions |
+| StealthChop loop | `PWM_REG`, `PWM_LIM` | Coarse bracket across 1..15 and 0..15; test neighbors around the best pair | Reject weak torque, clipping, or unstable `PWM_SCALE` telemetry |
+| Automatic tuning | `PWM_AUTOSCALE`, `PWM_AUTOGRAD` | on/on baseline, then controlled on/off combinations | Complete AT#1 at standstill and AT#2 at constant velocity before scoring; discard calibration motion from audio scoring |
+| Manual PWM | `PWM_OFS`, `PWM_GRAD` | Start from `PWM_OFS_AUTO` and `PWM_GRAD_AUTO`; test small neighboring values with automatic adaptation disabled | Use only after the automatic profile is stable and recorded |
+| SpreadCycle | `TOFF`, `TBL`, `HSTRT`, `HEND` | Start at 3, 2, 5, 0; sweep one field at a time within datasheet ranges | Reject `TOFF=1` with `TBL<2` and raw `HSTRT + HEND > 18`; use only in SpreadCycle or hybrid trials |
+| Standstill | `IHOLD`, `IHOLDDELAY`, `TPOWERDOWN`, `FREEWHEEL` | Tune after motion sound passes; keep `TPOWERDOWN >= 12` | Score stop transients and idle separately; preserve enough hold torque for the mechanism |
+| CoolStep | `SEMIN`, `SEMAX`, `SEUP`, `SEDN`, `TCOOLTHRS` | Keep off for the fixed-current baseline; test the complete set afterward | Accept only if current modulation stays repeatable and does not worsen tones or missed motion |
+| Hybrid mode | `TPWMTHRS` | Test only when all-StealthChop cannot meet torque or speed | Place the transition outside common operating resonances and test it in both directions |
+
+The host exposes these controls as `--current-scale`, `--run-current-ma`,
+`--hold-current-ma`, `--microsteps`, `--interpolation`, `--pwm-frequency`,
+`--pwm-regulation`, `--pwm-limit`, `--automatic-current`,
+`--automatic-gradient`, `--pwm-offset`, `--pwm-gradient`,
+`--chopper-off-time`, `--blank-time`, `--hysteresis-start`,
+`--hysteresis-end`, `--hold-delay`, `--power-down-delay`,
+`--standstill-mode`, and the `--coolstep-*` options. The `--mode` and
+`--stealth-threshold` options select StealthChop, SpreadCycle, or a hybrid
+threshold. Keep double-edge stepping, shaft inversion, diagnostic routing,
+and protection-disable bits fixed. Those fields change motion semantics or
+disable protection instead of providing a valid sound-tuning variable.
 
 Known boundaries with the current mechanism and fixed microphone:
 
