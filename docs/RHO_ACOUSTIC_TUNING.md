@@ -340,9 +340,9 @@ Use gated repeats—not continuous runs—for numeric broadband acceptance whene
 the room background changes. Continuous runs remain useful for operator A/B
 listening and position-dependent spectrograms.
 
-## 2026-09-08 provisional asymmetric-load result
+## 2026-09-08 rejected asymmetric-load candidate
 
-This result is a commissioning baseline, not a production default. The RHO-CW
+This result is test evidence, not a production default. The RHO-CW
 motor carried its load while the main RHO motor was unloaded. The operator had
 also observed low-current slipping near home, so this session deliberately
 held both run and standstill current at the highest allowed CS14 point. Do not
@@ -354,7 +354,7 @@ cruise-locked tone was -52.00 dBFS. The provisional limits are 3 dB quieter:
 -37.56 dBFS broadband motor excess and -55.00 dBFS for a locked tone. These
 limits replace all earlier whole-leg and pre-load rho thresholds.
 
-The selected asymmetric-load profile is:
+The candidate asymmetric-load profile was:
 
 | Setting | Selected value |
 |---|---:|
@@ -379,34 +379,49 @@ nominal and about 486 mA at the firmware's conservative 6% uncertainty edge.
 CS15 remains prohibited because that same calculation reaches about 519 mA.
 
 Two independent, timing-valid 100 mm gated samples passed both provisional
-limits at CS14 run and hold current:
+microphone limits at CS14 run and hold current:
 
 | Recording | Broadband motor excess | Loudest locked tone |
 |---|---:|---:|
 | `20260908T092621Z-...-qualified`, valid repeat 2 | -39.49 dBFS | -56.73 dBFS |
 | `20260908T093628Z-...-qualification-final` | -38.81 dBFS | -56.54 dBFS |
 
-The exact profile also completed a 400 mm continuous round trip and the full
+The candidate initially completed a 400 mm continuous round trip and the full
 5,950 mm reversal stress trajectory. Both ended at logical zero, never
 commanded inward of zero, kept theta stationary, reported no planner underruns,
 and left both RHO drivers UART-valid and fault-free. Continuous and stress
 recordings are safety and listening evidence only; without adjacent idle gates
 they are not numeric acoustic qualifications.
 
+A second operator-listening 400 mm pass rejected the candidate. The operator
+reported that it was plainly loud and that the mechanism appeared to stick on
+the return. The run was stopped at logical rho 201.17 mm and firmware entered
+`INITIALIZED` with `requiresHoming=true`. Both RHO drivers still reported valid
+UART, CS14, no electrical or thermal fault, and zero planner underruns. Those
+facts do not prove physical motion: STEP/DIR telemetry counts commanded steps
+and cannot detect a stalled or slipping rotor. The temporary logical position
+was therefore invalidated and no commanded recovery was attempted.
+
 The sweep selected 2 external microsteps with interpolation, `PWM_FREQ=0`,
 `PWM_REG=15`, `PWM_LIM=15`, automatic current scaling, and manual gradient
 values. Automatic gradient adaptation could not converge both differently
 loaded motors. SpreadCycle was about 5.2 dB louder in the controlled baseline
 and was rejected. Speeds at and above 15 mm/s were marginal or failed the
-corrected limits on qualification; 14.5 mm/s is the fastest confirmed point.
+corrected numeric limits. Although 14.5 mm/s passed the short gated metric, the
+operator and failed return override that result. No acoustically and
+mechanically accepted asymmetric-load profile was selected.
 
-Before promotion, attach the main RHO load, restore the same microphone
-position and gain, establish a new operator-audible reference, and rerun the
-parameter screens plus gated qualification, 400 mm continuous, stress, and
-soak tests. Current reduction, CoolStep, hold-current reduction, automatic
-gradient adaptation, and final production defaults all remain deferred. The
-eventual full-load acoustic profile must be frozen before RHO homing thresholds
-are tuned.
+Before another powered test, power down and manually restore a known physical
+start; do not trust or command from the interrupted run's logical position.
+Inspect the return-path alignment and source of sticking first. Resume with a
+short, observed, lower-speed outward/return screen before any 400 mm pass.
+After attaching the main RHO load, restore the same microphone position and
+gain, establish a new operator-audible reference, and rerun the parameter
+screens plus gated qualification, 400 mm continuous, stress, and soak tests.
+Current reduction, CoolStep, hold-current reduction, automatic gradient
+adaptation, and final production defaults all remain deferred. The eventual
+full-load acoustic profile must be frozen before RHO homing thresholds are
+tuned.
 
 ## Acceptance rules
 
