@@ -181,12 +181,23 @@ curl -fsS http://100.76.149.200/api/errors | jq
 The Python tool repeats these motion-critical checks and refuses a rho trial on
 production or theta-commissioning firmware.
 
-## Establish a new rho acoustic reference
+## Rho acoustic acceptance tiers
 
 Discard the old `-55 dBFS` provisional limit and the later `-58.1 dBFS`
-working limit for acceptance. The operator heard the last tested profile, and
-the load, wiring, current model, and driver settings have since changed. Those
-artifacts describe earlier sessions; they do not set a ceiling for this one.
+working limit for acceptance. The operator selected `-60 dBFS` as the fixed
+maximum acceptable sustained-cruise motor-excess ceiling for the current
+hardware session. Retain three distinct, mechanically reliable profiles:
+
+- acceptable: every qualifying gate is at or below `-60 dBFS`;
+- quiet -3 dB: every qualifying gate is at or below `-63 dBFS`;
+- quiet -6 dB: every qualifying gate is at or below `-66 dBFS`.
+
+These limits apply only to the adjacent-idle-subtracted, A-weighted broadband
+motor-excess metric described below. Timing-locked tone levels use a different
+calculation and remain corroborating diagnostics until the operator selects a
+separate tone ceiling; do not compare a tone dBFS value directly with these
+broadband limits. The microphone position, gain, load state, and timing-quality
+checks must remain fixed across all three tiers.
 
 First record stationary room/mechanism noise:
 
@@ -217,15 +228,16 @@ acoustic candidate. Increase current only through the staged CS8, CS10, CS12,
 CS13, and CS14 points.
 
 Once motion is visibly healthy, record at least two gated repeats using the
-current known-reliable profile and `--reference-only`. The repeated motor-on /
-motor-off intervals allow broadband motor energy to be distinguished from a
-changing background:
+current known-reliable profile. The repeated motor-on / motor-off intervals
+allow broadband motor energy to be distinguished from a changing background:
 
 ```bash
 python scripts/acoustic_tuner.py trial \
-  --axis rho --reference-only \
-  --label rho-reference \
+  --axis rho \
+  --label rho-acceptable-60dbfs \
   --rated-current-ma RATED_CURRENT \
+  --acceptable-ceiling-dbfs -60 \
+  --tone-ceiling-dbfs TONE_CEILING \
   --profile gated --rho-excursion-mm 50 --repeats 2 \
   --pre-idle 5 --gated-idle 2 --duration DURATION --post-idle 5 \
   --run-current-ma CURRENT --hold-current-ma HOLD \
@@ -233,7 +245,6 @@ python scripts/acoustic_tuner.py trial \
   --microsteps MICROSTEPS --mode stealthchop --coolstep off
 ```
 
-Select the louder repeatable motion-locked line as the baseline tone ceiling.
 The qualifying broadband value is the loudest gate in any repeat, measured only
 while telemetry confirms at least 90% of commanded velocity. The analyzer
 subtracts the louder adjacent-idle A-weighted power in linear units before
@@ -246,8 +257,8 @@ clipped, and telemetry timing passes. The separately named raw high-speed value
 is room-plus-motor diagnostic data and is never the acceptance metric. All
 readings are relative digital dBFS, not SPL.
 
-Re-establish the reference ceiling after this cruise-only metric is installed.
-Thresholds derived from earlier whole-leg averages are not comparable.
+Thresholds derived from earlier whole-leg averages are not comparable with the
+fixed sustained-cruise limits above.
 
 The recorder captures raw PCM and timestamps the first delivered audio block;
 it does not assume process launch equals sample zero. Telemetry GETs are timed
