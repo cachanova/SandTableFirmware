@@ -1,0 +1,73 @@
+{
+  "recordedAt": "2026-09-09",
+  "hardware": {
+    "driver": "FYSETC TMC2209 V3.0",
+    "senseResistorOhms": 0.11,
+    "motorRatedRmsCurrentMa": 500,
+    "rhoTravelMm": 425,
+    "loadState": "final load on rho and rho-companion",
+    "microphone": "Antlion USB mono, fixed placement, 100%, 0.00 dB"
+  },
+  "metric": "loudest telemetry-confirmed sustained-cruise A-weighted motor-excess gate, adjacent-idle subtracted",
+  "commonDriverSettings": {
+    "runCurrentMa": 150,
+    "holdCurrentMa": 75,
+    "highSensitivityCurrentScale": true,
+    "microsteps": 8,
+    "interpolationTo256": true,
+    "stealthChop": true,
+    "stealthChopThreshold": 0,
+    "coolStep": false,
+    "chopperOffTime": 3,
+    "hysteresisStart": 5,
+    "hysteresisEnd": 0,
+    "blankTime": 2,
+    "pwmFrequency": 0,
+    "pwmRegulation": 15,
+    "pwmLimit": 8,
+    "automaticCurrentScaling": false,
+    "automaticGradientAdaptation": false,
+    "pwmOffset": 128,
+    "pwmGradient": 2,
+    "holdDelay": 8,
+    "powerDownDelay": 20,
+    "standstillMode": 0,
+    "accelerationMmS2": 20,
+    "jerkMmS3": 100
+  },
+  "profiles": [
+    {
+      "id": "rho-acceptable-minus60-v1",
+      "velocityMmS": 4.25,
+      "ceilingDbfs": -60,
+      "worstMeasuredMotorExcessDbfs": -64.40,
+      "worstConservative95UpperBoundDbfs": -60.91,
+      "qualification": "passed two independent eight-gate repeats",
+      "artifact": "20260909T070725Z-rho-qualified-minus60-150-fixed128g2-v4p25-u8-result.json"
+    },
+    {
+      "id": "rho-quiet-minus63-v1",
+      "velocityMmS": 2.0,
+      "ceilingDbfs": -63,
+      "worstMeasuredMotorExcessDbfs": -69.66,
+      "worstConservative95UpperBoundDbfs": -63.07,
+      "qualification": "passed two independent eight-gate repeats",
+      "artifact": "20260909T071405Z-rho-qualified-minus63-150-fixed128g2-v2-u8-result.json"
+    },
+    {
+      "id": "rho-best-effort-minus66-v1",
+      "velocityMmS": 1.0,
+      "ceilingDbfs": -66,
+      "worstMeasuredMotorExcessDbfs": -71.78,
+      "worstConservative95UpperBoundDbfs": -63.99,
+      "qualification": "operator-inaudible and measured below ceiling; conservative bound limited by changing-room noise floor",
+      "artifact": "20260909T070028Z-rho-final-150-fixed128g2-f0-r15-l8-v1-u8-idle8-result.json"
+    }
+  ],
+  "rangeValidation": {
+    "trajectory": "0 -> 400 mm -> 0",
+    "profileId": "rho-acceptable-minus60-v1",
+    "result": "passed",
+    "artifact": "20260909T072540Z-rho-range-400-150-fixed128g2-v4p25-u8-result.json"
+  }
+}

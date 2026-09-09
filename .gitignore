@@ -3,6 +3,7 @@ compile_commands.json
 .claude
 .pio
 tuning-recordings/
+acoustic-results/
 __pycache__/
 .platformio-home
 tmp_capture/*.log

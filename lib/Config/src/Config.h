@@ -71,6 +71,18 @@ static constexpr uint16_t kRhoMaxRunCurrentMa = 500;
 // about 459 mA nominal and remains below 500 mA with the 6% firmware margin.
 static constexpr uint8_t kRhoMaxUnmeasuredCurrentRegister = 14;
 
+// Dedicated sensorless-homing profile. This is deliberately independent of
+// the quiet normal-motion profile. Commissioning brackets the lowest current
+// that crosses the loaded mechanism without losing runway steps; 150 mA is
+// the current midpoint under qualification.
+static constexpr uint16_t kRhoHomingRunCurrentMa = 150;
+static constexpr uint16_t kRhoHomingHoldCurrentMa = 150;
+static constexpr uint16_t kRhoHomingMicrosteps = 8;
+static constexpr float kRhoHomingVelocityMmPerSecond = 6.0f;
+static constexpr float kRhoHomingRunwayMm = 8.0f;
+static constexpr float kRhoHomingVerificationBackoffMm = 4.0f;
+static constexpr float kRhoHomingMaximumOverrunMm = 1.0f;
+
 // Theta-only commissioning always boots at a conservative current and motion
 // envelope, regardless of settings saved by a previous production run.
 static constexpr uint16_t kThetaCommissioningStartupCurrentMa = 250;
@@ -83,6 +95,6 @@ static constexpr uint16_t kThetaCommissioningStartupHoldCurrentMa = 100;
 // CS=8 is the lowest current code recommended for StealthChop automatic
 // tuning. With VSENSE=1 and the V3.0 module's 0.11 ohm shunts it is about
 // 275 mA RMS.
-static constexpr uint16_t kRhoCommissioningStartupCurrentMa = 275;
-static constexpr uint16_t kRhoCommissioningStartupHoldCurrentMa = 100;
+static constexpr uint16_t kRhoCommissioningStartupCurrentMa = 200;
+static constexpr uint16_t kRhoCommissioningStartupHoldCurrentMa = 200;
 }

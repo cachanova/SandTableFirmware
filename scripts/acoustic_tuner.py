@@ -36,12 +36,17 @@ RHO_POSITION_TOLERANCE_MM = 0.05
 RHO_PROFILE_DISTANCE_MM = {"continuous": 800.0, "stress": 5950.0}
 RHO_SCREEN_GATE_COUNT = 4
 RHO_QUALIFICATION_GATE_COUNT = 8
+RHO_PAIR_VERIFY_GATE_COUNT = 2
 MINIMUM_GATE_CRUISE_S = 1.0
 HUMAN_AUDIBLE_MIN_HZ = 20.0
 HUMAN_AUDIBLE_MAX_HZ = 20000.0
 TONE_MATCH_TOLERANCE_HZ = 12.5
 TONE_MIN_PROMINENCE_DB = 6.0
-TELEMETRY_MAX_P95_GAP_S = 0.15
+# A rho sample includes two TMC2209 UART diagnostic reads, so the observable
+# host cadence is normally about 0.20 s even when polling is requested at
+# 0.10 s.  STEP-window edges are timestamped on the ESP32 and validated
+# separately below; this ceiling protects the slower diagnostic stream.
+TELEMETRY_MAX_P95_GAP_S = 0.25
 TELEMETRY_MAX_GAP_S = 0.50
 TELEMETRY_MAX_TRANSITION_BRACKET_S = 0.25
 AUDIO_MAX_DURATION_SKEW_S = 0.10
@@ -55,9 +60,11 @@ DEFAULT_ACCEPTABLE_NEAR_TONE_CEILING_DBFS = -58.45
 
 
 def rho_segment_targets(profile: str, excursion_mm: float) -> tuple[float, ...]:
-    gate_count = (
-        RHO_SCREEN_GATE_COUNT if profile == "screen" else RHO_QUALIFICATION_GATE_COUNT
-    )
+    gate_count = {
+        "verify": RHO_PAIR_VERIFY_GATE_COUNT,
+        "screen": RHO_SCREEN_GATE_COUNT,
+        "gated": RHO_QUALIFICATION_GATE_COUNT,
+    }[profile]
     return tuple(
         excursion_mm if index % 2 == 0 else 0.0
         for index in range(gate_count)
@@ -65,7 +72,7 @@ def rho_segment_targets(profile: str, excursion_mm: float) -> tuple[float, ...]:
 
 
 def rho_profile_distance_mm(profile: str, excursion_mm: float) -> float:
-    if profile in ("screen", "gated"):
+    if profile in ("verify", "screen", "gated"):
         return len(rho_segment_targets(profile, excursion_mm)) * excursion_mm
     return RHO_PROFILE_DISTANCE_MM[profile]
 
@@ -165,7 +172,7 @@ class TimedAcousticMetrics:
     broadband_excess_a_weighted_dbfs: float | None
     broadband_gate_excess_a_weighted_dbfs: list[float]
     loudest_broadband_gate_excess_a_weighted_dbfs: float | None
-    broadband_gate_excess_upper_95_a_weighted_dbfs: list[float]
+    broadband_gate_excess_upper_95_a_weighted_dbfs: list[float | None]
     loudest_broadband_gate_excess_upper_95_a_weighted_dbfs: float | None
     outbound_broadband_excess_a_weighted_dbfs: float | None
     inbound_broadband_excess_a_weighted_dbfs: float | None
@@ -195,7 +202,7 @@ def median_excess_upper_95(
     before_idle_power: np.ndarray,
     after_idle_power: np.ndarray,
     seed: int,
-) -> float:
+) -> float | None:
     """Conservative bootstrap bound for a quiet motor hidden by room noise.
 
     Spectrogram frames overlap by 75%, so subsample every fourth frame before
@@ -207,7 +214,7 @@ def median_excess_upper_95(
     before = np.asarray(before_idle_power, dtype=float)[::4]
     after = np.asarray(after_idle_power, dtype=float)[::4]
     if min(len(motion), len(before), len(after)) < 5:
-        return float("inf")
+        return None
     rng = np.random.default_rng(seed)
 
     def bootstrap_medians(values: np.ndarray) -> np.ndarray:
@@ -322,6 +329,8 @@ def analyze_timed(
     direction_windows: list[tuple[str, np.ndarray]] = []
     confirmed_idle: np.ndarray | None = None
     velocities: np.ndarray | None = None
+    exact_intervals: list[dict[str, float | int]] = []
+    sustained_telemetry_safe = np.ones(len(times), dtype=bool)
     if telemetry is not None and axis is not None:
         host_times = times + recorder_launch_offset_s
         telemetry_times = np.asarray([
@@ -331,27 +340,57 @@ def analyze_timed(
             host_times, telemetry_times,
             [float(item["velocity"][axis.name]) for item in telemetry],
         )
+        exact_intervals = step_motion_intervals(telemetry)
+        if exact_intervals:
+            exact_motion = np.zeros(len(times), dtype=bool)
+            for interval in exact_intervals:
+                exact_motion |= (
+                    (host_times >= float(interval["startHostS"]))
+                    & (host_times <= float(interval["stopHostS"]))
+                )
+            moving &= exact_motion
         moving &= np.abs(velocities) >= velocity_threshold
         telemetry_velocities = np.asarray([
             float(item["velocity"][axis.name]) for item in telemetry
         ])
         telemetry_moving = np.abs(telemetry_velocities) >= velocity_threshold
         telemetry_direction = np.sign(telemetry_velocities)
-        transition_indexes = np.flatnonzero(
-            (telemetry_moving[1:] != telemetry_moving[:-1])
-            | (
-                telemetry_moving[1:]
-                & telemetry_moving[:-1]
-                & (telemetry_direction[1:] != telemetry_direction[:-1])
-            )
-        )
         frame_half_width_s = 4096.0 / (2.0 * rate) + audio_epoch_uncertainty_s
         transition_safe = np.ones(len(times), dtype=bool)
-        for index in transition_indexes:
-            transition_safe &= ~(
-                (host_times + frame_half_width_s >= telemetry_times[index])
-                & (host_times - frame_half_width_s <= telemetry_times[index + 1])
+        if exact_intervals:
+            for interval in exact_intervals:
+                uncertainty = max(
+                    float(interval["startUncertaintyS"]),
+                    float(interval["stopUncertaintyS"]),
+                )
+                for event_time in (
+                    float(interval["startHostS"]),
+                    float(interval["stopHostS"]),
+                ):
+                    transition_safe &= ~(
+                        np.abs(host_times - event_time)
+                        <= frame_half_width_s + uncertainty
+                    )
+        else:
+            transition_indexes = np.flatnonzero(
+                (telemetry_moving[1:] != telemetry_moving[:-1])
+                | (
+                    telemetry_moving[1:]
+                    & telemetry_moving[:-1]
+                    & (telemetry_direction[1:] != telemetry_direction[:-1])
+                )
             )
+            for index in transition_indexes:
+                transition_safe &= ~(
+                    (host_times + frame_half_width_s >= telemetry_times[index])
+                    & (host_times - frame_half_width_s <= telemetry_times[index + 1])
+                )
+        for index, gap in enumerate(np.diff(telemetry_times)):
+            if gap > TELEMETRY_MAX_GAP_S:
+                sustained_telemetry_safe &= ~(
+                    (host_times + frame_half_width_s >= telemetry_times[index])
+                    & (host_times - frame_half_width_s <= telemetry_times[index + 1])
+                )
         moving &= transition_safe
         nearest = np.searchsorted(telemetry_times, host_times, side="left")
         nearest = np.clip(nearest, 0, len(telemetry_times) - 1)
@@ -383,7 +422,10 @@ def analyze_timed(
     sustained_moving = moving.copy()
     sustained_direction_windows = direction_windows
     if velocities is not None and expected_max_velocity is not None:
-        sustained_moving &= np.abs(velocities) >= 0.9 * expected_max_velocity
+        sustained_moving &= (
+            (np.abs(velocities) >= 0.9 * expected_max_velocity)
+            & sustained_telemetry_safe
+        )
         sustained_direction_windows = [
             (
                 "outbound",
@@ -409,10 +451,22 @@ def analyze_timed(
 
     gate_windows: list[dict[str, Any]] = []
     if confirmed_idle is not None:
-        moving_edges = np.diff(np.r_[False, moving, False].astype(np.int8))
-        starts = np.flatnonzero(moving_edges == 1)
-        stops = np.flatnonzero(moving_edges == -1)
-        for start, stop in zip(starts, stops, strict=True):
+        if exact_intervals:
+            interval_indexes = []
+            for interval in exact_intervals:
+                interval_mask = (
+                    (host_times >= float(interval["startHostS"]))
+                    & (host_times <= float(interval["stopHostS"]))
+                )
+                indexes = np.flatnonzero(interval_mask)
+                if len(indexes):
+                    interval_indexes.append((int(indexes[0]), int(indexes[-1]) + 1))
+        else:
+            moving_edges = np.diff(np.r_[False, moving, False].astype(np.int8))
+            starts = np.flatnonzero(moving_edges == 1)
+            stops = np.flatnonzero(moving_edges == -1)
+            interval_indexes = list(zip(starts, stops, strict=True))
+        for start, stop in interval_indexes:
             if stop - start < 5:
                 continue
             before = confirmed_idle & (
@@ -599,7 +653,7 @@ def analyze_timed(
     on_off_pair_count = 0
     on_off_consistent_count = 0
     local_excess_powers: list[float] = []
-    local_excess_upper_95_powers: list[float] = []
+    local_excess_upper_95_powers: list[float | None] = []
     local_background_drift_db: list[float] = []
     outbound_excess_powers: list[float] = []
     inbound_excess_powers: list[float] = []
@@ -627,7 +681,10 @@ def analyze_timed(
         if velocities is not None and expected_max_velocity is not None:
             gate_speeds = np.abs(velocities[start:stop])
             gate_peak_velocities.append(round(float(np.max(gate_speeds)), 6))
-            cruise = gate_speeds >= 0.9 * expected_max_velocity
+            cruise = (
+                (gate_speeds >= 0.9 * expected_max_velocity)
+                & sustained_telemetry_safe[start:stop]
+            )
             gate_cruise_durations_s.append(round(
                 float(np.sum(cruise)) * frame_period_s, 3,
             ))
@@ -717,12 +774,17 @@ def analyze_timed(
             if local_excess_powers else None
         ),
         broadband_gate_excess_upper_95_a_weighted_dbfs=[
-            round(db(value, power=True), 2)
+            round(db(value, power=True), 2) if value is not None else None
             for value in local_excess_upper_95_powers
         ],
         loudest_broadband_gate_excess_upper_95_a_weighted_dbfs=(
-            round(db(max(local_excess_upper_95_powers), power=True), 2)
-            if local_excess_upper_95_powers else None
+            round(db(max(
+                value for value in local_excess_upper_95_powers
+                if value is not None
+            ), power=True), 2)
+            if local_excess_upper_95_powers
+            and all(value is not None for value in local_excess_upper_95_powers)
+            else None
         ),
         outbound_broadband_excess_a_weighted_dbfs=(
             round(db(float(np.median(outbound_excess_powers)), power=True), 2)
@@ -1500,6 +1562,62 @@ def _telemetry_sample(
         return None
 
 
+def step_motion_intervals(
+    telemetry: list[dict[str, Any]],
+) -> list[dict[str, float | int]]:
+    """Map exact ESP32 STEP-window timestamps onto the host audio clock."""
+    if not telemetry:
+        return []
+    trace_start_s = min(float(sample["hostOffsetS"]) for sample in telemetry)
+    trace_stop_s = max(float(sample["hostOffsetS"]) for sample in telemetry)
+    by_epoch: dict[int, dict[str, list[tuple[float, float]]]] = {}
+    for sample in telemetry:
+        motion = sample.get("stepMotion")
+        sample_micros = sample.get("micros")
+        if not isinstance(motion, dict) or sample_micros is None:
+            continue
+        epoch = int(motion.get("epoch", 0))
+        start_micros = int(motion.get("startMicros", 0))
+        stop_micros = int(motion.get("stopMicros", 0))
+        if epoch <= 0 or start_micros == 0:
+            continue
+        observations = by_epoch.setdefault(epoch, {"start": [], "stop": []})
+        sample_host_s = float(sample["hostOffsetS"])
+        sample_rtt_s = float(sample.get("hostRequestRttS", 0.0))
+
+        def mapped_host_time(event_micros: int) -> float:
+            signed_delta = (
+                (event_micros - int(sample_micros) + (1 << 31))
+                % (1 << 32)
+            ) - (1 << 31)
+            return sample_host_s + signed_delta / 1_000_000.0
+
+        observations["start"].append((sample_rtt_s, mapped_host_time(start_micros)))
+        stop_after_start = (
+            ((stop_micros - start_micros) & 0xFFFFFFFF) < (1 << 31)
+        )
+        if not bool(motion.get("active", False)) and stop_micros and stop_after_start:
+            observations["stop"].append((sample_rtt_s, mapped_host_time(stop_micros)))
+
+    intervals: list[dict[str, float | int]] = []
+    for epoch, observations in sorted(by_epoch.items()):
+        if not observations["start"] or not observations["stop"]:
+            continue
+        start_rtt, start_host = min(observations["start"])
+        stop_rtt, stop_host = min(observations["stop"])
+        if (stop_host <= start_host or stop_host < trace_start_s
+                or start_host > trace_stop_s):
+            continue
+        intervals.append({
+            "epoch": epoch,
+            "startHostS": start_host,
+            "stopHostS": stop_host,
+            "startUncertaintyS": start_rtt / 2.0,
+            "stopUncertaintyS": stop_rtt / 2.0,
+        })
+    return intervals
+
+
 def telemetry_timing_quality(
     telemetry: list[dict[str, Any]], axis: AxisConfig, velocity_threshold: float,
 ) -> dict[str, Any]:
@@ -1510,10 +1628,11 @@ def telemetry_timing_quality(
     ])
     gaps = np.diff(times)
     moving_indexes = np.flatnonzero(moving)
+    exact_intervals = step_motion_intervals(telemetry)
     reasons: list[str] = []
     if len(times) < 3 or len(gaps) < 2 or len(moving_indexes) < 2:
         reasons.append("insufficient telemetry samples")
-        p95_gap = maximum_gap = float("inf")
+        p95_gap = cadence_p95_gap = maximum_gap = float("inf")
         start_bracket = stop_bracket = float("inf")
     else:
         p95_gap = float(np.percentile(gaps, 95))
@@ -1527,7 +1646,6 @@ def telemetry_timing_quality(
             after = telemetry[index + 1]
             before_velocity = float(before["velocity"][axis.name])
             after_velocity = float(after["velocity"][axis.name])
-            mean_velocity = (before_velocity + after_velocity) / 2.0
             before_position = before.get("position", {}).get(axis.name)
             after_position = after.get("position", {}).get(axis.name)
             observed_motion_gap = gap
@@ -1550,10 +1668,8 @@ def telemetry_timing_quality(
                 and after.get("state") == "RUNNING"
                 and abs(before_velocity) >= velocity_threshold
                 and before_velocity * after_velocity > 0.0
-                and abs(after_velocity - before_velocity)
-                <= max(velocity_threshold, abs(mean_velocity) * 0.05)
-                and abs(observed_velocity - mean_velocity)
-                <= max(velocity_threshold, abs(mean_velocity) * 0.10)
+                and observed_velocity * before_velocity > 0.0
+                and abs(observed_velocity) >= velocity_threshold
             )
             position_tolerance = (
                 RHO_POSITION_TOLERANCE_MM if axis.name == "rho" else 0.001
@@ -1568,7 +1684,16 @@ def telemetry_timing_quality(
                 and abs(float(after_position) - float(before_position))
                 <= position_tolerance
             )
-            if moving_interpolation_safe or stationary_interpolation_safe:
+            event_bridged = any(
+                float(before["hostOffsetS"]) <= float(event_time)
+                <= float(after["hostOffsetS"])
+                for interval in exact_intervals
+                for event_time in (
+                    interval["startHostS"], interval["stopHostS"]
+                )
+            )
+            if (moving_interpolation_safe or stationary_interpolation_safe
+                    or event_bridged):
                 interpolated_steady_gaps += 1
             else:
                 critical_gaps.append(float(gap))
@@ -1585,11 +1710,43 @@ def telemetry_timing_quality(
              if index + 1 < len(times)),
             default=float("inf"),
         )
-        if p95_gap > TELEMETRY_MAX_P95_GAP_S:
+        exact_event_uncertainty = max((
+            max(
+                float(interval["startUncertaintyS"]),
+                float(interval["stopUncertaintyS"]),
+            )
+            for interval in exact_intervals
+        ), default=float("inf"))
+        exact_events_valid = (
+            len(exact_intervals) == len(start_indexes) == len(stop_indexes)
+            and exact_event_uncertainty <= TELEMETRY_MAX_TRANSITION_BRACKET_S / 2.0
+        )
+        cadence_gaps = gaps
+        if exact_events_valid:
+            exact_event_times = [
+                float(event_time)
+                for interval in exact_intervals
+                for event_time in (
+                    interval["startHostS"], interval["stopHostS"]
+                )
+            ]
+            cadence_gaps = np.asarray([
+                gap for index, gap in enumerate(gaps)
+                if not any(
+                    times[index] <= event_time <= times[index + 1]
+                    for event_time in exact_event_times
+                )
+            ])
+        cadence_p95_gap = (
+            float(np.percentile(cadence_gaps, 95))
+            if len(cadence_gaps) else 0.0
+        )
+        if cadence_p95_gap > TELEMETRY_MAX_P95_GAP_S:
             reasons.append("telemetry p95 gap exceeds limit")
         if maximum_critical_gap > TELEMETRY_MAX_GAP_S:
             reasons.append("telemetry classification-critical gap exceeds limit")
-        if max(start_bracket, stop_bracket) > TELEMETRY_MAX_TRANSITION_BRACKET_S:
+        if (max(start_bracket, stop_bracket) > TELEMETRY_MAX_TRANSITION_BRACKET_S
+                and not exact_events_valid):
             reasons.append("motion transition bracket exceeds limit")
     maximum_rtt = max(
         (float(sample.get("hostRequestRttS", 0.0)) for sample in telemetry),
@@ -1599,6 +1756,7 @@ def telemetry_timing_quality(
         "valid": not reasons,
         "sampleCount": len(telemetry),
         "p95GapS": round(p95_gap, 6),
+        "cadenceP95GapS": round(cadence_p95_gap, 6),
         "maximumGapS": round(maximum_gap, 6),
         "maximumClassificationCriticalGapS": round(
             maximum_critical_gap if len(times) >= 3 else float("inf"), 6
@@ -1610,6 +1768,11 @@ def telemetry_timing_quality(
         "motionStopBracketS": round(stop_bracket, 6),
         "motionStartCount": int(len(start_indexes)) if len(times) >= 3 else 0,
         "motionStopCount": int(len(stop_indexes)) if len(times) >= 3 else 0,
+        "exactStepMotionEventCount": len(exact_intervals),
+        "exactStepMotionEventsValid": (
+            exact_events_valid if len(times) >= 3 else False
+        ),
+        "exactStepMotionIntervals": exact_intervals,
         "maximumRequestRttS": round(maximum_rtt, 6),
         "invalidReasons": reasons,
     }
@@ -1703,7 +1866,7 @@ def run_timed_repeat(
     axis = AXES[args.axis]
     rho_envelope_mm = (
         args.rho_excursion_mm
-        if profile in ("screen", "gated")
+        if profile in ("verify", "screen", "gated")
         else RHO_TEST_MAX_EXCURSION_MM
     )
     board.recovering_stop()
@@ -1728,9 +1891,12 @@ def run_timed_repeat(
     command_offset = 0.0
     stop_request_offset: float | None = None
     next_poll = recording_zero
+    next_driver_poll = recording_zero
+    low_sg_runs: dict[str, int] = {}
+    invalid_sg_runs: dict[str, int] = {}
 
     def sample_drivers(phase: str) -> None:
-        """Read UART only while stopped so it cannot blind motion telemetry."""
+        """Capture driver health and abort sustained-cruise SG collapse."""
         for driver_role, dump_path in axis.driver_dump_paths:
             driver = board.get(dump_path)
             driver["driverRole"] = driver_role
@@ -1741,9 +1907,30 @@ def run_timed_repeat(
                 raise RuntimeError(
                     f"{driver_role} driver reported a fault at {phase}"
                 )
+            if phase == "during-cruise":
+                dynamic = driver.get("dynamic", {})
+                sg_valid = bool(dynamic.get("stallGuardValid"))
+                sg_result = int(dynamic.get("stallGuardResult", 0))
+                invalid_sg_runs[driver_role] = (
+                    0 if sg_valid else invalid_sg_runs.get(driver_role, 0) + 1
+                )
+                if invalid_sg_runs[driver_role] >= 3:
+                    raise RuntimeError(
+                        f"{driver_role} lost three consecutive SG_RESULT reads "
+                        "during sustained cruise"
+                    )
+                low_sg_runs[driver_role] = (
+                    low_sg_runs.get(driver_role, 0) + 1
+                    if sg_valid and sg_result <= 5 else 0
+                )
+                if low_sg_runs[driver_role] >= 3:
+                    raise RuntimeError(
+                        f"{driver_role} SG_RESULT stayed <=5 during sustained "
+                        "cruise; possible physical stall"
+                    )
 
     def collect_for(duration_s: float) -> None:
-        nonlocal next_poll
+        nonlocal next_poll, next_driver_poll
         deadline = time.monotonic() + duration_s
         while time.monotonic() < deadline:
             now = time.monotonic()
@@ -1772,6 +1959,17 @@ def run_timed_repeat(
                             raise RuntimeError("Theta changed during a rho-only trial")
                 # Schedule from completion, not the stale pre-request timestamp.
                 next_poll = time.monotonic() + args.telemetry_interval
+                if (telemetry and telemetry[-1].get("state") == "RUNNING"
+                        and time.monotonic() >= next_driver_poll):
+                    if profile == "verify":
+                        sample_drivers("during-motion")
+                        next_driver_poll = time.monotonic() + 0.10
+                    elif (axis.name == "rho" and
+                          profile in ("continuous", "stress") and
+                          abs(float(telemetry[-1]["velocity"][axis.name])) >=
+                          0.9 * expected_max_velocity):
+                        sample_drivers("during-cruise")
+                        next_driver_poll = time.monotonic() + 1.0
             time.sleep(0.005)
 
     def wait_for_motion_completion(motion_deadline: float) -> None:
@@ -1801,7 +1999,7 @@ def run_timed_repeat(
         collect_for(args.pre_idle)
         motion_deadline = time.monotonic() + args.duration
         try:
-            if profile in ("screen", "gated"):
+            if profile in ("verify", "screen", "gated"):
                 if axis.name != "rho":
                     raise RuntimeError("The screen and gated profiles are rho-only")
                 for target_mm in rho_segment_targets(
@@ -1910,7 +2108,8 @@ def run_timed_repeat(
         velocity_threshold=args.motion_velocity_threshold,
         audio_epoch_uncertainty_s=recorder.timestamp_uncertainty_s,
         expected_max_velocity=(
-            expected_max_velocity if profile in ("screen", "gated") else None
+            expected_max_velocity
+            if profile in ("verify", "screen", "gated") else None
         ),
     )
     near_high_speed = high_speed_acoustic_level(
@@ -2094,7 +2293,7 @@ def cmd_trial(args: argparse.Namespace) -> int:
         minimum_timeout_s = minimum_motion_s * 1.25 + 10.0
         gated_profiles = [
             profile for profile in requested_profiles
-            if profile in ("screen", "gated")
+            if profile in ("verify", "screen", "gated")
         ]
         if gated_profiles:
             minimum_timeout_s += max(
@@ -2154,7 +2353,7 @@ def cmd_trial(args: argparse.Namespace) -> int:
         )
         required_pair_count = (
             len(rho_segment_targets(profile, args.rho_excursion_mm))
-            if profile in ("screen", "gated") else 1
+            if profile in ("verify", "screen", "gated") else 1
         )
         # Qualification is fail-closed on the loudest telemetry-confirmed
         # cruise gate in every repeat. The across-gate median remains a useful
@@ -2238,7 +2437,7 @@ def cmd_trial(args: argparse.Namespace) -> int:
         ]
         profile_summaries[profile] = {
             "provisionalScreen": profile == "screen",
-            "qualificationEligible": profile != "screen",
+            "qualificationEligible": profile not in ("screen", "verify"),
             "nearField": {
                 "microphone": "Antlion close to motor",
                 "acceptedAsMotorNoise": valid_detection,
@@ -2689,6 +2888,62 @@ def cmd_self_test(_: argparse.Namespace) -> int:
     if bad_quality["valid"]:
         raise RuntimeError("Telemetry timing validation accepted a one-second gap")
 
+    exact_event_telemetry = []
+    for sample_time in np.arange(0.0, 4.01, 0.1):
+        if 0.8 < sample_time < 1.3 or 2.8 < sample_time < 3.3:
+            continue
+        active = 1.0 <= sample_time < 3.0
+        epoch = 1 if sample_time >= 1.0 else 0
+        exact_event_telemetry.append({
+            "hostOffsetS": round(float(sample_time + 0.02), 6),
+            "hostRequestRttS": 0.01,
+            "millis": round(float(sample_time * 1000.0)),
+            "micros": round(float(sample_time * 1_000_000.0)),
+            "state": "RUNNING" if active else "IDLE",
+            "velocity": {"theta": 0.1 if active else 0.0, "rho": 0.0},
+            "position": {
+                "theta": max(0.0, min(float(sample_time - 1.0), 2.0)) * 0.1,
+                "rho": 0.0,
+            },
+            "stepMotion": {
+                "epoch": epoch,
+                "startMicros": 1_000_000 if epoch else 0,
+                "stopMicros": 3_000_000 if sample_time >= 3.0 else 0,
+                "active": active,
+            },
+        })
+    exact_quality = telemetry_timing_quality(
+        exact_event_telemetry, AXES["theta"], 0.002,
+    )
+    if (not exact_quality["valid"]
+            or not exact_quality["exactStepMotionEventsValid"]
+            or exact_quality["exactStepMotionEventCount"] != 1):
+        raise RuntimeError(
+            "Exact ESP32 STEP timestamps did not bridge telemetry jitter: "
+            f"{exact_quality}"
+        )
+    stale_prior_epoch = {
+        **exact_event_telemetry[0],
+        "hostOffsetS": 0.01,
+        "micros": 4_000_000,
+        "stepMotion": {
+            "epoch": 99,
+            "startMicros": 1_000_000,
+            "stopMicros": 2_000_000,
+            "active": False,
+        },
+    }
+    filtered_intervals = step_motion_intervals(
+        [stale_prior_epoch, *exact_event_telemetry]
+    )
+    if len(filtered_intervals) != 1 or filtered_intervals[0]["epoch"] != 1:
+        raise RuntimeError(
+            "A STEP epoch from before the audio trace was not filtered: "
+            f"{filtered_intervals}"
+        )
+    if rho_segment_targets("verify", 50.0) != (50.0, 0.0):
+        raise RuntimeError("RHO verify profile is not exactly one out/back pair")
+
     drift_audio = audio.copy()
     drift_audio[samples > motion_end] *= 12.0
     drift_path = output_dir / "drifting-background.wav"
@@ -2764,14 +3019,15 @@ def build_parser() -> argparse.ArgumentParser:
     trial.add_argument("--label", required=True)
     trial.add_argument("--rated-current-ma", type=int, required=True)
     trial.add_argument(
-        "--profile", choices=["continuous", "screen", "gated", "stress", "both"],
+        "--profile",
+        choices=["continuous", "verify", "screen", "gated", "stress", "both"],
         default="both",
     )
     trial.add_argument(
         "--rho-excursion-mm", type=float, default=50.0,
         help=(
-            "outward excursion for rho screen/gated segments; screens use four "
-            "full out/back legs and qualification uses eight"
+            "outward excursion for rho segmented tests; verify uses one "
+            "out/back pair, screens use two, and qualification uses four"
         ),
     )
     trial.add_argument("--repeats", type=int, default=3)

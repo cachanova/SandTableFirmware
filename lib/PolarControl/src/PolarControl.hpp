@@ -8,6 +8,7 @@
 #include <freertos/task.h>
 #include <memory>
 #include <atomic>
+#include <array>
 #include <vector>
 
 #ifndef NATIVE_BUILD
@@ -39,9 +40,11 @@
 
 // Tuning settings structures
 struct MotionSettings {
-  float rMaxVelocity = 10.0f;   // mm/s
+  // Final-load RHO performance profile, qualified at a -60 dBFS conservative
+  // motor-excess ceiling on 2026-09-09.
+  float rMaxVelocity = 4.25f;   // mm/s
   float rMaxAccel = 20.0f;      // mm/s²
-  float rMaxJerk = 30.0f;       // mm/s³
+  float rMaxJerk = 100.0f;      // mm/s³
   // Operator-selected loaded theta profile (2026-09-07). Commissioning builds
   // override this with their quiet-first boot envelope.
   float tMaxVelocity = 0.48f;   // rad/s
@@ -90,24 +93,45 @@ struct DriverSettings {
 
 struct HomingStatus {
   uint32_t cycle = 0;
+  uint16_t stepsPerMm = 0;
   // Primary rho results (legacy field names retained for API compatibility).
   uint32_t fastApproachMs = 0;
   uint32_t slowApproachMs = 0;
+  uint32_t fastApproachSteps = 0;
+  uint32_t slowApproachSteps = 0;
+  uint16_t fastBaseline = 0;
+  uint16_t fastTrigger = 0;
   uint16_t baseline = 0;
   uint16_t trigger = 0;
   uint32_t companionFastApproachMs = 0;
   uint32_t companionSlowApproachMs = 0;
+  uint32_t companionFastApproachSteps = 0;
+  uint32_t companionSlowApproachSteps = 0;
+  uint16_t companionFastBaseline = 0;
+  uint16_t companionFastTrigger = 0;
   uint16_t companionBaseline = 0;
   uint16_t companionTrigger = 0;
+  uint32_t uartSamples = 0;
+  uint32_t validUartSamples = 0;
   uint8_t failure = 0;
   uint8_t failedAxis = 0;  // 0=none, 1=rho, 2=rho-companion
 };
 
 struct HomingSettings {
   // Lower percentages require a larger SG_RESULT drop and are less sensitive.
-  uint8_t triggerPercent = 65;
-  uint8_t consecutiveSamples = 18;
+  uint8_t triggerPercent = 75;
+  // Number of low SG_RESULT votes required in a 2*N-1 fresh-full-step window.
+  uint8_t consecutiveSamples = 5;
   uint16_t minimumTravelMs = 600;
+};
+
+struct HomingTraceSample {
+  uint32_t elapsedMs = 0;
+  uint32_t steps = 0;
+  uint16_t stallGuard = 0;
+  uint8_t axis = 0;   // 1=rho, 2=rho-companion
+  uint8_t phase = 0;  // 1=runway, 2=coarse, 3=backoff, 4=precision
+  bool valid = false;
 };
 
 struct DriverAvailability {
@@ -148,14 +172,27 @@ public:
   // Lifecycle
   bool begin();
   bool setupDrivers();
-  bool home();
+  // confirmedOriginBounded is commissioning-only. It limits each approach to
+  // the known outward runway plus 1 mm, so a missed SG trigger cannot grind
+  // against the stop for an entire unknown-position travel span.
+  bool home(bool confirmedOriginBounded = false);
   bool confirmHome(bool successful);
   HomingStatus getHomingStatus() const;
+  size_t getHomingTrace(HomingTraceSample* output, size_t capacity) const;
   DriverAvailability getDriverAvailability() const;
 #if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
   // Test/commissioning-only escape hatch: establish a logical origin without
   // moving the mechanism. This must never be present in a production build.
   void assumeBenchTestOrigin();
+#endif
+#ifdef SISYPHUS_RHO_COMMISSIONING
+  // Enter relative-jog service mode without claiming an absolute rho origin.
+  // The web layer must ensure motion is already stopped before calling this.
+  void enterRhoManualServiceMode();
+  // Commissioning-only recovery/qualification entrypoint. Each motor gets an
+  // independent known-distance cap plus the normal one-millimetre tolerance.
+  bool homeFromKnownRhoPositions(float rhoStartMm,
+                                 float companionStartMm);
 #endif
 
   // Pattern control
@@ -249,7 +286,8 @@ private:
   static void homingTask(void* arg);
 
   // Physical constants
-  static constexpr float R_MAX = 450.0f;
+  // Measured usable radial stroke of the final loaded mechanism (2026-09-09).
+  static constexpr float R_MAX = 425.0f;
 
   // These are calculated based on current microstep settings
   inline int getStepsPerMm() const { return 50 * m_rDriverSettings.microsteps; }
@@ -292,16 +330,40 @@ private:
   std::atomic<bool> m_commissioningStartPermit{false};
 #endif
   std::atomic<uint32_t> m_homingCycle{0};
+  std::atomic<uint16_t> m_homingStepsPerMm{0};
   std::atomic<uint32_t> m_homingFastApproachMs{0};
   std::atomic<uint32_t> m_homingSlowApproachMs{0};
+  std::atomic<uint32_t> m_homingFastApproachSteps{0};
+  std::atomic<uint32_t> m_homingSlowApproachSteps{0};
+  std::atomic<uint16_t> m_homingFastBaseline{0};
+  std::atomic<uint16_t> m_homingFastTrigger{0};
   std::atomic<uint16_t> m_homingBaseline{0};
   std::atomic<uint16_t> m_homingTrigger{0};
   std::atomic<uint32_t> m_homingCompanionFastApproachMs{0};
   std::atomic<uint32_t> m_homingCompanionSlowApproachMs{0};
+  std::atomic<uint32_t> m_homingCompanionFastApproachSteps{0};
+  std::atomic<uint32_t> m_homingCompanionSlowApproachSteps{0};
+  std::atomic<uint16_t> m_homingCompanionFastBaseline{0};
+  std::atomic<uint16_t> m_homingCompanionFastTrigger{0};
   std::atomic<uint16_t> m_homingCompanionBaseline{0};
   std::atomic<uint16_t> m_homingCompanionTrigger{0};
+  std::atomic<uint32_t> m_homingUartSamples{0};
+  std::atomic<uint32_t> m_homingValidUartSamples{0};
   std::atomic<uint8_t> m_homingFailure{0};
   std::atomic<uint8_t> m_homingFailedAxis{0};
+  static constexpr size_t kHomingTraceCapacity = 768;
+  std::array<HomingTraceSample, kHomingTraceCapacity> m_homingTrace{};
+  std::atomic<size_t> m_homingTraceCount{0};
+  std::atomic<size_t> m_homingTraceTotal{0};
+  std::atomic<uint32_t> m_homingTraceStartedAtMs{0};
+  std::atomic<uint8_t> m_homingTraceAxis{0};
+  std::atomic<uint8_t> m_homingTracePhase{0};
+  std::atomic<bool> m_confirmedOriginBoundedHoming{false};
+#ifdef SISYPHUS_RHO_COMMISSIONING
+  std::atomic<bool> m_knownPositionHomingActive{false};
+  std::atomic<int32_t> m_knownRhoStartSteps{0};
+  std::atomic<int32_t> m_knownCompanionStartSteps{0};
+#endif
   TaskHandle_t m_homingTaskHandle = NULL;
   std::unique_ptr<PosGen> m_posGen;
 
@@ -327,6 +389,13 @@ private:
   // driver that still answers on UART. A false result is still fail-closed to
   // the extent allowed by the available UART links.
   bool disableRhoDriversLocked();
+  // Requires m_mutex. A non-zero VACTUAL makes the addressed TMC2209 ignore
+  // shared STEP/DIR pulses while its energized bridge holds the mechanism.
+  bool startInactiveRhoHoldLocked(uint8_t driverAddress,
+                                  uint16_t targetPhase);
+  bool serviceInactiveRhoHoldLocked();
+  void clearInactiveRhoHoldLocked();
+  void recordHomingSample(bool valid, uint16_t stallGuard);
   struct HomingAttempt {
     bool success = false;
     bool communicationError = false;
@@ -346,18 +415,27 @@ private:
   };
   bool rampRhoStepRate(int8_t direction, uint32_t targetStepsPerSecond,
                        uint32_t maxSteps, uint32_t rampMs);
-  HomingAttempt approachHome(uint8_t driverAddress,
-                             uint32_t stepsPerSecond, uint32_t maxSteps,
-                             uint32_t ignoreMs, uint8_t requiredSamples,
-                             float triggerRatio);
+    HomingAttempt approachHome(uint8_t driverAddress,
+                              uint32_t stepsPerSecond, uint32_t maxSteps,
+                              uint32_t minimumTravelSteps,
+                              uint8_t requiredSamples,
+                              float triggerRatio,
+                              uint16_t externalStepsPerFullStep);
   HomingMove moveRhoBySteps(uint8_t driverAddress, int8_t direction,
                             uint32_t stepsPerSecond, uint32_t stepCount,
                             uint16_t recoveryThreshold = 0);
-  bool restoreDisabledDriverPhase(TMC2209& driver, uint8_t driverAddress,
-                                  uint16_t targetPhase, const char* driverName);
+  bool restoreHeldDriverPhase(TMC2209& driver, uint8_t driverAddress,
+                              uint16_t targetPhase, uint16_t microsteps,
+                              const char* driverName);
   bool homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
                 const char* activeName, TMC2209& inactiveDriver,
                 uint8_t inactiveAddress, const char* inactiveName,
-                bool companionAxis);
+                bool companionAxis,
+                const DriverSettings& homingSettings);
   bool homeDrivers();
+
+  uint8_t m_inactiveRhoHoldAddress = UINT8_MAX;
+  uint16_t m_inactiveRhoHoldTargetPhase = 0;
+  uint32_t m_inactiveRhoHoldLastToggleMs = 0;
+  int8_t m_inactiveRhoHoldDirection = 1;
 };

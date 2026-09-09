@@ -42,31 +42,83 @@ static constexpr float T_MAX_JERK = 10.0f;       // rad/s³
 
 bool testStallGuardFiltering() {
     std::cout << "\n=== Test: StallGuard Homing Filter ===" << std::endl;
-    StallGuardDetector detector(200, 12, 0.65f);
-    bool triggered = false;
-
-    for (uint32_t ms = 0; ms < 250; ms += 10) {
-        triggered |= detector.update(100, ms);
-    }
-    // A short stiff spot must not look like a hard stop.
-    for (uint32_t ms = 250; ms < 330; ms += 10) {
-        triggered |= detector.update(55, ms);
-    }
-    triggered |= detector.update(100, 330);
-    if (triggered) {
-        std::cout << "FAIL: transient load triggered homing" << std::endl;
-        return false;
-    }
-
-    // A sustained low SG_RESULT should trigger only after the configured run.
-    for (uint32_t ms = 340; ms < 450; ms += 10) {
-        if (detector.update(40, ms)) {
-            std::cout << "FAIL: sustained event triggered too early" << std::endl;
+    StallGuardDetector detector(200, 5, 0.75f);
+    uint32_t elapsedMs = 0;
+    const uint16_t normalRipple[] = {230, 154, 220, 160, 238, 150, 216, 164};
+    for (uint32_t index = 0; index < 120; ++index, elapsedMs += 7) {
+        if (detector.update(normalRipple[index % 8], elapsedMs)) {
+            std::cout << "FAIL: normal electrical-phase ripple triggered homing"
+                      << std::endl;
             return false;
         }
     }
-    if (!detector.update(40, 450)) {
-        std::cout << "FAIL: sustained hard stop was not detected" << std::endl;
+
+    // This is the terminal window from the observed CW false trigger. Its
+    // median changes with rail load, but it lacks the deep collapse of a hard
+    // stop and must pass through without triggering.
+    const uint16_t cwTightSection[] = {
+        96, 142, 150, 214, 154, 224, 126, 220, 132,
+        164, 128, 96, 146, 96
+    };
+    for (uint16_t sample : cwTightSection) {
+        if (detector.update(sample, elapsedMs)) {
+            std::cout << "FAIL: recorded CW tight section triggered homing"
+                      << std::endl;
+            return false;
+        }
+        elapsedMs += 7;
+    }
+
+    // The recorded main hard-stop tail contains both the normal phase ripple
+    // and a multi-sample collapse. Replay it against its own approach history;
+    // the real axes have independent detector instances.
+    StallGuardDetector hardStopDetector(0, 5, 0.75f);
+    elapsedMs = 0;
+    for (uint32_t index = 0; index < 120; ++index, elapsedMs += 7) {
+        if (hardStopDetector.update(normalRipple[index % 8], elapsedMs)) {
+            std::cout << "FAIL: hard-stop approach history triggered homing"
+                      << std::endl;
+            return false;
+        }
+    }
+    const uint16_t mainHardStop[] = {
+        208, 160, 164, 148, 180, 122, 166, 96, 96, 32, 2
+    };
+    bool triggered = false;
+    for (uint16_t sample : mainHardStop) {
+        triggered |= hardStopDetector.update(sample, elapsedMs);
+        elapsedMs += 7;
+    }
+    if (!triggered) {
+        std::cout << "FAIL: recorded main hard stop was not detected"
+                  << std::endl;
+        return false;
+    }
+
+    // A sustained but finite load change must become the lagged rolling
+    // baseline. It cannot trigger without the independent deep-collapse test.
+    StallGuardDetector loadTrackingDetector(0, 5, 0.75f);
+    elapsedMs = 0;
+    for (uint32_t index = 0; index < 100; ++index, elapsedMs += 7) {
+        if (loadTrackingDetector.update(200, elapsedMs)) {
+            std::cout << "FAIL: initial load baseline triggered homing" << std::endl;
+            return false;
+        }
+    }
+    for (uint32_t index = 0; index < 100; ++index, elapsedMs += 7) {
+        if (loadTrackingDetector.update(120, elapsedMs)) {
+            std::cout << "FAIL: trackable load increase triggered homing" << std::endl;
+            return false;
+        }
+    }
+    const uint16_t collapsed[] = {100, 90, 80, 60, 50, 40, 20, 0, 0};
+    triggered = false;
+    for (uint16_t sample : collapsed) {
+        triggered |= loadTrackingDetector.update(sample, elapsedMs);
+        elapsedMs += 7;
+    }
+    if (!triggered) {
+        std::cout << "FAIL: hard stop was hidden by load tracking" << std::endl;
         return false;
     }
 

@@ -257,15 +257,19 @@ void setup() {
     if (!motorSubsystemReady) {
         LOG("Motor subsystem failed to initialize; pattern motion is locked out.\r\n");
     } else {
-#if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
+#if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING)
         polarControl.assumeBenchTestOrigin();
 #ifdef SISYPHUS_THETA_COMMISSIONING
         LOG("WARNING: THETA-ONLY COMMISSIONING firmware is active.\r\n");
-#elif defined(SISYPHUS_RHO_COMMISSIONING)
-        LOG("WARNING: RHO-ONLY COMMISSIONING firmware is active; physical start is temporary rho zero.\r\n");
 #else
         LOG("WARNING: BENCH MOTION TEST firmware is active; physical position is not known.\r\n");
 #endif
+#elif defined(SISYPHUS_RHO_COMMISSIONING)
+        // The unified rho-service image always boots fail-closed in manual
+        // relative-jog mode. Commissioning origin assignment requires an
+        // explicit API/UI confirmation after the operator positions the axis.
+        polarControl.enterRhoManualServiceMode();
+        LOG("WARNING: RHO SERVICE firmware is active in manual mode; theta and patterns remain locked out.\r\n");
 #else
         if (Config::kAutoHomeOnBoot) {
             polarControl.home();

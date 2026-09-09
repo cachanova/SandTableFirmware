@@ -105,8 +105,12 @@ struct PlannerTelemetry {
     uint32_t underruns = 0;
     uint32_t maxConsecutiveUnderruns = 0;
     uint32_t completedCount = 0;
+    uint32_t stepMotionEpoch = 0;
+    uint32_t lastStepMotionStartUs = 0;
+    uint32_t lastStepMotionStopUs = 0;
     bool timerActive = false;
     bool running = false;
+    bool stepMotionActive = false;
 };
 
 // Motion planner with independent axis control and S-curve profiles
@@ -283,6 +287,10 @@ private:
     std::atomic<uint32_t> m_homingRhoNextStepUs{0};
     std::atomic<uint32_t> m_homingRhoStepCount{0};
     std::atomic<uint32_t> m_homingRhoStepLimit{0};
+    std::atomic<uint32_t> m_stepMotionEpoch{0};
+    std::atomic<uint32_t> m_lastStepMotionStartUs{0};
+    std::atomic<uint32_t> m_lastStepMotionStopUs{0};
+    std::atomic<bool> m_stepMotionActive{false};
     bool m_endOfPattern;
     bool m_stopEventQueued = false;
     uint32_t m_completedCount;

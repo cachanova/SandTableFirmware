@@ -22,10 +22,21 @@ PolarControl::PolarControl() {
     m_tDriverSettings.runCurrent = 700;
     m_tDriverSettings.holdCurrent = 200;
     m_tDriverSettings.microsteps = 64;
-    m_rDriverSettings.runCurrent = 425;    // CS=13: about 428mA nominal on 0.11 ohm shunts
+    // Loaded RHO reliability profile. The 150 mA acoustic candidate passed
+    // steady travel but lost physical synchronization during the reversal
+    // stress profile, so keep both run and standstill torque at 200 mA until
+    // the loaded mechanism has completed its full motion qualification.
+    m_rDriverSettings.runCurrent = 200;
     m_rDriverSettings.holdCurrent = 200;
-    m_rDriverSettings.microsteps = 2;
+    m_rDriverSettings.microsteps = 8;
     m_rDriverSettings.highSensitivityCurrentScale = true;
+    m_rDriverSettings.pwmFrequency = 0;
+    m_rDriverSettings.pwmRegulation = 15;
+    m_rDriverSettings.pwmLimit = 8;
+    m_rDriverSettings.automaticCurrentScaling = false;
+    m_rDriverSettings.automaticGradientAdaptation = false;
+    m_rDriverSettings.pwmOffset = 128;
+    m_rDriverSettings.pwmGradient = 2;
 }
 
 PolarControl::~PolarControl() {
@@ -162,6 +173,20 @@ static bool writeTmcRegister(uint8_t driverAddress, uint8_t registerAddress,
         memcmp(echo, datagram, sizeof(datagram)) == 0;
 }
 
+static bool writeTmcRegisterAcknowledged(uint8_t driverAddress,
+                                         uint8_t registerAddress,
+                                         uint32_t value) {
+    uint32_t interfaceCountBefore = 0;
+    uint32_t interfaceCountAfter = 0;
+    if (!readTmcRegisterChecked(driverAddress, 0x02, interfaceCountBefore) ||
+        !writeTmcRegister(driverAddress, registerAddress, value) ||
+        !readTmcRegisterChecked(driverAddress, 0x02, interfaceCountAfter)) {
+        return false;
+    }
+    return static_cast<uint8_t>(interfaceCountAfter) ==
+        static_cast<uint8_t>(static_cast<uint8_t>(interfaceCountBefore) + 1U);
+}
+
 static bool setDriverEnabled(TMC2209& driver, uint8_t driverAddress,
                              const DriverSettings& settings, bool enabled) {
     (void)driver;
@@ -256,14 +281,30 @@ bool PolarControl::begin() {
     m_rDriverSettings = DriverSettings{};
     m_rDriverSettings.runCurrent = Config::kRhoCommissioningStartupCurrentMa;
     m_rDriverSettings.holdCurrent = Config::kRhoCommissioningStartupHoldCurrentMa;
-    m_rDriverSettings.microsteps = 2;
+    m_rDriverSettings.holdDelay = 8;
+    m_rDriverSettings.powerDownDelay = 20;
+    m_rDriverSettings.chopperOffTime = 3;
+    m_rDriverSettings.hysteresisStart = 5;
+    m_rDriverSettings.hysteresisEnd = 0;
+    m_rDriverSettings.blankTime = 2;
+    m_rDriverSettings.microsteps = 8;
+    m_rDriverSettings.interpolationEnabled = true;
     m_rDriverSettings.highSensitivityCurrentScale = true;
     m_rDriverSettings.stealthChopEnabled = true;
+    m_rDriverSettings.stealthChopThreshold = 0;
+    m_rDriverSettings.pwmFrequency = 0;
+    m_rDriverSettings.pwmRegulation = 15;
+    m_rDriverSettings.pwmLimit = 8;
+    m_rDriverSettings.standstillMode = 0;
+    m_rDriverSettings.automaticCurrentScaling = false;
+    m_rDriverSettings.automaticGradientAdaptation = false;
+    m_rDriverSettings.pwmOffset = 128;
+    m_rDriverSettings.pwmGradient = 2;
     m_rDriverSettings.coolStepEnabled = false;
     m_motionSettings.rMaxVelocity = 1.0f;
     m_motionSettings.rMaxAccel = 2.0f;
     m_motionSettings.rMaxJerk = 10.0f;
-    LOG("RHO COMMISSIONING: forced safe envelope (VSENSE=1, IRUN=8, 275mA, 1mm/s)\r\n");
+    LOG("RHO COMMISSIONING: forced safe envelope (VSENSE=1, CS6, 200mA requested, u8, 1mm/s)\r\n");
 #endif
 
 #ifndef SISYPHUS_SKIP_MOTOR_HARDWARE
@@ -417,10 +458,23 @@ bool PolarControl::setupDrivers() {
     return true;
 }
 
-bool PolarControl::home() {
-#if defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
+bool PolarControl::home(bool confirmedOriginBounded) {
+#if defined(SISYPHUS_THETA_COMMISSIONING)
     LOG("COMMISSIONING: physical homing rejected\r\n");
     return false;
+#elif defined(SISYPHUS_RHO_COMMISSIONING)
+    if (!confirmedOriginBounded) {
+        if (!m_knownPositionHomingActive.load()) {
+            LOG("RHO COMMISSIONING: unbounded physical homing rejected\r\n");
+            return false;
+        }
+        LOG("RHO COMMISSIONING: independently capped known-position homing\r\n");
+    }
+#else
+    if (confirmedOriginBounded) {
+        LOG("Confirmed-origin bounded homing is commissioning-only\r\n");
+        return false;
+    }
 #endif
     if (!m_rhoDriverConnected.load() ||
         !m_rhoCompanionDriverConnected.load()) {
@@ -443,15 +497,32 @@ bool PolarControl::home() {
     // confirms the resulting physical position.
     m_planner.stop();
     m_homingFailure.store(0);
+    m_homingStepsPerMm.store(static_cast<uint16_t>(getStepsPerMm()));
     m_homingFastApproachMs.store(0);
     m_homingSlowApproachMs.store(0);
+    m_homingFastApproachSteps.store(0);
+    m_homingSlowApproachSteps.store(0);
+    m_homingFastBaseline.store(0);
+    m_homingFastTrigger.store(0);
     m_homingBaseline.store(0);
     m_homingTrigger.store(0);
     m_homingCompanionFastApproachMs.store(0);
     m_homingCompanionSlowApproachMs.store(0);
+    m_homingCompanionFastApproachSteps.store(0);
+    m_homingCompanionSlowApproachSteps.store(0);
+    m_homingCompanionFastBaseline.store(0);
+    m_homingCompanionFastTrigger.store(0);
     m_homingCompanionBaseline.store(0);
     m_homingCompanionTrigger.store(0);
+    m_homingUartSamples.store(0);
+    m_homingValidUartSamples.store(0);
     m_homingFailedAxis.store(0);
+    m_confirmedOriginBoundedHoming.store(confirmedOriginBounded);
+    m_homingTraceAxis.store(0);
+    m_homingTracePhase.store(0);
+    m_homingTraceCount.store(0, std::memory_order_release);
+    m_homingTraceTotal.store(0, std::memory_order_release);
+    m_homingTraceStartedAtMs.store(millis());
     m_homingCycle.fetch_add(1);
     m_state.store(HOMING);
 
@@ -468,6 +539,11 @@ bool PolarControl::home() {
         m_homingTaskHandle = NULL;
         const bool disabled = disableRhoDriversLocked();
         m_homingFailure.store(5);
+#ifdef SISYPHUS_RHO_COMMISSIONING
+        m_knownPositionHomingActive.store(false);
+        m_knownRhoStartSteps.store(0);
+        m_knownCompanionStartSteps.store(0);
+#endif
         m_state.store(HOMING_FAILED);
         ErrorLog::instance().log("ERROR", "HOME", "TASK_CREATE_FAILED",
                                  "Could not start homing task");
@@ -488,6 +564,12 @@ void PolarControl::homingTask(void* arg) {
     PolarControl* self = static_cast<PolarControl*>(arg);
 
     bool success = self->homeDrivers();
+    self->m_confirmedOriginBoundedHoming.store(false);
+#ifdef SISYPHUS_RHO_COMMISSIONING
+    self->m_knownPositionHomingActive.store(false);
+    self->m_knownRhoStartSteps.store(0);
+    self->m_knownCompanionStartSteps.store(0);
+#endif
     xSemaphoreTake(self->m_mutex, portMAX_DELAY);
     self->m_homingTaskHandle = NULL;
     State_t expected = HOMING;
@@ -556,22 +638,90 @@ void PolarControl::assumeBenchTestOrigin() {
 }
 #endif
 
+#ifdef SISYPHUS_RHO_COMMISSIONING
+void PolarControl::enterRhoManualServiceMode() {
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    m_planner.stop();
+    // A midpoint is only a representational convenience. INITIALIZED is the
+    // authoritative indication that this is not a trusted absolute position;
+    // jogRelative() re-centers rho before every unhomed relative command.
+    m_planner.resetPosition(0.0f, R_MAX * 0.5f);
+    m_homingFailure.store(0);
+    m_knownPositionHomingActive.store(false);
+    m_knownRhoStartSteps.store(0);
+    m_knownCompanionStartSteps.store(0);
+    m_state.store(INITIALIZED);
+    xSemaphoreGive(m_mutex);
+    LOG("RHO SERVICE: manual relative-jog mode; absolute position invalidated\r\n");
+}
+
+bool PolarControl::homeFromKnownRhoPositions(float rhoStartMm,
+                                             float companionStartMm) {
+    if (!std::isfinite(rhoStartMm) || !std::isfinite(companionStartMm) ||
+        rhoStartMm < -1.0f || rhoStartMm > 400.0f ||
+        companionStartMm < -1.0f || companionStartMm > 400.0f) {
+        return false;
+    }
+    const uint32_t stepsPerMm = static_cast<uint32_t>(getStepsPerMm());
+    m_knownRhoStartSteps.store(static_cast<int32_t>(
+        std::lround(rhoStartMm * stepsPerMm)));
+    m_knownCompanionStartSteps.store(static_cast<int32_t>(
+        std::lround(companionStartMm * stepsPerMm)));
+    m_knownPositionHomingActive.store(true);
+    if (home(false)) return true;
+    m_knownPositionHomingActive.store(false);
+    m_knownRhoStartSteps.store(0);
+    m_knownCompanionStartSteps.store(0);
+    return false;
+}
+#endif
+
 HomingStatus PolarControl::getHomingStatus() const {
     HomingStatus status;
     status.cycle = m_homingCycle.load();
+    status.stepsPerMm = m_homingStepsPerMm.load();
     status.fastApproachMs = m_homingFastApproachMs.load();
     status.slowApproachMs = m_homingSlowApproachMs.load();
+    status.fastApproachSteps = m_homingFastApproachSteps.load();
+    status.slowApproachSteps = m_homingSlowApproachSteps.load();
+    status.fastBaseline = m_homingFastBaseline.load();
+    status.fastTrigger = m_homingFastTrigger.load();
     status.baseline = m_homingBaseline.load();
     status.trigger = m_homingTrigger.load();
     status.companionFastApproachMs =
         m_homingCompanionFastApproachMs.load();
     status.companionSlowApproachMs =
         m_homingCompanionSlowApproachMs.load();
+    status.companionFastApproachSteps =
+        m_homingCompanionFastApproachSteps.load();
+    status.companionSlowApproachSteps =
+        m_homingCompanionSlowApproachSteps.load();
+    status.companionFastBaseline = m_homingCompanionFastBaseline.load();
+    status.companionFastTrigger = m_homingCompanionFastTrigger.load();
     status.companionBaseline = m_homingCompanionBaseline.load();
     status.companionTrigger = m_homingCompanionTrigger.load();
+    status.uartSamples = m_homingUartSamples.load();
+    status.validUartSamples = m_homingValidUartSamples.load();
     status.failure = m_homingFailure.load();
     status.failedAxis = m_homingFailedAxis.load();
     return status;
+}
+
+size_t PolarControl::getHomingTrace(HomingTraceSample* output,
+                                    size_t capacity) const {
+    if (output == nullptr || capacity == 0) return 0;
+    const size_t total = m_homingTraceTotal.load(std::memory_order_acquire);
+    const size_t available = std::min(kHomingTraceCapacity, total);
+    const size_t count = std::min(capacity, available);
+    size_t source = total < kHomingTraceCapacity
+        ? total - count
+        : (total % kHomingTraceCapacity + available - count) %
+            kHomingTraceCapacity;
+    for (size_t index = 0; index < count; ++index) {
+        output[index] = m_homingTrace[source];
+        source = (source + 1U) % kHomingTraceCapacity;
+    }
+    return count;
 }
 
 DriverAvailability PolarControl::getDriverAvailability() const {
@@ -621,6 +771,18 @@ static_assert((driverRegisterToLibraryPercent(8, 15) * 15U) / 100U == 8U,
 static_assert(microstepsToMres(256) == 0 && microstepsToMres(64) == 2 &&
               microstepsToMres(1) == 8,
               "MRES conversion must match the TMC2209 register encoding");
+
+static bool setDriverMicrostepsChecked(uint8_t driverAddress,
+                                       uint16_t microsteps) {
+    uint32_t chopconf = 0;
+    if (!readTmcRegisterChecked(driverAddress, 0x6C, chopconf)) return false;
+    chopconf = (chopconf & ~0x0F000000UL) |
+        (static_cast<uint32_t>(microstepsToMres(microsteps)) << 24);
+    if (!writeTmcRegister(driverAddress, 0x6C, chopconf)) return false;
+    uint32_t verified = 0;
+    return readTmcRegisterChecked(driverAddress, 0x6C, verified) &&
+        (verified & 0x0F000000UL) == (chopconf & 0x0F000000UL);
+}
 
 static bool verifyDriverSettings(uint8_t driverAddress,
                                  const DriverSettings& settings,
@@ -837,6 +999,65 @@ bool PolarControl::disableRhoDriversLocked() {
         primaryDisabled && companionDisabled;
 }
 
+bool PolarControl::startInactiveRhoHoldLocked(uint8_t driverAddress,
+                                              uint16_t targetPhase) {
+    // TMC2209 VACTUAL=0 selects STEP/DIR; any non-zero value selects the
+    // addressed internal pulse generator instead. At u256, VACTUAL=+/-1 is
+    // only about 0.715 microsteps/s, allowing this driver to keep holding
+    // torque while ignoring the STEP pulses sent to the other RHO driver.
+    // Service the saved MSCNT phase below so even that tiny commanded motion
+    // cannot accumulate during a full-range homing pass.
+    constexpr uint32_t kVactualPositiveOne = 1U;
+    if (!setDriverMicrostepsChecked(driverAddress, 256) ||
+        !writeTmcRegisterAcknowledged(
+            driverAddress, 0x22, kVactualPositiveOne)) {
+        return false;
+    }
+    m_inactiveRhoHoldAddress = driverAddress;
+    m_inactiveRhoHoldTargetPhase = targetPhase & 0x03FFU;
+    m_inactiveRhoHoldDirection = 1;
+    m_inactiveRhoHoldLastToggleMs = millis();
+    return true;
+}
+
+bool PolarControl::serviceInactiveRhoHoldLocked() {
+    constexpr uint32_t kCheckIntervalMs = 250;
+    constexpr uint32_t kVactualPositiveOne = 1U;
+    constexpr uint32_t kVactualNegativeOne = 0x00FFFFFFU;
+    if (m_inactiveRhoHoldAddress == UINT8_MAX ||
+        millis() - m_inactiveRhoHoldLastToggleMs < kCheckIntervalMs) {
+        return true;
+    }
+
+    uint32_t phaseRegister = 0;
+    if (!readTmcRegisterChecked(
+            m_inactiveRhoHoldAddress, 0x6A, phaseRegister)) {
+        return false;
+    }
+    const uint16_t phase = static_cast<uint16_t>(phaseRegister & 0x03FFU);
+    const uint16_t forward = static_cast<uint16_t>(
+        (m_inactiveRhoHoldTargetPhase + 1024U - phase) & 0x03FFU);
+    const int8_t desiredDirection =
+        phase == m_inactiveRhoHoldTargetPhase || forward <= 512U ? 1 : -1;
+    if (desiredDirection != m_inactiveRhoHoldDirection &&
+        !writeTmcRegisterAcknowledged(
+            m_inactiveRhoHoldAddress, 0x22,
+            desiredDirection > 0
+                ? kVactualPositiveOne : kVactualNegativeOne)) {
+        return false;
+    }
+    m_inactiveRhoHoldDirection = desiredDirection;
+    m_inactiveRhoHoldLastToggleMs = millis();
+    return true;
+}
+
+void PolarControl::clearInactiveRhoHoldLocked() {
+    m_inactiveRhoHoldAddress = UINT8_MAX;
+    m_inactiveRhoHoldTargetPhase = 0;
+    m_inactiveRhoHoldLastToggleMs = 0;
+    m_inactiveRhoHoldDirection = 1;
+}
+
 bool PolarControl::rampRhoStepRate(int8_t direction,
                                    uint32_t targetStepsPerSecond,
                                    uint32_t maxSteps, uint32_t rampMs) {
@@ -860,6 +1081,11 @@ bool PolarControl::rampRhoStepRate(int8_t direction,
             xSemaphoreGive(m_mutex);
             return false;
         }
+        if (!serviceInactiveRhoHoldLocked()) {
+            m_planner.stopRhoHoming();
+            xSemaphoreGive(m_mutex);
+            return false;
+        }
         if (!m_planner.isRhoHoming()) {
             xSemaphoreGive(m_mutex);
             return m_planner.getRhoHomingStepCount() >= maxSteps;
@@ -873,6 +1099,22 @@ bool PolarControl::rampRhoStepRate(int8_t direction,
         if (!updated) return false;
     }
     return true;
+}
+
+void PolarControl::recordHomingSample(bool valid, uint16_t stallGuard) {
+    const size_t total = m_homingTraceTotal.load(std::memory_order_relaxed);
+    const size_t index = total % kHomingTraceCapacity;
+    HomingTraceSample& sample = m_homingTrace[index];
+    sample.elapsedMs = millis() - m_homingTraceStartedAtMs.load();
+    sample.steps = m_planner.getRhoHomingStepCount();
+    sample.stallGuard = stallGuard;
+    sample.axis = m_homingTraceAxis.load();
+    sample.phase = m_homingTracePhase.load();
+    sample.valid = valid;
+    m_homingTraceTotal.store(total + 1U, std::memory_order_release);
+    m_homingTraceCount.store(
+        std::min(kHomingTraceCapacity, total + 1U),
+        std::memory_order_release);
 }
 
 PolarControl::HomingMove PolarControl::moveRhoBySteps(
@@ -908,10 +1150,22 @@ PolarControl::HomingMove PolarControl::moveRhoBySteps(
             xSemaphoreGive(m_mutex);
             return result;
         }
+        if (!serviceInactiveRhoHoldLocked()) {
+            m_planner.stopRhoHoming();
+            xSemaphoreGive(m_mutex);
+            result.communicationError = true;
+            result.elapsedMs = millis() - startedAt;
+            result.steps = m_planner.getRhoHomingStepCount();
+            return result;
+        }
 
         uint32_t registerValue = 0;
         const bool validSample = readTmcRegisterChecked(
             driverAddress, 0x41, registerValue);
+        m_homingUartSamples.fetch_add(1);
+        if (validSample) m_homingValidUartSamples.fetch_add(1);
+        recordHomingSample(validSample,
+            static_cast<uint16_t>(registerValue & 0x03FF));
         if (!validSample) {
             if (consecutiveUartErrors < UINT8_MAX) ++consecutiveUartErrors;
             if (consecutiveUartErrors >= kMaxConsecutiveUartErrors) {
@@ -954,9 +1208,10 @@ PolarControl::HomingMove PolarControl::moveRhoBySteps(
 
 PolarControl::HomingAttempt PolarControl::approachHome(
     uint8_t driverAddress, uint32_t stepsPerSecond, uint32_t maxSteps,
-    uint32_t ignoreMs, uint8_t requiredSamples, float triggerRatio) {
+    uint32_t minimumTravelSteps, uint8_t requiredSamples,
+    float triggerRatio, uint16_t externalStepsPerFullStep) {
     HomingAttempt result;
-    constexpr uint32_t kSampleIntervalMs = 20;
+    constexpr uint32_t kSampleIntervalMs = 5;
     constexpr uint8_t kMaxConsecutiveUartErrors = 3;
     const uint32_t startedAt = millis();
     const uint32_t timeoutMs = std::max<uint32_t>(
@@ -964,9 +1219,18 @@ PolarControl::HomingAttempt PolarControl::approachHome(
             static_cast<uint64_t>(maxSteps) * 1500U / stepsPerSecond) + 3000U);
 
     if (!rampRhoStepRate(-1, stepsPerSecond, maxSteps, 500)) return result;
+    const uint32_t stepsAtDetectorStart = m_planner.getRhoHomingStepCount();
+    const uint32_t remainingIgnoreSteps = minimumTravelSteps > stepsAtDetectorStart
+        ? minimumTravelSteps - stepsAtDetectorStart
+        : 0;
+    const uint32_t ignoreMs = static_cast<uint32_t>(
+        (static_cast<uint64_t>(remainingIgnoreSteps) * 1000U +
+         stepsPerSecond - 1U) / stepsPerSecond);
     const uint32_t detectorStartedAt = millis();
     StallGuardDetector detector(ignoreMs, requiredSamples, triggerRatio);
     uint8_t consecutiveUartErrors = 0;
+    uint32_t lastDetectorSampleSteps = 0;
+    bool haveDetectorSample = false;
 
     while (m_planner.getRhoHomingStepCount() < maxSteps &&
            (millis() - startedAt) < timeoutMs) {
@@ -977,10 +1241,24 @@ PolarControl::HomingAttempt PolarControl::approachHome(
             xSemaphoreGive(m_mutex);
             return result;
         }
+        if (!serviceInactiveRhoHoldLocked()) {
+            m_planner.stopRhoHoming();
+            xSemaphoreGive(m_mutex);
+            result.communicationError = true;
+            result.elapsedMs = millis() - startedAt;
+            result.steps = m_planner.getRhoHomingStepCount();
+            result.baseline = detector.baseline();
+            result.threshold = detector.threshold();
+            return result;
+        }
 
         uint32_t registerValue = 0;
         const bool validSample = readTmcRegisterChecked(
             driverAddress, 0x41, registerValue);
+        m_homingUartSamples.fetch_add(1);
+        if (validSample) m_homingValidUartSamples.fetch_add(1);
+        recordHomingSample(validSample,
+            static_cast<uint16_t>(registerValue & 0x03FF));
         if (!validSample) {
             if (consecutiveUartErrors < UINT8_MAX) ++consecutiveUartErrors;
             if (consecutiveUartErrors >= kMaxConsecutiveUartErrors) {
@@ -1000,6 +1278,19 @@ PolarControl::HomingAttempt PolarControl::approachHome(
 
         consecutiveUartErrors = 0;
         const uint16_t sample = static_cast<uint16_t>(registerValue & 0x03FF);
+        const uint32_t sampleSteps = m_planner.getRhoHomingStepCount();
+        // SG_RESULT updates once per full step. At the fixed MRES=8 homing
+        // resolution, reject duplicate polls until at least eight external
+        // STEP pulses have advanced the driver's electrical sequencer.
+        if (haveDetectorSample &&
+            sampleSteps - lastDetectorSampleSteps <
+                std::max<uint16_t>(1, externalStepsPerFullStep)) {
+            xSemaphoreGive(m_mutex);
+            vTaskDelay(pdMS_TO_TICKS(kSampleIntervalMs));
+            continue;
+        }
+        lastDetectorSampleSteps = sampleSteps;
+        haveDetectorSample = true;
         if (detector.update(sample, detectorElapsed)) {
             result.steps = m_planner.getRhoHomingStepCount();
             m_planner.stopRhoHoming();
@@ -1025,15 +1316,42 @@ PolarControl::HomingAttempt PolarControl::approachHome(
     return result;
 }
 
-bool PolarControl::restoreDisabledDriverPhase(TMC2209& driver,
-                                              uint8_t driverAddress,
-                                              uint16_t targetPhase,
-                                              const char* driverName) {
-    constexpr int32_t kPhaseAdvanceVelocity = 128;
-    constexpr uint32_t kPhaseTimeoutMs = 15000;
+bool PolarControl::restoreHeldDriverPhase(TMC2209& driver,
+                                          uint8_t driverAddress,
+                                          uint16_t targetPhase,
+                                          uint16_t microsteps,
+                                          const char* driverName) {
+    (void)driver;
+    // The inactive bridge stayed energized at u256 while VACTUAL +/-1 kept it
+    // isolated from shared STEP/DIR. Return its sequencer to the saved MSCNT
+    // phase before writing VACTUAL=0 and restoring the normal homing MRES.
+    // The physical correction is bounded to the tiny dither accumulated
+    // around the saved phase, rather than an ambiguous electrical revolution.
+    constexpr int32_t kFastPhaseVelocity = 128;
+    constexpr int32_t kSlowPhaseVelocity = 16;
+    constexpr uint16_t kSlowWindow = 64;
+    constexpr uint16_t kAcceptedPhaseError = 2;
+    constexpr uint32_t kPhaseTimeoutMs = 30000;
     constexpr uint8_t kMaxConsecutiveUartErrors = 3;
     uint8_t consecutiveUartErrors = 0;
     uint32_t phaseRegister = 0;
+
+    auto circularError = [targetPhase](uint16_t phase) {
+        const uint16_t forward = static_cast<uint16_t>(
+            (targetPhase + 1024U - phase) & 0x03FFU);
+        const uint16_t backward = static_cast<uint16_t>(
+            (phase + 1024U - targetPhase) & 0x03FFU);
+        return std::min(forward, backward);
+    };
+    auto signedVelocityTowardTarget = [targetPhase](uint16_t phase,
+                                                     int32_t magnitude) {
+        const uint16_t forward = static_cast<uint16_t>(
+            (targetPhase + 1024U - phase) & 0x03FFU);
+        return forward <= 512U ? magnitude : -magnitude;
+    };
+    auto velocityRegisterValue = [](int32_t velocity) {
+        return static_cast<uint32_t>(velocity) & 0x00FFFFFFU;
+    };
 
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     bool valid = readTmcRegisterChecked(driverAddress, 0x6A, phaseRegister);
@@ -1041,17 +1359,26 @@ bool PolarControl::restoreDisabledDriverPhase(TMC2209& driver,
         xSemaphoreGive(m_mutex);
         return false;
     }
-    if ((phaseRegister & 0x03FFU) == targetPhase) {
-        driver.moveUsingStepDirInterface();
+    uint16_t phase = static_cast<uint16_t>(phaseRegister & 0x03FFU);
+    if (circularError(phase) <= kAcceptedPhaseError) {
+        const bool stopped = writeTmcRegisterAcknowledged(
+            driverAddress, 0x22, 0U);
+        const bool resolutionRestored = stopped &&
+            setDriverMicrostepsChecked(driverAddress, microsteps);
         xSemaphoreGive(m_mutex);
-        return true;
+        return resolutionRestored;
     }
-    // TOFF remains zero: VACTUAL advances only the disabled driver's sequencer,
-    // allowing its electrical phase to be restored without moving the motor.
-    driver.moveAtVelocity(kPhaseAdvanceVelocity);
+    if (!writeTmcRegisterAcknowledged(
+            driverAddress, 0x22,
+            velocityRegisterValue(signedVelocityTowardTarget(
+                phase, kFastPhaseVelocity)))) {
+        xSemaphoreGive(m_mutex);
+        return false;
+    }
     xSemaphoreGive(m_mutex);
 
     const uint32_t startedAt = millis();
+    bool slowStage = false;
     while ((millis() - startedAt) < kPhaseTimeoutMs) {
         vTaskDelay(pdMS_TO_TICKS(1));
         xSemaphoreTake(m_mutex, portMAX_DELAY);
@@ -1059,7 +1386,7 @@ bool PolarControl::restoreDisabledDriverPhase(TMC2209& driver,
         if (!valid) {
             if (consecutiveUartErrors < UINT8_MAX) ++consecutiveUartErrors;
             if (consecutiveUartErrors >= kMaxConsecutiveUartErrors) {
-                driver.moveUsingStepDirInterface();
+                writeTmcRegisterAcknowledged(driverAddress, 0x22, 0U);
                 xSemaphoreGive(m_mutex);
                 return false;
             }
@@ -1067,26 +1394,70 @@ bool PolarControl::restoreDisabledDriverPhase(TMC2209& driver,
             continue;
         }
         consecutiveUartErrors = 0;
-        if ((phaseRegister & 0x03FFU) == targetPhase) {
-            driver.moveUsingStepDirInterface();
-            xSemaphoreGive(m_mutex);
-
-            // Stopping VACTUAL is itself a UART transaction. Confirm that it
-            // landed before the next internal microstep and retry a full turn
-            // if the sequencer advanced during that transaction.
-            vTaskDelay(pdMS_TO_TICKS(2));
-            xSemaphoreTake(m_mutex, portMAX_DELAY);
-            uint32_t stoppedPhaseRegister = 0;
-            const bool stoppedAtTarget = readTmcRegisterChecked(
-                driverAddress, 0x6A, stoppedPhaseRegister) &&
-                (stoppedPhaseRegister & 0x03FFU) == targetPhase;
-            if (stoppedAtTarget) {
+        phase = static_cast<uint16_t>(phaseRegister & 0x03FFU);
+        const uint16_t error = circularError(phase);
+        if (!slowStage && error <= kSlowWindow) {
+            if (!writeTmcRegisterAcknowledged(driverAddress, 0x22, 0U)) {
                 xSemaphoreGive(m_mutex);
-                LOG("Restored disabled %s sequencer phase to %u\r\n",
-                    driverName, targetPhase);
-                return true;
+                return false;
             }
-            driver.moveAtVelocity(kPhaseAdvanceVelocity);
+            vTaskDelay(pdMS_TO_TICKS(2));
+            if (!readTmcRegisterChecked(driverAddress, 0x6A, phaseRegister)) {
+                xSemaphoreGive(m_mutex);
+                return false;
+            }
+            phase = static_cast<uint16_t>(phaseRegister & 0x03FFU);
+            if (circularError(phase) <= kAcceptedPhaseError) {
+                xSemaphoreGive(m_mutex);
+                LOG("Restored disabled %s sequencer phase to %u (target %u)\r\n",
+                    driverName, phase, targetPhase);
+                xSemaphoreTake(m_mutex, portMAX_DELAY);
+                const bool restored = setDriverMicrostepsChecked(
+                    driverAddress, microsteps);
+                xSemaphoreGive(m_mutex);
+                return restored;
+            }
+            if (!writeTmcRegisterAcknowledged(
+                    driverAddress, 0x22,
+                    velocityRegisterValue(signedVelocityTowardTarget(
+                        phase, kSlowPhaseVelocity)))) {
+                xSemaphoreGive(m_mutex);
+                return false;
+            }
+            slowStage = true;
+            xSemaphoreGive(m_mutex);
+            continue;
+        }
+        if (slowStage && error <= kAcceptedPhaseError) {
+            if (!writeTmcRegisterAcknowledged(driverAddress, 0x22, 0U)) {
+                xSemaphoreGive(m_mutex);
+                return false;
+            }
+            vTaskDelay(pdMS_TO_TICKS(2));
+            if (!readTmcRegisterChecked(driverAddress, 0x6A, phaseRegister)) {
+                xSemaphoreGive(m_mutex);
+                return false;
+            }
+            phase = static_cast<uint16_t>(phaseRegister & 0x03FFU);
+            const uint16_t stoppedError = circularError(phase);
+            xSemaphoreGive(m_mutex);
+            if (stoppedError <= kAcceptedPhaseError) {
+                LOG("Restored disabled %s sequencer phase to %u (target %u)\r\n",
+                    driverName, phase, targetPhase);
+                xSemaphoreTake(m_mutex, portMAX_DELAY);
+                const bool restored = setDriverMicrostepsChecked(
+                    driverAddress, microsteps);
+                xSemaphoreGive(m_mutex);
+                return restored;
+            }
+            xSemaphoreTake(m_mutex, portMAX_DELAY);
+            if (!writeTmcRegisterAcknowledged(
+                    driverAddress, 0x22,
+                    velocityRegisterValue(signedVelocityTowardTarget(
+                        phase, kSlowPhaseVelocity)))) {
+                xSemaphoreGive(m_mutex);
+                return false;
+            }
             xSemaphoreGive(m_mutex);
             continue;
         }
@@ -1094,9 +1465,9 @@ bool PolarControl::restoreDisabledDriverPhase(TMC2209& driver,
     }
 
     xSemaphoreTake(m_mutex, portMAX_DELAY);
-    driver.moveUsingStepDirInterface();
+    writeTmcRegisterAcknowledged(driverAddress, 0x22, 0U);
     xSemaphoreGive(m_mutex);
-    LOG("Timed out restoring disabled %s sequencer phase\r\n", driverName);
+    LOG("Timed out restoring held %s sequencer phase\r\n", driverName);
     return false;
 }
 
@@ -1105,14 +1476,25 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
                             TMC2209& inactiveDriver,
                             uint8_t inactiveAddress,
                             const char* inactiveName,
-                            bool companionAxis) {
-    constexpr float kCoarseMmPerSecond = 4.0f;
-    constexpr float kPrecisionMmPerSecond = 1.5f;
-    constexpr float kRunwayMm = 4.0f;
-    constexpr float kVerificationBackoffMm = 4.0f;
-    constexpr float kVerificationToleranceMm = 1.0f;
+                            bool companionAxis,
+                            const DriverSettings& homingSettings) {
+    // SG_RESULT is updated once per full step and becomes unstable at very
+    // low motor speeds. With this mechanism's 50 full steps/mm, 6 mm/s is
+    // 1.5 revolutions/s: above the TMC2209's documented problematic region
+    // below roughly one revolution/s. Use the same characterized velocity
+    // for both passes so one threshold describes one operating condition.
+    constexpr float kCoarseMmPerSecond =
+        Config::kRhoHomingVelocityMmPerSecond;
+    constexpr float kPrecisionMmPerSecond =
+        Config::kRhoHomingVelocityMmPerSecond;
+    constexpr float kRunwayMm = Config::kRhoHomingRunwayMm;
+    constexpr float kVerificationBackoffMm =
+        Config::kRhoHomingVerificationBackoffMm;
+    constexpr float kVerificationToleranceMm =
+        Config::kRhoHomingMaximumOverrunMm;
+    constexpr float kImpossibleContactTravelMm = 3.0f;
     constexpr uint32_t kSettleMs = 150;
-    const uint32_t stepsPerMm = static_cast<uint32_t>(getStepsPerMm());
+    const uint32_t stepsPerMm = 50U * homingSettings.microsteps;
     const uint32_t maxStepRate = 1000000U / STEP_TIMER_PERIOD_US;
     const uint32_t coarseRate = std::min<uint32_t>(
         maxStepRate, std::max<uint32_t>(1,
@@ -1124,17 +1506,38 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
         std::lround(kRunwayMm * stepsPerMm));
     const uint32_t backoffSteps = static_cast<uint32_t>(
         std::lround(kVerificationBackoffMm * stepsPerMm));
-    const uint32_t toleranceSteps = std::max<uint32_t>(
-        static_cast<uint32_t>(
-            std::lround(kVerificationToleranceMm * stepsPerMm)),
-        static_cast<uint32_t>(
-            static_cast<uint64_t>(precisionRate) *
-            (m_homingSettings.consecutiveSamples + 2U) * 20U / 1000U));
-    const uint32_t maximumTravelSteps = static_cast<uint32_t>(
+    // This is a physical safety limit, not a detector-dependent allowance.
+    // A longer debounce must fail at the cap rather than silently increasing
+    // how far the mechanism may be commanded into the hard stop.
+    const uint32_t toleranceSteps = static_cast<uint32_t>(
+        std::lround(kVerificationToleranceMm * stepsPerMm));
+    uint32_t maximumTravelSteps = static_cast<uint32_t>(
         std::lround(R_MAX * stepsPerMm));
+    if (m_confirmedOriginBoundedHoming.load()) {
+        maximumTravelSteps = runwaySteps + toleranceSteps;
+    }
+#ifdef SISYPHUS_RHO_COMMISSIONING
+    else {
+        const int32_t knownStartNormalSteps = companionAxis
+            ? m_knownCompanionStartSteps.load()
+            : m_knownRhoStartSteps.load();
+        if (m_knownPositionHomingActive.load()) {
+            const int32_t knownStartSteps = static_cast<int32_t>(std::lround(
+                static_cast<double>(knownStartNormalSteps) * stepsPerMm /
+                getStepsPerMm()));
+            const int64_t boundedTravel =
+                static_cast<int64_t>(knownStartSteps) + runwaySteps +
+                toleranceSteps;
+            maximumTravelSteps = static_cast<uint32_t>(
+                std::max<int64_t>(1, boundedTravel));
+        }
+    }
+#endif
     const float triggerRatio = m_homingSettings.triggerPercent / 100.0f;
+    const uint32_t coarseMinimumTravelSteps = static_cast<uint32_t>(
+        std::lround(kImpossibleContactTravelMm * stepsPerMm));
     const uint8_t coarseSamples = std::max<uint8_t>(
-        6, static_cast<uint8_t>((m_homingSettings.consecutiveSamples * 2) / 3));
+        5, static_cast<uint8_t>(m_homingSettings.consecutiveSamples / 3));
     uint32_t inactivePhaseRegister = 0;
 
     m_homingFailedAxis.store(companionAxis ? 2 : 1);
@@ -1142,21 +1545,39 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
     const bool phaseRead = m_state.load() == HOMING &&
         readTmcRegisterChecked(inactiveAddress, 0x6A,
                                inactivePhaseRegister);
+    bool holdStarted = false;
+    bool motorsEnabled = false;
     if (phaseRead) {
         activeDriver.moveUsingStepDirInterface();
-        inactiveDriver.moveUsingStepDirInterface();
-        setDriverEnabled(inactiveDriver, inactiveAddress,
-                         m_rDriverSettings, false);
-        setDriverEnabled(activeDriver, activeAddress,
-                         m_rDriverSettings, true);
+        holdStarted = startInactiveRhoHoldLocked(
+            inactiveAddress,
+            static_cast<uint16_t>(inactivePhaseRegister & 0x03FFU));
+        motorsEnabled = holdStarted &&
+            setDriverEnabled(inactiveDriver, inactiveAddress,
+                             homingSettings, true) &&
+            setDriverEnabled(activeDriver, activeAddress,
+                             homingSettings, true);
     }
     uint32_t activeChopconf = 0;
     uint32_t inactiveChopconf = 0;
-    const bool enablesVerified = phaseRead &&
+    const bool enablesVerified = phaseRead && holdStarted && motorsEnabled &&
         readTmcRegisterChecked(activeAddress, 0x6C, activeChopconf) &&
         readTmcRegisterChecked(inactiveAddress, 0x6C, inactiveChopconf) &&
         (activeChopconf & 0x0FU) != 0 &&
-        (inactiveChopconf & 0x0FU) == 0;
+        (inactiveChopconf & 0x0FU) != 0 &&
+        (activeChopconf & 0x0F000000UL) ==
+            (static_cast<uint32_t>(
+                microstepsToMres(homingSettings.microsteps)) << 24) &&
+        (inactiveChopconf & 0x0F000000UL) == 0;
+    if (!enablesVerified) {
+        clearInactiveRhoHoldLocked();
+        writeTmcRegisterAcknowledged(inactiveAddress, 0x22, 0U);
+        setDriverEnabled(activeDriver, activeAddress, homingSettings, false);
+        setDriverEnabled(inactiveDriver, inactiveAddress,
+                         homingSettings, false);
+        setDriverMicrostepsChecked(
+            inactiveAddress, homingSettings.microsteps);
+    }
     xSemaphoreGive(m_mutex);
     if (!enablesVerified) {
         m_homingFailure.store(7);
@@ -1166,11 +1587,13 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
         return false;
     }
 
-    LOG("Homing %s with %s disabled (STEP/DIR)\r\n",
+    LOG("Homing %s by STEP/DIR with %s held in u256 VACTUAL mode\r\n",
         activeName, inactiveName);
     vTaskDelay(pdMS_TO_TICKS(kSettleMs));
 
     bool axisSuccess = false;
+    m_homingTraceAxis.store(companionAxis ? 2 : 1);
+    m_homingTracePhase.store(1);
     HomingMove runway = moveRhoBySteps(
         activeAddress, +1, coarseRate, runwaySteps);
     if (!runway.success) {
@@ -1183,13 +1606,21 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
     vTaskDelay(pdMS_TO_TICKS(kSettleMs));
 
     {
+        m_homingTracePhase.store(2);
         HomingAttempt coarse = approachHome(
-            activeAddress, coarseRate, maximumTravelSteps, 250,
-            coarseSamples, triggerRatio);
+            activeAddress, coarseRate, maximumTravelSteps,
+            coarseMinimumTravelSteps,
+            coarseSamples, triggerRatio, homingSettings.microsteps);
         if (companionAxis) {
             m_homingCompanionFastApproachMs.store(coarse.elapsedMs);
+            m_homingCompanionFastApproachSteps.store(coarse.steps);
+            m_homingCompanionFastBaseline.store(coarse.baseline);
+            m_homingCompanionFastTrigger.store(coarse.trigger);
         } else {
             m_homingFastApproachMs.store(coarse.elapsedMs);
+            m_homingFastApproachSteps.store(coarse.steps);
+            m_homingFastBaseline.store(coarse.baseline);
+            m_homingFastTrigger.store(coarse.trigger);
         }
         if (!coarse.success) {
             m_homingFailure.store(coarse.communicationError ? 7 : 2);
@@ -1202,6 +1633,7 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
             activeName, static_cast<unsigned long>(coarse.steps),
             coarse.baseline, coarse.trigger);
 
+        m_homingTracePhase.store(3);
         HomingMove backoff = moveRhoBySteps(
             activeAddress, +1, coarseRate, backoffSteps, coarse.threshold);
         if (!backoff.success || !backoff.loadRecovered) {
@@ -1218,16 +1650,23 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
     vTaskDelay(pdMS_TO_TICKS(kSettleMs));
 
     {
+        m_homingTracePhase.store(4);
+        const uint32_t configuredMinimumSteps = static_cast<uint32_t>(
+            static_cast<uint64_t>(precisionRate) *
+            m_homingSettings.minimumTravelMs / 1000U);
         HomingAttempt precision = approachHome(
             activeAddress, precisionRate, backoffSteps + toleranceSteps,
-            m_homingSettings.minimumTravelMs,
-            m_homingSettings.consecutiveSamples, triggerRatio);
+            configuredMinimumSteps,
+            m_homingSettings.consecutiveSamples, triggerRatio,
+            homingSettings.microsteps);
         if (companionAxis) {
             m_homingCompanionSlowApproachMs.store(precision.elapsedMs);
+            m_homingCompanionSlowApproachSteps.store(precision.steps);
             m_homingCompanionBaseline.store(precision.baseline);
             m_homingCompanionTrigger.store(precision.trigger);
         } else {
             m_homingSlowApproachMs.store(precision.elapsedMs);
+            m_homingSlowApproachSteps.store(precision.steps);
             m_homingBaseline.store(precision.baseline);
             m_homingTrigger.store(precision.trigger);
         }
@@ -1239,9 +1678,6 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
             goto axis_cleanup;
         }
 
-        const uint32_t configuredMinimumSteps = static_cast<uint32_t>(
-            static_cast<uint64_t>(precisionRate) *
-            m_homingSettings.minimumTravelMs / 1000U);
         const uint32_t minimumReturnSteps = std::max<uint32_t>(
             configuredMinimumSteps,
             backoffSteps > toleranceSteps ? backoffSteps - toleranceSteps : 0);
@@ -1265,11 +1701,13 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
 axis_cleanup:
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     m_planner.stopRhoHoming();
-    setDriverEnabled(activeDriver, activeAddress, m_rDriverSettings, false);
+    setDriverEnabled(activeDriver, activeAddress, homingSettings, false);
+    clearInactiveRhoHoldLocked();
     xSemaphoreGive(m_mutex);
-    if (!restoreDisabledDriverPhase(
+    if (!restoreHeldDriverPhase(
             inactiveDriver, inactiveAddress,
             static_cast<uint16_t>(inactivePhaseRegister & 0x03FFU),
+            homingSettings.microsteps,
             inactiveName)) {
         m_homingFailure.store(9);
         ErrorLog::instance().log("ERROR", "HOME", "PHASE_RESTORE_FAILED",
@@ -1310,10 +1748,38 @@ bool PolarControl::homeDrivers() {
 
     const DriverSettings normalSettings = m_rDriverSettings;
     DriverSettings homingSettings = normalSettings;
-    homingSettings.holdCurrent = homingSettings.runCurrent;
+    // Homing is brief and may be louder than normal motion. Use a dedicated
+    // current high enough to cross every normal rail section; otherwise a
+    // persistent constriction is electrically indistinguishable from the real
+    // hard stop. Autoscaled StealthChop also conditions StallGuard more
+    // consistently than the fixed-PWM acoustic profile. The 150 ms enabled
+    // settle below performs AT#1, and the runway performs AT#2 before SG
+    // classification begins.
+    homingSettings.runCurrent = Config::kRhoHomingRunCurrentMa;
+    homingSettings.holdCurrent = Config::kRhoHomingHoldCurrentMa;
+    homingSettings.highSensitivityCurrentScale = true;
+    homingSettings.holdDelay = 8;
+    homingSettings.powerDownDelay = 20;
+    homingSettings.chopperOffTime = 3;
+    homingSettings.hysteresisStart = 5;
+    homingSettings.hysteresisEnd = 0;
+    homingSettings.blankTime = 2;
+    homingSettings.microsteps = Config::kRhoHomingMicrosteps;
+    homingSettings.interpolationEnabled = true;
     homingSettings.stealthChopEnabled = true;
     homingSettings.stealthChopThreshold = 0;
+    homingSettings.pwmFrequency = 0;
+    homingSettings.pwmRegulation = 15;
+    homingSettings.pwmLimit = 8;
+    homingSettings.standstillMode = 0;
+    homingSettings.automaticCurrentScaling = true;
+    homingSettings.automaticGradientAdaptation = true;
+    homingSettings.pwmOffset = 36;
+    homingSettings.pwmGradient = 14;
     homingSettings.coolStepEnabled = false;
+
+    m_homingStepsPerMm.store(static_cast<uint16_t>(
+        50U * homingSettings.microsteps));
 
     auto restoreNormalSettings = [&](bool enableDrivers) {
         xSemaphoreTake(m_mutex, portMAX_DELAY);
@@ -1357,10 +1823,12 @@ bool PolarControl::homeDrivers() {
     };
 
     xSemaphoreTake(m_mutex, portMAX_DELAY);
-    const bool homingConfigApplied = applyDriverSettings(
-        m_rDriver, homingSettings, R_ADDR, "rho") &&
+    const bool homingConfigApplied = disableRhoDriversLocked() &&
+        applyDriverSettings(m_rDriver, homingSettings, R_ADDR, "rho") &&
         applyDriverSettings(m_rCDriver, homingSettings, RC_ADDR,
-                            "rho-companion");
+                            "rho-companion") &&
+        setDriverEnabled(m_rDriver, R_ADDR, homingSettings, false) &&
+        setDriverEnabled(m_rCDriver, RC_ADDR, homingSettings, false);
     xSemaphoreGive(m_mutex);
     if (!homingConfigApplied) {
         m_homingFailure.store(7);
@@ -1370,12 +1838,17 @@ bool PolarControl::homeDrivers() {
         return false;
     }
 
-    const bool primaryHomed = homeAxis(
-        m_rDriver, R_ADDR, "rho", m_rCDriver, RC_ADDR,
-        "rho-companion", false);
-    const bool companionHomed = primaryHomed && m_state.load() == HOMING &&
-        homeAxis(m_rCDriver, RC_ADDR, "rho-companion",
-                 m_rDriver, R_ADDR, "rho", true);
+    // Home the mechanically stable counterweight side first. The inactive
+    // motor must be unpowered so the shared STEP/DIR pulses only move the
+    // selected side; placing the more back-drive-prone primary RHO last means
+    // it cannot be displaced again by the companion's homing interval.
+    const bool companionHomed = homeAxis(
+        m_rCDriver, RC_ADDR, "rho-companion", m_rDriver, R_ADDR,
+        "rho", true, homingSettings);
+    const bool primaryHomed = companionHomed && m_state.load() == HOMING &&
+        homeAxis(m_rDriver, R_ADDR, "rho",
+                 m_rCDriver, RC_ADDR, "rho-companion", false,
+                 homingSettings);
     const bool homingSucceeded = primaryHomed && companionHomed;
     const bool restored = restoreNormalSettings(homingSucceeded);
     if (!restored) {
@@ -2104,6 +2577,37 @@ static bool validDriverSettings(const DriverSettings& settings,
         settings.coolStepThreshold <= 0x000FFFFFU;
 }
 
+static bool sameDriverSettings(const DriverSettings& lhs,
+                               const DriverSettings& rhs) {
+    return lhs.runCurrent == rhs.runCurrent &&
+        lhs.holdCurrent == rhs.holdCurrent &&
+        lhs.holdDelay == rhs.holdDelay &&
+        lhs.powerDownDelay == rhs.powerDownDelay &&
+        lhs.highSensitivityCurrentScale == rhs.highSensitivityCurrentScale &&
+        lhs.chopperOffTime == rhs.chopperOffTime &&
+        lhs.hysteresisStart == rhs.hysteresisStart &&
+        lhs.hysteresisEnd == rhs.hysteresisEnd &&
+        lhs.blankTime == rhs.blankTime &&
+        lhs.microsteps == rhs.microsteps &&
+        lhs.interpolationEnabled == rhs.interpolationEnabled &&
+        lhs.stealthChopEnabled == rhs.stealthChopEnabled &&
+        lhs.stealthChopThreshold == rhs.stealthChopThreshold &&
+        lhs.pwmFrequency == rhs.pwmFrequency &&
+        lhs.pwmRegulation == rhs.pwmRegulation &&
+        lhs.pwmLimit == rhs.pwmLimit &&
+        lhs.standstillMode == rhs.standstillMode &&
+        lhs.automaticCurrentScaling == rhs.automaticCurrentScaling &&
+        lhs.automaticGradientAdaptation == rhs.automaticGradientAdaptation &&
+        lhs.pwmOffset == rhs.pwmOffset &&
+        lhs.pwmGradient == rhs.pwmGradient &&
+        lhs.coolStepEnabled == rhs.coolStepEnabled &&
+        lhs.coolStepLowerThreshold == rhs.coolStepLowerThreshold &&
+        lhs.coolStepUpperThreshold == rhs.coolStepUpperThreshold &&
+        lhs.coolStepCurrentIncrement == rhs.coolStepCurrentIncrement &&
+        lhs.coolStepMeasurementCount == rhs.coolStepMeasurementCount &&
+        lhs.coolStepThreshold == rhs.coolStepThreshold;
+}
+
 static bool validHomingSettings(const HomingSettings& settings) {
     return settings.triggerPercent >= 40 && settings.triggerPercent <= 85 &&
         settings.consecutiveSamples >= 5 && settings.consecutiveSamples <= 50 &&
@@ -2242,6 +2746,15 @@ TuningUpdateResult PolarControl::saveRhoDriverSettings(const DriverSettings& set
                                settings.microsteps)) {
         xSemaphoreGive(m_mutex);
         return TuningUpdateResult::REJECTED;
+    }
+
+    // Acoustic and commissioning clients deliberately send a complete driver
+    // surface before every trial. Do not drop either loaded bridge when that
+    // surface is already active: there is nothing to recalibrate or persist.
+    if (sameDriverSettings(settings, m_rDriverSettings)) {
+        LOG("Rho driver settings unchanged; skipping bridge cycle\r\n");
+        xSemaphoreGive(m_mutex);
+        return TuningUpdateResult::UPDATED;
     }
 
     const DriverSettings previousSettings = m_rDriverSettings;

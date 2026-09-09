@@ -1009,6 +1009,9 @@ void MotionPlanner::stop() {
 
     m_running.store(false);
     m_timerActive.store(false);
+    if (m_stepMotionActive.exchange(false, std::memory_order_acq_rel)) {
+        m_lastStepMotionStopUs.store(micros(), std::memory_order_release);
+    }
     m_startupHoldoff = false;
 
     // Clear step queue
@@ -1557,8 +1560,14 @@ void MotionPlanner::getTelemetry(PlannerTelemetry& out) {
     uint32_t currentConsecutive = m_consecutiveUnderruns.load();
     out.maxConsecutiveUnderruns = m_maxConsecutiveUnderruns.exchange(currentConsecutive);
     out.completedCount = m_completedCount;
+    out.stepMotionEpoch = m_stepMotionEpoch.load(std::memory_order_acquire);
+    out.lastStepMotionStartUs =
+        m_lastStepMotionStartUs.load(std::memory_order_acquire);
+    out.lastStepMotionStopUs =
+        m_lastStepMotionStopUs.load(std::memory_order_acquire);
     out.timerActive = m_timerActive.load();
     out.running = m_running.load();
+    out.stepMotionActive = m_stepMotionActive.load(std::memory_order_acquire);
 
     m_minQueueDepth = out.queueDepth;
 }
@@ -1675,6 +1684,9 @@ void IRAM_ATTR MotionPlanner::handleStepTimer() {
 
     // Check for STOP sentinel
     if (event.stepMask & STOP_MASK) {
+        if (m_stepMotionActive.exchange(false, std::memory_order_acq_rel)) {
+            m_lastStepMotionStopUs.store(now, std::memory_order_release);
+        }
         m_running.store(false, std::memory_order_relaxed);
         m_timerActive.store(false, std::memory_order_relaxed);
         if (m_timerHandle != nullptr) {
@@ -1683,6 +1695,12 @@ void IRAM_ATTR MotionPlanner::handleStepTimer() {
         // Consume event
         m_stepQueueTail.store((tail + 1) % STEP_QUEUE_SIZE, std::memory_order_release);
         return;
+    }
+
+    if ((event.stepMask & 0x03) != 0
+            && !m_stepMotionActive.exchange(true, std::memory_order_acq_rel)) {
+        m_lastStepMotionStartUs.store(now, std::memory_order_release);
+        m_stepMotionEpoch.fetch_add(1, std::memory_order_acq_rel);
     }
 
     // Set direction pins first

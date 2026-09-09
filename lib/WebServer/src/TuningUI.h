@@ -293,7 +293,7 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
                     <input type="number" id="tune-home-triggerPercent" min="40" max="85" step="1">
                 </div>
                 <div class="form-group">
-                    <label>Consecutive Low Samples (10 ms each)</label>
+                    <label>Low SG Votes (within 2N-1 fresh full steps)</label>
                     <input type="number" id="tune-home-consecutiveSamples" min="5" max="50" step="1">
                 </div>
                 <div class="form-group">

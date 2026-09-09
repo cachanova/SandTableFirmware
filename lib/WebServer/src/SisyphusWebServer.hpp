@@ -42,6 +42,11 @@ private:
     float m_pendingJogTheta = 0.0f;
     float m_pendingJogRho = 0.0f;
     float m_pendingRhoSegmentTarget = 0.0f;
+#ifdef SISYPHUS_RHO_COMMISSIONING
+    // Fail-closed after every reboot: relative manual jogs only. Assigning a
+    // commissioning origin always requires explicit operator confirmation.
+    std::atomic<bool> m_rhoCommissioningMode{false};
+#endif
 
     // Pattern queue management
     String m_queuedPattern;
@@ -77,8 +82,12 @@ private:
     void handlePlaybackStop(AsyncWebServerRequest *request);
     void handleMotionStop(AsyncWebServerRequest *request);
     void handleMotionTelemetry(AsyncWebServerRequest *request);
+    void handleRhoServiceModeGet(AsyncWebServerRequest *request);
+    void handleRhoServiceModeSet(AsyncWebServerRequest *request);
     void handleHome(AsyncWebServerRequest *request);
     void handleHomeConfirm(AsyncWebServerRequest *request);
+    void handleKnownPositionHome(AsyncWebServerRequest *request);
+    void handleHomingTrace(AsyncWebServerRequest *request);
     void handleFileList(AsyncWebServerRequest *request);
     void handleFileUpload(AsyncWebServerRequest *request, String filename,
                          size_t index, uint8_t *data, size_t len, bool final);

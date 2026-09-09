@@ -58,6 +58,10 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
         #stop { width: 100%; margin-top: 18px; padding: 12px; border: 1px solid rgba(248,113,113,.45); background: rgba(248,113,113,.13); }
         #stop:hover { background: rgba(248,113,113,.22); }
         .error { min-height: 1.3em; margin-top: 12px; color: var(--danger); text-align: center; font-size: .86rem; }
+        .mode-control { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+        .mode-control strong { margin-right: auto; }
+        .mode-control button { width: auto; min-width: 150px; margin: 0; }
+        .mode-active { border-color: var(--accent); background: rgba(201,162,39,.22); }
         @media (max-width: 560px) { body { padding: 12px; } .card { padding: 14px; } nav a { padding: 8px 10px; font-size: .78rem; } h1 { font-size: 1.9rem; } .jog-controls { grid-template-columns: 1fr; } }
     </style>
 </head>
@@ -67,6 +71,14 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
     <nav>
         <a href="/">Patterns</a><a href="/manual" class="active">Manual</a><a href="/files">Files</a><a href="/tuning">Tuning</a>
     </nav>
+    <section class="card" id="rhoServiceCard" hidden>
+        <div class="mode-control">
+            <strong>RHO service mode: <span id="rhoServiceMode">—</span></strong>
+            <button id="modeManual">Manual RHO</button>
+            <button id="modeCommissioning">RHO Commissioning</button>
+        </div>
+        <p class="hint">Manual mode permits relative RHO jogs without homing. Commissioning mode assigns the current physical position as temporary zero and permits only bounded outward-return tests. Theta and patterns stay locked out.</p>
+    </section>
     <section class="card">
         <div class="status-row"><div class="status"><span id="stateDot" class="dot"></span><strong id="state">Connecting</strong></div><div class="status" id="sendState">Waiting</div></div>
         <div class="stage"><canvas id="table" aria-label="Manual table position control"></canvas></div>
@@ -121,6 +133,37 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
     let axes = {theta:false,rho:false};
     let queued = null, sending = false, sendTimer = 0, lastSentAt = 0, sendController = null;
     let commandGeneration = 0, stopInProgress = false;
+    let rhoServiceMode = null;
+
+    async function refreshRhoServiceMode() {
+        try {
+            const response=await fetch('/api/rho-service/mode');
+            if (!response.ok) return;
+            const data=await response.json();
+            rhoServiceMode=data.mode;
+            document.getElementById('rhoServiceCard').hidden=false;
+            document.getElementById('rhoServiceMode').textContent=
+                data.mode==='commissioning'?'Commissioning (origin confirmed)':'Manual (position unconfirmed)';
+            document.getElementById('modeManual').classList.toggle('mode-active',data.mode==='manual');
+            document.getElementById('modeCommissioning').classList.toggle('mode-active',data.mode==='commissioning');
+        } catch (_) {}
+    }
+
+    async function setRhoServiceMode(mode) {
+        if (mode===rhoServiceMode) return;
+        if (mode==='commissioning' && !confirm(
+            'Confirm both RHO mechanisms are at the intended test origin. This assigns the current physical position as logical zero.')) return;
+        commandGeneration++; queued=null; clearTimeout(sendTimer); dragging=false;
+        const body=new URLSearchParams({mode});
+        if (mode==='commissioning') body.set('confirmOrigin','true');
+        try {
+            const response=await fetch('/api/rho-service/mode',{method:'POST',body});
+            const data=await response.json().catch(()=>({}));
+            if (!response.ok) throw new Error(data.message || `Request failed (${response.status})`);
+            errorEl.textContent=''; sendEl.textContent=`Switched to ${mode}`;
+            await refreshRhoServiceMode(); await refreshStatus();
+        } catch (err) { errorEl.textContent=err.message; }
+    }
 
     function resize() {
         const rect = canvas.getBoundingClientRect();
@@ -217,6 +260,8 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
     });
     canvas.addEventListener('pointercancel', () => { dragging=false; });
     document.querySelectorAll('.jog').forEach(button => button.addEventListener('click',() => jog(button.dataset.axis,Number(button.dataset.delta))));
+    document.getElementById('modeManual').addEventListener('click',()=>setRhoServiceMode('manual'));
+    document.getElementById('modeCommissioning').addEventListener('click',()=>setRhoServiceMode('commissioning'));
     document.getElementById('stop').addEventListener('click', async () => {
         commandGeneration++; queued=null; clearTimeout(sendTimer); dragging=false; stopInProgress=true; enabled=false; jogEnabled=false; updateControls();
         if (sendController) sendController.abort();
@@ -251,7 +296,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
         } catch (_) { geometryReady=false; enabled=false; jogEnabled=false; updateControls(); }
     }
     const events=new EventSource('/api/stream'); events.addEventListener('pos',ev=>{ try { updatePosition(JSON.parse(ev.data)); } catch (_) {} });
-    window.addEventListener('resize',resize); resize(); initialPosition(); refreshStatus(); setInterval(refreshStatus,1000); setInterval(()=>{ if(!geometryReady) initialPosition(); },2000);
+    window.addEventListener('resize',resize); resize(); initialPosition(); refreshStatus(); refreshRhoServiceMode(); setInterval(refreshStatus,1000); setInterval(refreshRhoServiceMode,1000); setInterval(()=>{ if(!geometryReady) initialPosition(); },2000);
 })();
 </script>
 </body>

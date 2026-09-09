@@ -4,9 +4,10 @@ Use this playbook to select quiet, reliable settings for the paired rho motors
 before tuning sensorless homing. It uses the same Antlion USB microphone and
 the telemetry-aligned analysis in `scripts/acoustic_tuner.py`.
 
-This procedure deliberately does **not** home rho. The operator places the
-mechanism at a known, marked physical start before commissioning firmware
-boots. Firmware assigns that position temporary logical `rho=0`.
+The acoustic procedure deliberately does **not** home rho. The operator places
+the mechanism at a known, marked physical start, then explicitly switches the
+service image from Manual RHO to RHO Commissioning. That confirmation assigns
+the current physical position temporary logical `rho=0`.
 Every test target is between logical 0 and +400 mm, and every successfully
 completed test returns to logical 0. No test commands an inward-negative rho
 position.
@@ -34,9 +35,14 @@ to the marked starting position.
 ## Commissioning firmware safety boundary
 
 Use only `esp32dev_rho_commissioning` or
-`esp32dev_rho_commissioning_ota`. This build:
+`esp32dev_rho_commissioning_ota`. This single service build:
 
-- disables automatic and manual homing;
+- boots in Manual RHO mode without claiming a physical origin, and permits
+  relative RHO jogs for setup;
+- switches to bounded commissioning only after explicit physical-origin
+  confirmation, so no reflash is needed between manual and test control;
+- allows only confirmed-origin, runway-plus-1-mm bounded homing while in RHO
+  Commissioning mode; unknown-position production homing remains unavailable;
 - disables manual moves, patterns, clearing, and theta tuning tests;
 - explicitly disables the theta driver and verifies `TOFF=0` over UART, which
   also makes warm OTA transitions safe;
@@ -48,7 +54,7 @@ Use only `esp32dev_rho_commissioning` or
 - resets the full chopper, PWM, interpolation, hold-delay, and standstill
   profile to its checked baseline on every commissioning boot instead of
   inheriting the previous trial;
-- assumes the physical boot position is temporary logical rho zero;
+- uses the measured 425 mm usable RHO travel limit;
 - permits only bounded rho continuous/stress generators and commissioning-only
   absolute segment targets from logical 0 through +400 mm.
 
@@ -433,6 +439,56 @@ Current reduction, CoolStep, hold-current reduction, automatic gradient
 adaptation, and final production defaults all remain deferred. The eventual
 full-load acoustic profile must be frozen before RHO homing thresholds are
 tuned.
+
+## 2026-09-09 final-load results
+
+Both RHO mechanisms carried their intended final loads, alignment had been
+corrected, total usable travel was measured as 425 mm, and the operator
+manually established physical zero. The Antlion remained at 100% / 0.00 dB.
+The stationary A-weighted room baseline was -57.87 dBFS.
+
+The selected common driver profile is:
+
+| Setting | Value |
+|---|---:|
+| Run / hold current | 150 / 75 mA requested |
+| External microsteps | 8, interpolated to 256 |
+| Chopper | StealthChop always; CoolStep off |
+| `PWM_FREQ` / `PWM_REG` / `PWM_LIM` | 0 / 15 / 8 |
+| Automatic current / gradient | off / off |
+| `PWM_OFS` / `PWM_GRAD` | 128 / 2 |
+| `TOFF` / `HSTRT` / `HEND` / `TBL` | 3 / 5 / 0 / 2 |
+| Acceleration / jerk | 20 mm/s² / 100 mm/s³ |
+
+The high-impact TMC2209 controls were screened. `PWM_FREQ=0`, 8 external
+microsteps, interpolation on, fixed 128/2 PWM feed-forward, and 150 mA were
+best. Interpolation off, 4 microsteps, fixed 124/3, and 100 mA were materially
+louder. At 4 mm/s the 100 mA conservative bound was -56.37 dBFS, versus
+-62.01 dBFS at 150 mA; reduced current did not reduce mechanism sound.
+CoolStep and SpreadCycle were already rejected as louder in controlled
+screening. Hold timing, freewheel, and SpreadCycle hysteresis controls do not
+improve the sustained StealthChop cruise metric and retain their safe values.
+
+Two independent eight-leg qualifications selected:
+
+| Tier | Velocity | Worst measured motor excess | 95% upper bound | Result |
+|---|---:|---:|---:|---|
+| acceptable | 4.25 mm/s | -64.40 dBFS | -60.91 dBFS | qualified at -60 |
+| quiet -3 dB | 2.00 mm/s | -69.66 dBFS | -63.07 dBFS | qualified at -63 |
+| quiet -6 dB | 1.00 mm/s | -71.78 dBFS (screen) | -63.99 dBFS | best effort; confidence floor prevents -66 qualification |
+
+The operator had already judged 1 mm/s completely inaudible. No repeatable
+motion-locked tone was found in its screen. Nevertheless, the changing-room
+noise leaves a roughly -64 dBFS statistical upper-bound floor, so this record
+does not claim a conservative -66 qualification. A quieter room, closer fixed
+microphone geometry, or an additional independent sensor is required to make
+that numerical claim.
+
+The 4.25 mm/s profile completed a full `0 -> 400 -> 0` range test with both
+drivers healthy, no planner underruns, no sustained in-motion SG collapse, and
+an exact logical return. The continuous recording is range evidence, not a
+numeric acoustic qualification because it lacks adjacent idle around each
+directional gate.
 
 ## Acceptance rules
 

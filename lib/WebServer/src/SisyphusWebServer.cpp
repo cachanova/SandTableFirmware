@@ -332,14 +332,34 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
         handleMotionTelemetry(request);
     });
 
-    m_server.on("/api/home", HTTP_POST, [this](AsyncWebServerRequest *request) {
+    m_server.on("/api/rho-service/mode", HTTP_GET, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handleRhoServiceModeGet(request);
+    });
+
+    m_server.on("/api/rho-service/mode", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handleRhoServiceModeSet(request);
+    });
+
+    m_server.on(AsyncURIMatcher::exact("/api/home"), HTTP_POST, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handleHome(request);
     });
 
-    m_server.on("/api/home/confirm", HTTP_POST, [this](AsyncWebServerRequest *request) {
+    m_server.on(AsyncURIMatcher::exact("/api/home/confirm"), HTTP_POST, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handleHomeConfirm(request);
+    });
+
+    m_server.on("/api/tuning/home/known-positions", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handleKnownPositionHome(request);
+    });
+
+    m_server.on("/api/tuning/homing/trace", HTTP_GET, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handleHomingTrace(request);
     });
 
     m_server.on("/api/position", HTTP_GET, [this](AsyncWebServerRequest *request) {
@@ -1093,6 +1113,9 @@ bool SisyphusWebServer::prepareManualJogLocked() {
 }
 
 bool SisyphusWebServer::queueTuningTestLocked(PendingMotion motion) {
+#ifdef SISYPHUS_RHO_COMMISSIONING
+    if (!m_rhoCommissioningMode.load()) return false;
+#endif
     if (!prepareReplacementLocked()) return false;
     m_pendingMotion = motion;
     return true;
@@ -1328,17 +1351,21 @@ void SisyphusWebServer::handleMotionTelemetry(AsyncWebServerRequest *request) {
     const PolarVelocity_t velocity = m_polarControl->getActualVelocity();
     PlannerTelemetry telemetry;
     m_polarControl->getTelemetry(telemetry);
+    const uint32_t sampleMicros = micros();
 
-    AsyncResponseStream *response = request->beginResponseStream("application/json", 384);
+    AsyncResponseStream *response = request->beginResponseStream("application/json", 576);
     response->print("{\"state\":\"");
     response->print(getStateString());
     response->printf(
-        "\",\"millis\":%lu,\"position\":{\"rho\":%.4f,\"theta\":%.6f},"
+        "\",\"millis\":%lu,\"micros\":%lu,\"position\":{\"rho\":%.4f,\"theta\":%.6f},"
         "\"velocity\":{\"rho\":%.4f,\"theta\":%.6f},"
         "\"planner\":{\"queueDepth\":%lu,\"minQueueDepth\":%lu,"
         "\"underruns\":%lu,\"maxConsecutiveUnderruns\":%lu,"
-        "\"completedCount\":%lu,\"timerActive\":%s,\"running\":%s}",
-        static_cast<unsigned long>(millis()), position.rho, position.theta,
+        "\"completedCount\":%lu,\"timerActive\":%s,\"running\":%s},"
+        "\"stepMotion\":{\"epoch\":%lu,\"startMicros\":%lu,"
+        "\"stopMicros\":%lu,\"active\":%s}",
+        static_cast<unsigned long>(sampleMicros / 1000U),
+        static_cast<unsigned long>(sampleMicros), position.rho, position.theta,
         velocity.rho, velocity.theta,
         static_cast<unsigned long>(telemetry.queueDepth),
         static_cast<unsigned long>(telemetry.minQueueDepth),
@@ -1346,7 +1373,11 @@ void SisyphusWebServer::handleMotionTelemetry(AsyncWebServerRequest *request) {
         static_cast<unsigned long>(telemetry.maxConsecutiveUnderruns),
         static_cast<unsigned long>(telemetry.completedCount),
         telemetry.timerActive ? "true" : "false",
-        telemetry.running ? "true" : "false");
+        telemetry.running ? "true" : "false",
+        static_cast<unsigned long>(telemetry.stepMotionEpoch),
+        static_cast<unsigned long>(telemetry.lastStepMotionStartUs),
+        static_cast<unsigned long>(telemetry.lastStepMotionStopUs),
+        telemetry.stepMotionActive ? "true" : "false");
 #ifdef SISYPHUS_BENCH_MOTION_TEST
     response->print(",\"benchMotionTest\":true");
 #else
@@ -1355,12 +1386,95 @@ void SisyphusWebServer::handleMotionTelemetry(AsyncWebServerRequest *request) {
 #ifdef SISYPHUS_THETA_COMMISSIONING
     response->print(",\"commissioningAxis\":\"theta\"");
 #elif defined(SISYPHUS_RHO_COMMISSIONING)
-    response->print(",\"commissioningAxis\":\"rho\"");
+    if (m_rhoCommissioningMode.load()) {
+        response->print(",\"commissioningAxis\":\"rho\",\"rhoServiceMode\":\"commissioning\"");
+    } else {
+        response->print(",\"commissioningAxis\":null,\"rhoServiceMode\":\"manual\"");
+    }
 #else
     response->print(",\"commissioningAxis\":null");
 #endif
     response->print("}");
     request->send(response);
+}
+
+void SisyphusWebServer::handleRhoServiceModeGet(
+        AsyncWebServerRequest *request) {
+#ifndef SISYPHUS_RHO_COMMISSIONING
+    request->send(404, "application/json",
+        "{\"success\":false,\"message\":\"RHO service mode is unavailable\"}");
+#else
+    const bool commissioning = m_rhoCommissioningMode.load();
+    AsyncResponseStream *response = request->beginResponseStream(
+        "application/json", 192);
+    response->printf(
+        "{\"success\":true,\"mode\":\"%s\",\"originConfirmed\":%s,"
+        "\"thetaLockedOut\":true,\"patternsLockedOut\":true}",
+        commissioning ? "commissioning" : "manual",
+        commissioning ? "true" : "false");
+    request->send(response);
+#endif
+}
+
+void SisyphusWebServer::handleRhoServiceModeSet(
+        AsyncWebServerRequest *request) {
+#ifndef SISYPHUS_RHO_COMMISSIONING
+    request->send(404, "application/json",
+        "{\"success\":false,\"message\":\"RHO service mode is unavailable\"}");
+#else
+    if (!request->hasParam("mode", true)) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Missing mode\"}");
+        return;
+    }
+    const String mode = request->getParam("mode", true)->value();
+    if (mode != "manual" && mode != "commissioning") {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Mode must be manual or commissioning\"}");
+        return;
+    }
+
+    bool confirmOrigin = false;
+    if (mode == "commissioning" &&
+        (!request->hasParam("confirmOrigin", true) ||
+         !parseStrictBool(
+             request->getParam("confirmOrigin", true)->value(), confirmOrigin) ||
+         !confirmOrigin)) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Commissioning requires explicit physical-origin confirmation\"}");
+        return;
+    }
+
+    SemaphoreGuard stateLock(m_stateMutex);
+    const auto state = m_polarControl->getState();
+    if (state != PolarControl::INITIALIZED && state != PolarControl::IDLE &&
+        state != PolarControl::HOMING_FAILED) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"Stop motion before changing RHO service mode\"}");
+        return;
+    }
+    clearPlaybackLocked();
+    m_activeMotion = MotionOwner::NONE;
+
+    if (mode == "commissioning") {
+        const DriverAvailability drivers = m_polarControl->getDriverAvailability();
+        if (!drivers.rho || !drivers.rhoCompanion) {
+            request->send(409, "application/json",
+                "{\"success\":false,\"message\":\"Both RHO drivers are required for commissioning\"}");
+            return;
+        }
+        m_polarControl->assumeBenchTestOrigin();
+        m_rhoCommissioningMode.store(true);
+        request->send(200, "application/json",
+            "{\"success\":true,\"mode\":\"commissioning\",\"originConfirmed\":true}");
+        return;
+    }
+
+    m_rhoCommissioningMode.store(false);
+    m_polarControl->enterRhoManualServiceMode();
+    request->send(200, "application/json",
+        "{\"success\":true,\"mode\":\"manual\",\"originConfirmed\":false}");
+#endif
 }
 
 void SisyphusWebServer::handlePatternPause(AsyncWebServerRequest *request) {
@@ -1434,10 +1548,16 @@ void SisyphusWebServer::handleManualMove(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handleManualJog(AsyncWebServerRequest *request) {
-#if defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
+#ifdef SISYPHUS_THETA_COMMISSIONING
     request->send(409, "application/json",
         "{\"success\":false,\"message\":\"Manual motion is disabled in commissioning mode\"}");
     return;
+#elif defined(SISYPHUS_RHO_COMMISSIONING)
+    if (m_rhoCommissioningMode.load()) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"Switch to manual RHO mode before jogging\"}");
+        return;
+    }
 #endif
     if (!request->hasParam("axis", true) ||
         !request->hasParam("amount", true)) {
@@ -1456,6 +1576,13 @@ void SisyphusWebServer::handleManualJog(AsyncWebServerRequest *request) {
             "{\"success\":false,\"message\":\"Jog must be +/-1, 10, or 100 on theta or rho\"}");
         return;
     }
+#ifdef SISYPHUS_RHO_COMMISSIONING
+    if (axis != "rho") {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"Theta remains locked out in RHO service firmware\"}");
+        return;
+    }
+#endif
 
     const DriverAvailability drivers = m_polarControl->getDriverAvailability();
     if ((axis == "theta" && !drivers.thetaAxis()) ||
@@ -1480,10 +1607,16 @@ void SisyphusWebServer::handleManualJog(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handleHome(AsyncWebServerRequest *request) {
-#if defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
+#if defined(SISYPHUS_THETA_COMMISSIONING)
     request->send(409, "application/json",
         "{\"success\":false,\"message\":\"Homing is disabled in commissioning mode\"}");
     return;
+#elif defined(SISYPHUS_RHO_COMMISSIONING)
+    if (!m_rhoCommissioningMode.load()) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"Confirm the physical origin before bounded homing\"}");
+        return;
+    }
 #endif
     SemaphoreGuard stateLock(m_stateMutex);
     auto state = m_polarControl->getState();
@@ -1497,7 +1630,11 @@ void SisyphusWebServer::handleHome(AsyncWebServerRequest *request) {
     clearPlaybackLocked();
     m_activeMotion = MotionOwner::NONE;
     LOG("Web request: Homing device...\r\n");
+#ifdef SISYPHUS_RHO_COMMISSIONING
+    if (!m_polarControl->home(true)) {
+#else
     if (!m_polarControl->home()) {
+#endif
         request->send(500, "application/json",
             "{\"success\":false,\"message\":\"Could not start homing\"}");
         return;
@@ -1505,6 +1642,94 @@ void SisyphusWebServer::handleHome(AsyncWebServerRequest *request) {
 
     request->send(202, "application/json",
         "{\"success\":true,\"message\":\"Homing started\"}");
+}
+
+void SisyphusWebServer::handleKnownPositionHome(
+        AsyncWebServerRequest *request) {
+#ifndef SISYPHUS_RHO_COMMISSIONING
+    request->send(404, "application/json",
+        "{\"success\":false,\"message\":\"Known-position homing is commissioning-only\"}");
+#else
+    float rhoStartMm = 0.0f;
+    float companionStartMm = 0.0f;
+    bool confirmed = false;
+    if (!request->hasParam("rhoStartMm", true) ||
+        !parseStrictFloat(
+            request->getParam("rhoStartMm", true)->value(), rhoStartMm) ||
+        !request->hasParam("companionStartMm", true) ||
+        !parseStrictFloat(
+            request->getParam("companionStartMm", true)->value(),
+            companionStartMm) ||
+        !request->hasParam("confirmKnownPositions", true) ||
+        !parseStrictBool(
+            request->getParam("confirmKnownPositions", true)->value(),
+            confirmed) ||
+        !confirmed || rhoStartMm < -1.0f || rhoStartMm > 400.0f ||
+        companionStartMm < -1.0f || companionStartMm > 400.0f) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Explicit known RHO positions within -1..400 mm are required\"}");
+        return;
+    }
+
+    SemaphoreGuard stateLock(m_stateMutex);
+    const auto state = m_polarControl->getState();
+    if (state != PolarControl::INITIALIZED && state != PolarControl::IDLE &&
+        state != PolarControl::HOMING_FAILED) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"Stop motion before known-position homing\"}");
+        return;
+    }
+    if (m_rhoCommissioningMode.load() &&
+        std::fabs(rhoStartMm - companionStartMm) <= 0.05f) {
+        const PolarCord_t position = m_polarControl->getActualPosition();
+        if (std::fabs(position.rho - rhoStartMm) > 0.05f) {
+            request->send(409, "application/json",
+                "{\"success\":false,\"message\":\"Logical rho position does not match the known synchronized start\"}");
+            return;
+        }
+    }
+    clearPlaybackLocked();
+    m_activeMotion = MotionOwner::NONE;
+    if (!m_polarControl->homeFromKnownRhoPositions(
+            rhoStartMm, companionStartMm)) {
+        request->send(500, "application/json",
+            "{\"success\":false,\"message\":\"Could not start known-position homing\"}");
+        return;
+    }
+    request->send(202, "application/json",
+        "{\"success\":true,\"message\":\"Known-position homing started\"}");
+#endif
+}
+
+void SisyphusWebServer::handleHomingTrace(
+        AsyncWebServerRequest *request) {
+    constexpr size_t kTraceCapacity = 768;
+    std::unique_ptr<HomingTraceSample[]> samples(
+        new (std::nothrow) HomingTraceSample[kTraceCapacity]);
+    if (!samples) {
+        request->send(503, "application/json",
+            "{\"success\":false,\"message\":\"Trace buffer allocation failed\"}");
+        return;
+    }
+    const size_t count = m_polarControl->getHomingTrace(
+        samples.get(), kTraceCapacity);
+    const HomingStatus status = m_polarControl->getHomingStatus();
+    AsyncResponseStream *response = request->beginResponseStream(
+        "application/json", 49152);
+    response->printf("{\"cycle\":%lu,\"count\":%u,\"samples\":[",
+        static_cast<unsigned long>(status.cycle), static_cast<unsigned>(count));
+    for (size_t index = 0; index < count; ++index) {
+        const HomingTraceSample& sample = samples[index];
+        if (index != 0) response->print(',');
+        response->printf(
+            "{\"a\":%u,\"p\":%u,\"t\":%lu,\"s\":%lu,\"g\":%u,\"v\":%s}",
+            sample.axis, sample.phase,
+            static_cast<unsigned long>(sample.elapsedMs),
+            static_cast<unsigned long>(sample.steps), sample.stallGuard,
+            sample.valid ? "true" : "false");
+    }
+    response->print("]}");
+    request->send(response);
 }
 
 void SisyphusWebServer::handleHomeConfirm(AsyncWebServerRequest *request) {
@@ -2372,6 +2597,15 @@ void SisyphusWebServer::handleTuningGet(AsyncWebServerRequest *request) {
     homingObj["triggerPercent"] = homing.triggerPercent;
     homingObj["consecutiveSamples"] = homing.consecutiveSamples;
     homingObj["minimumTravelMs"] = homing.minimumTravelMs;
+    homingObj["runCurrent"] = Config::kRhoHomingRunCurrentMa;
+    homingObj["holdCurrent"] = Config::kRhoHomingHoldCurrentMa;
+    homingObj["microsteps"] = Config::kRhoHomingMicrosteps;
+    homingObj["velocityMmS"] = Config::kRhoHomingVelocityMmPerSecond;
+    homingObj["runwayMm"] = Config::kRhoHomingRunwayMm;
+    homingObj["verificationBackoffMm"] =
+        Config::kRhoHomingVerificationBackoffMm;
+    homingObj["maximumOverrunMm"] = Config::kRhoHomingMaximumOverrunMm;
+    homingObj["inactiveHoldStrategy"] = "vactual-u256";
 
     JsonObject limitsObj = doc["limits"].to<JsonObject>();
     limitsObj["thetaMaxRunCurrentMa"] = Config::kThetaMaxRunCurrentMa;
