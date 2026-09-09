@@ -165,6 +165,8 @@ class TimedAcousticMetrics:
     broadband_excess_a_weighted_dbfs: float | None
     broadband_gate_excess_a_weighted_dbfs: list[float]
     loudest_broadband_gate_excess_a_weighted_dbfs: float | None
+    broadband_gate_excess_upper_95_a_weighted_dbfs: list[float]
+    loudest_broadband_gate_excess_upper_95_a_weighted_dbfs: float | None
     outbound_broadband_excess_a_weighted_dbfs: float | None
     inbound_broadband_excess_a_weighted_dbfs: float | None
     gate_peak_velocities: list[float]
@@ -174,6 +176,8 @@ class TimedAcousticMetrics:
     on_off_pair_count: int
     on_off_consistent_count: int
     on_off_consistency: float | None
+    local_background_drift_db: list[float]
+    all_local_background_stable: bool
     background_drift_db: float
     background_stable: bool
     timing_locked_a_weighted_dbfs: float | None
@@ -184,6 +188,38 @@ class TimedAcousticMetrics:
 
 def db(value: float, power: bool = False) -> float:
     return (10.0 if power else 20.0) * math.log10(max(float(value), 1e-20))
+
+
+def median_excess_upper_95(
+    motion_power: np.ndarray,
+    before_idle_power: np.ndarray,
+    after_idle_power: np.ndarray,
+    seed: int,
+) -> float:
+    """Conservative bootstrap bound for a quiet motor hidden by room noise.
+
+    Spectrogram frames overlap by 75%, so subsample every fourth frame before
+    resampling. The lower of the two adjacent-idle medians is subtracted in
+    each bootstrap draw; this prevents a louder idle transient from making the
+    inferred motor contribution artificially small.
+    """
+    motion = np.asarray(motion_power, dtype=float)[::4]
+    before = np.asarray(before_idle_power, dtype=float)[::4]
+    after = np.asarray(after_idle_power, dtype=float)[::4]
+    if min(len(motion), len(before), len(after)) < 5:
+        return float("inf")
+    rng = np.random.default_rng(seed)
+
+    def bootstrap_medians(values: np.ndarray) -> np.ndarray:
+        indexes = rng.integers(0, len(values), size=(800, len(values)))
+        return np.median(values[indexes], axis=1)
+
+    motion_medians = bootstrap_medians(motion)
+    before_medians = bootstrap_medians(before)
+    after_medians = bootstrap_medians(after)
+    conservative_idle = np.minimum(before_medians, after_medians)
+    excess = np.maximum(motion_medians - conservative_idle, 0.0)
+    return float(np.percentile(excess, 95))
 
 
 def driver_current_quantization(
@@ -563,6 +599,8 @@ def analyze_timed(
     on_off_pair_count = 0
     on_off_consistent_count = 0
     local_excess_powers: list[float] = []
+    local_excess_upper_95_powers: list[float] = []
+    local_background_drift_db: list[float] = []
     outbound_excess_powers: list[float] = []
     inbound_excess_powers: list[float] = []
     local_gain_db: list[float] = []
@@ -571,7 +609,7 @@ def analyze_timed(
     gate_peak_velocities: list[float] = []
     gate_cruise_durations_s: list[float] = []
     frame_period_s = float(np.median(np.diff(times)))
-    for gate in gate_windows:
+    for gate_index, gate in enumerate(gate_windows):
         start = int(gate["start"])
         stop = int(gate["stop"])
         before = gate["before"]
@@ -580,6 +618,11 @@ def analyze_timed(
             float(np.median(frame_a_power[before])),
             float(np.median(frame_a_power[after])),
         )
+        before_idle_median = float(np.median(frame_a_power[before]))
+        after_idle_median = float(np.median(frame_a_power[after]))
+        local_background_drift_db.append(abs(db(
+            before_idle_median / max(after_idle_median, 1e-20), power=True,
+        )))
         local_frames = frame_a_power[start:stop]
         if velocities is not None and expected_max_velocity is not None:
             gate_speeds = np.abs(velocities[start:stop])
@@ -595,6 +638,12 @@ def analyze_timed(
             local_motion = float(np.median(local_frames))
         local_excess_power = max(local_motion - local_idle, 0.0)
         local_excess_powers.append(local_excess_power)
+        local_excess_upper_95_powers.append(median_excess_upper_95(
+            local_frames,
+            frame_a_power[before],
+            frame_a_power[after],
+            seed=0x2209 + gate_index,
+        ))
         if gate["direction"] == "outbound":
             outbound_excess_powers.append(local_excess_power)
         else:
@@ -667,6 +716,14 @@ def analyze_timed(
             round(db(max(local_excess_powers), power=True), 2)
             if local_excess_powers else None
         ),
+        broadband_gate_excess_upper_95_a_weighted_dbfs=[
+            round(db(value, power=True), 2)
+            for value in local_excess_upper_95_powers
+        ],
+        loudest_broadband_gate_excess_upper_95_a_weighted_dbfs=(
+            round(db(max(local_excess_upper_95_powers), power=True), 2)
+            if local_excess_upper_95_powers else None
+        ),
         outbound_broadband_excess_a_weighted_dbfs=(
             round(db(float(np.median(outbound_excess_powers)), power=True), 2)
             if outbound_excess_powers else None
@@ -683,6 +740,13 @@ def analyze_timed(
         on_off_consistent_count=on_off_consistent_count,
         on_off_consistency=(
             round(on_off_consistency, 3) if on_off_consistency is not None else None
+        ),
+        local_background_drift_db=[
+            round(value, 2) for value in local_background_drift_db
+        ],
+        all_local_background_stable=(
+            bool(local_background_drift_db)
+            and all(value <= 2.0 for value in local_background_drift_db)
         ),
         background_drift_db=round(background_drift_db, 2),
         background_stable=background_drift_db <= 2.0,
@@ -1952,7 +2016,7 @@ def repeat_confirmation_satisfied(
         and bool(profile_summaries)
         and all(
             not summary["provisionalScreen"]
-            and summary["nearField"]["acceptedAsMotorNoise"]
+            and summary["nearField"]["qualificationMeasurementValid"]
             for summary in profile_summaries.values()
         )
     )
@@ -1979,16 +2043,14 @@ def interpolation_readback_confirmed(
 def cmd_trial(args: argparse.Namespace) -> int:
     axis = AXES[args.axis]
     if not args.reference_only:
-        if axis.name == "rho" and (
-            args.acceptable_ceiling_dbfs is None or args.tone_ceiling_dbfs is None
-        ):
+        if axis.name == "rho" and args.acceptable_ceiling_dbfs is None:
             raise ValueError(
-                "rho trials require rho-specific --acceptable-ceiling-dbfs and "
-                "--tone-ceiling-dbfs, or --reference-only"
+                "rho trials require a rho-specific --acceptable-ceiling-dbfs, "
+                "or --reference-only"
             )
         if args.acceptable_ceiling_dbfs is None:
             args.acceptable_ceiling_dbfs = DEFAULT_ACCEPTABLE_NEAR_HIGH_SPEED_CEILING_DBFS
-        if args.tone_ceiling_dbfs is None:
+        if args.tone_ceiling_dbfs is None and axis.name != "rho":
             args.tone_ceiling_dbfs = DEFAULT_ACCEPTABLE_NEAR_TONE_CEILING_DBFS
     if args.repeats < 1 or args.repeats > 5:
         raise ValueError("--repeats must be between 1 and 5")
@@ -2114,6 +2176,31 @@ def cmd_trial(args: argparse.Namespace) -> int:
             and item["gainFingerprintStable"]
         ]
         valid_broadband = len(sustained_cruise_levels) == len(profile_repeats)
+        raw_gate_levels = [
+            float(item["metrics"]["loudest_broadband_gate_excess_a_weighted_dbfs"])
+            for item in profile_repeats
+            if item["metrics"]["loudest_broadband_gate_excess_a_weighted_dbfs"]
+            is not None
+        ]
+        conservative_upper_levels = [
+            float(item["metrics"][
+                "loudest_broadband_gate_excess_upper_95_a_weighted_dbfs"
+            ])
+            for item in profile_repeats
+            if item["metrics"][
+                "loudest_broadband_gate_excess_upper_95_a_weighted_dbfs"
+            ] is not None
+            and item["metrics"]["background_stable"]
+            and item["metrics"]["all_local_background_stable"]
+            and item["metrics"]["on_off_pair_count"] == required_pair_count
+            and item["metrics"]["all_gates_sustain_commanded_velocity"] is True
+            and not item["metrics"]["clipping_detected"]
+            and item["timingQuality"]["valid"]
+            and item["gainFingerprintStable"]
+        ]
+        valid_quiet_bound = (
+            len(conservative_upper_levels) == len(profile_repeats)
+        )
         all_background_stable = all(
             item["metrics"]["background_stable"] for item in profile_repeats
         )
@@ -2124,11 +2211,6 @@ def cmd_trial(args: argparse.Namespace) -> int:
             item["metrics"]["on_off_pair_count"] == required_pair_count
             for item in profile_repeats
         )
-        correlated_pair_sets = all(
-            item["metrics"]["on_off_consistency"] is not None
-            and item["metrics"]["on_off_consistency"] >= 0.75
-            for item in profile_repeats
-        )
         all_gates_sustain_velocity = all(
             item["metrics"]["all_gates_sustain_commanded_velocity"] is True
             for item in profile_repeats
@@ -2136,11 +2218,10 @@ def cmd_trial(args: argparse.Namespace) -> int:
         valid_tones = (
             bool(tones) and all_gain_stable and all_timing_valid
             and all_background_stable and all_unclipped
-            and complete_pair_sets and correlated_pair_sets
-            and all_gates_sustain_velocity
+            and complete_pair_sets and all_gates_sustain_velocity
         )
         valid_detection = valid_broadband or valid_tones
-        level_valid = valid_broadband
+        level_valid = valid_broadband or valid_quiet_bound
         near_high_speed_levels = [
             float(item["nearHighSpeed"]["medianAWeightedDbfs"])
             for item in profile_repeats
@@ -2161,8 +2242,10 @@ def cmd_trial(args: argparse.Namespace) -> int:
             "nearField": {
                 "microphone": "Antlion close to motor",
                 "acceptedAsMotorNoise": valid_detection,
+                "qualificationMeasurementValid": level_valid,
                 "levelValidForComparison": level_valid,
                 "broadbandMotorNoiseAccepted": valid_broadband,
+                "quietMotorUpperBoundAccepted": valid_quiet_bound,
                 "timingLockedToneNoiseAccepted": valid_tones,
                 "confirmedTimingLockedTones": tones,
                 "acceptableTimingLockedToneCeilingDbfs": (
@@ -2179,18 +2262,22 @@ def cmd_trial(args: argparse.Namespace) -> int:
                     round(max(confirmed_tone_levels), 2) if confirmed_tone_levels else None
                 ),
                 "allDetectedTimingLockedTonesWithinCeiling": (
-                    None if args.reference_only else (
+                    None if args.reference_only or args.tone_ceiling_dbfs is None else (
                     bool(repeat_tone_levels)
                     and all(level <= args.tone_ceiling_dbfs for level in repeat_tone_levels)
                     )
                 ),
                 "loudestSustainedCruiseMotorExcessAWeightedDbfs": (
-                    round(max(sustained_cruise_levels), 2)
-                    if level_valid else None
+                    round(max(raw_gate_levels), 2) if raw_gate_levels else None
+                ),
+                "loudestConservative95MotorExcessUpperBoundAWeightedDbfs": (
+                    round(max(conservative_upper_levels), 2)
+                    if valid_quiet_bound else None
                 ),
                 "motorNoiseMetric": (
                     "loudest telemetry-confirmed >=90% commanded-velocity gate, "
-                    "minus louder adjacent-idle A-weighted power"
+                    "minus adjacent-idle A-weighted power; qualification uses "
+                    "the conservative 95% bootstrap upper bound"
                 ),
                 "timingLockedToneBandAWeightedDbfs": (
                     round(float(np.median(locked_levels)), 2)
@@ -2198,6 +2285,10 @@ def cmd_trial(args: argparse.Namespace) -> int:
                 ),
                 "allBackgroundWindowsStable": all(
                     item["metrics"]["background_stable"] for item in profile_repeats
+                ),
+                "allLocalBackgroundWindowsStable": all(
+                    item["metrics"]["all_local_background_stable"]
+                    for item in profile_repeats
                 ),
                 "gainFingerprintStable": all(
                     item["gainFingerprintStable"] for item in profile_repeats
@@ -2231,10 +2322,10 @@ def cmd_trial(args: argparse.Namespace) -> int:
                 ),
                 "everyRepeatWithinAcceptableReference": (
                     None if args.reference_only else (
-                    valid_broadband
+                    valid_quiet_bound
                     and all(
                         level <= args.acceptable_ceiling_dbfs
-                        for level in sustained_cruise_levels
+                        for level in conservative_upper_levels
                     )
                     )
                 ),
@@ -2242,9 +2333,10 @@ def cmd_trial(args: argparse.Namespace) -> int:
             "humanAudibilityDecisionRequired": True,
             "levelUnit": "dBFS (relative; not dB SPL)",
             "acceptance": (
-                f"present during >= {args.minimum_persistence:.0%} of measured motion, "
-                f">= {args.minimum_gain_db:.1f} dB above both idle windows, "
-                f"frequency repeated within {TONE_MATCH_TOLERANCE_HZ:.1f} Hz"
+                "broadband: conservative 95% upper bound from every sustained "
+                "gate with stable adjacent idle; tonal: "
+                f">= {args.minimum_gain_db:.1f} dB above both idle windows and "
+                f"repeated within {TONE_MATCH_TOLERANCE_HZ:.1f} Hz"
             ),
         }
 
@@ -2376,19 +2468,19 @@ def cmd_self_test(_: argparse.Namespace) -> int:
     valid_summary = {
         "gated": {
             "provisionalScreen": False,
-            "nearField": {"acceptedAsMotorNoise": True},
+            "nearField": {"qualificationMeasurementValid": True},
         }
     }
     invalid_summary = {
         "gated": {
             "provisionalScreen": False,
-            "nearField": {"acceptedAsMotorNoise": False},
+            "nearField": {"qualificationMeasurementValid": False},
         }
     }
     screen_summary = {
         "screen": {
             "provisionalScreen": True,
-            "nearField": {"acceptedAsMotorNoise": True},
+            "nearField": {"qualificationMeasurementValid": True},
         }
     }
     if not repeat_confirmation_satisfied(valid_summary, 2):
@@ -2535,6 +2627,13 @@ def cmd_self_test(_: argparse.Namespace) -> int:
     if (len(gated_metrics.broadband_gate_excess_a_weighted_dbfs) != 4
             or min(gated_metrics.gate_cruise_durations_s) < MINIMUM_GATE_CRUISE_S
             or gated_metrics.loudest_broadband_gate_excess_a_weighted_dbfs is None
+            or len(
+                gated_metrics.broadband_gate_excess_upper_95_a_weighted_dbfs
+            ) != 4
+            or gated_metrics.loudest_broadband_gate_excess_upper_95_a_weighted_dbfs
+            is None
+            or gated_metrics.loudest_broadband_gate_excess_upper_95_a_weighted_dbfs
+            < gated_metrics.loudest_broadband_gate_excess_a_weighted_dbfs
             or gated_metrics.broadband_excess_a_weighted_dbfs is None
             or gated_metrics.broadband_excess_a_weighted_dbfs < -47.0):
         raise RuntimeError(
