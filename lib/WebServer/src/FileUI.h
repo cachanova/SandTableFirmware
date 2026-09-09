@@ -9,251 +9,155 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
     <title>Sisyphus Files</title>
     <style>
         :root {
-            --bg-dark: #0f0f1a;
-            --bg-card: rgba(30, 30, 50, 0.8);
-            --bg-card-hover: rgba(40, 40, 65, 0.9);
-            --accent: #c9a227;
-            --accent-light: #e8c547;
-            --accent-dim: rgba(201, 162, 39, 0.3);
-            --text-primary: #f5f5f5;
-            --text-secondary: #a0a0b0;
-            --text-muted: #606070;
-            --border: rgba(255, 255, 255, 0.1);
-            --success: #4ade80;
-            --danger: #f87171;
+            --paper: #fafaf7;
+            --sand: #eeeade;
+            --ink: #1a1917;
+            --ink-soft: #57544e;
+            --ink-faint: #97938a;
+            --hair: #dbd8cf;
+            --wash: #f2f1ea;
+            --ok: #3d6b3d;
+            --danger: #9e3a2e;
+            /* aliases used by the upload drag handlers */
+            --accent: #1a1917;
+            --accent-dim: #f2f1ea;
+            --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+            --serif: Georgia, "Times New Roman", serif;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
-            font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: var(--bg-dark);
-            background-image:
-                radial-gradient(ellipse at top, rgba(201, 162, 39, 0.15) 0%, transparent 50%),
-                radial-gradient(ellipse at bottom, rgba(30, 30, 50, 0.5) 0%, transparent 50%);
+            font-family: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+            background: var(--paper);
+            color: var(--ink);
             min-height: 100vh;
-            padding: 20px;
-            color: var(--text-primary);
+            font-size: 14px;
         }
 
-        .container { max-width: 800px; margin: 0 auto; }
-
-        .header {
-            text-align: center;
-            margin-bottom: 32px;
+        .topbar {
+            display: flex; align-items: baseline; justify-content: space-between;
+            gap: 18px; flex-wrap: wrap;
+            padding: 22px 40px; border-bottom: 1px solid var(--ink);
         }
+        .brand { font-family: var(--serif); font-size: 20px; letter-spacing: .5px; white-space: nowrap; }
+        .brand i { font-style: normal; border-bottom: 3px double var(--ink); padding-bottom: 2px; }
+        .brand span { color: var(--ink-faint); font-size: 14px; margin-left: 6px; }
+        .topnav { display: flex; gap: 30px; }
+        .topnav a { color: var(--ink-faint); text-decoration: none; font-size: 12px; letter-spacing: 2.5px; text-transform: uppercase; padding-bottom: 3px; }
+        .topnav a:hover { color: var(--ink-soft); }
+        .topnav a.active { color: var(--ink); border-bottom: 1px solid var(--ink); }
 
-        .logo {
-            font-size: 2.5em;
-            font-weight: 300;
-            letter-spacing: 8px;
-            color: var(--text-primary);
-            text-transform: uppercase;
-            margin-bottom: 8px;
-        }
+        .container { max-width: 680px; margin: 0 auto; padding: 38px 24px 80px; }
 
-        .logo span { color: var(--accent); }
-
-        .tagline {
-            font-size: 0.9em;
-            color: var(--text-muted);
-            letter-spacing: 2px;
-        }
-
-        .navbar {
-            display: flex;
-            justify-content: center;
-            gap: 8px;
-            margin-bottom: 32px;
-            padding: 6px;
-            background: var(--bg-card);
-            border-radius: 50px;
-            backdrop-filter: blur(10px);
-            border: 1px solid var(--border);
-            width: fit-content;
-            margin-left: auto;
-            margin-right: auto;
-        }
-
-        .nav-link {
-            color: var(--text-secondary);
-            text-decoration: none;
-            padding: 10px 24px;
-            border-radius: 50px;
-            font-weight: 500;
-            font-size: 0.9em;
-            transition: all 0.3s ease;
-        }
-
-        .nav-link:hover {
-            color: var(--text-primary);
-            background: rgba(255, 255, 255, 0.05);
-        }
-
-        .nav-link.active {
-            background: var(--accent);
-            color: var(--bg-dark);
+        .rule-head {
+            font-size: 11px;
             font-weight: 600;
-        }
-
-        .card {
-            background: var(--bg-card);
-            border-radius: 20px;
-            padding: 24px;
-            margin-bottom: 20px;
-            backdrop-filter: blur(10px);
-            border: 1px solid var(--border);
-        }
-
-        .card-title {
-            font-size: 0.8em;
-            font-weight: 600;
-            letter-spacing: 2px;
+            letter-spacing: 3px;
             text-transform: uppercase;
-            color: var(--accent);
-            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--ink);
+            margin-bottom: 14px;
         }
+        section { margin-bottom: 44px; }
 
         .upload-area {
-            border: 2px dashed var(--border);
-            border-radius: 16px;
-            padding: 48px 24px;
+            border: 1px dashed var(--ink-faint);
+            padding: 42px 24px;
             text-align: center;
             cursor: pointer;
-            transition: all 0.3s ease;
-            background: rgba(0, 0, 0, 0.2);
-            margin-bottom: 24px;
+            transition: all .15s;
+            background: none;
         }
+        .upload-area:hover { border-color: var(--ink); background: var(--wash); }
+        .upload-icon { font-family: var(--serif); font-size: 34px; color: var(--ink-faint); margin-bottom: 10px; line-height: 1; }
+        .upload-text { color: var(--ink-soft); font-size: 13.5px; }
+        .upload-text strong { color: var(--ink); }
 
-        .upload-area:hover {
-            border-color: var(--accent);
-            background: var(--accent-dim);
-        }
-
-        .upload-icon {
-            font-size: 48px;
-            margin-bottom: 16px;
-            opacity: 0.5;
-        }
-
-        .upload-text {
-            color: var(--text-secondary);
-            font-size: 1em;
-        }
-
-        .upload-text strong {
-            color: var(--accent);
-        }
-
-        .file-list {
-            max-height: 500px;
-            overflow-y: auto;
-        }
-
+        .file-list { max-height: 520px; overflow-y: auto; }
         .file-item {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 16px;
-            background: rgba(0, 0, 0, 0.2);
-            border-radius: 12px;
-            margin-bottom: 8px;
-            transition: all 0.2s ease;
+            gap: 14px;
+            padding: 11px 2px;
+            border-bottom: 1px solid var(--hair);
         }
-
-        .file-item:hover {
-            background: rgba(0, 0, 0, 0.3);
-        }
-
-        .file-thumb {
-            width: 60px;
-            height: 60px;
-            border-radius: 8px;
-            background: rgba(0,0,0,0.3);
-            margin-right: 16px;
-            object-fit: cover;
-            flex-shrink: 0;
-        }
-
-        .file-info { flex: 1; }
-
+        .file-item:hover { background: var(--wash); }
+        .file-info { flex: 1; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
         .file-name {
-            font-weight: 500;
-            color: var(--text-primary);
-            margin-bottom: 4px;
+            font-family: var(--serif);
+            font-size: 16px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
-
-        .file-size {
-            font-size: 0.8em;
-            color: var(--text-muted);
-        }
-
+        .file-size { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); flex: none; }
         .btn-delete {
-            padding: 8px 16px;
-            font-size: 0.85em;
-            background: rgba(248, 113, 113, 0.2);
+            padding: 6px 14px;
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            background: none;
             color: var(--danger);
-            border: 1px solid rgba(248, 113, 113, 0.3);
-            border-radius: 8px;
+            border: 1px solid var(--danger);
             cursor: pointer;
-            transition: all 0.2s ease;
-            font-weight: 500;
+            transition: all .12s;
+            font-family: inherit;
+            flex: none;
         }
-
-        .btn-delete:hover {
-            background: var(--danger);
-            color: #000;
-        }
+        .btn-delete:hover { background: var(--danger); color: var(--paper); }
 
         .empty-state {
-            text-align: center;
-            color: var(--text-muted);
-            padding: 48px 20px;
+            color: var(--ink-faint);
+            padding: 32px 2px;
+            font-style: italic;
+            font-family: var(--serif);
+            font-size: 14px;
         }
 
-        .loading {
-            opacity: 0.6;
-            pointer-events: none;
-        }
+        .loading { opacity: .5; pointer-events: none; }
 
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: var(--text-muted); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb { background: var(--hair); }
 
-        @media (max-width: 768px) {
-            body { padding: 12px; }
-            .logo { font-size: 1.8em; letter-spacing: 4px; }
+        @media (max-width: 560px) {
+            .topbar { padding: 16px 20px; }
+            .topnav { gap: 16px; }
+            .container { padding: 24px 16px 60px; }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <div class="logo">Sisy<span>phus</span></div>
-            <div class="tagline">File Management</div>
-        </div>
-
-        <nav class="navbar">
-            <a href="/" class="nav-link">Patterns</a>
-            <a href="/manual" class="nav-link">Manual</a>
-            <a href="/files" class="nav-link active">Files</a>
-            <a href="/tuning" class="nav-link">Tuning</a>
+    <header class="topbar">
+        <div class="brand"><i>Sisyphus</i><span>Files</span></div>
+        <nav class="topnav">
+            <a href="/">Patterns</a>
+            <a href="/manual">Manual</a>
+            <a href="/files" class="active">Files</a>
+            <a href="/tuning">Tuning</a>
         </nav>
+    </header>
 
-        <div class="card">
-            <div class="card-title">Upload Pattern</div>
+    <div class="container">
+        <section>
+            <h2 class="rule-head">Upload Pattern</h2>
             <div class="upload-area" id="upload-area">
                 <div class="upload-icon">+</div>
                 <p class="upload-text">Click or drag <strong>.thr</strong> file to upload</p>
                 <input type="file" id="file-input" accept=".thr" style="display:none">
                 <input type="file" id="image-input" accept="image/png,image/jpeg" style="display:none">
             </div>
+        </section>
 
-            <div class="card-title">Pattern Files</div>
+        <section>
+            <h2 class="rule-head">Pattern Files</h2>
             <div class="file-list" id="file-list">
                 <div class="empty-state">Loading files...</div>
             </div>
-        </div>
+        </section>
     </div>
 
     <script>
