@@ -1466,12 +1466,22 @@ def telemetry_timing_quality(
             mean_velocity = (before_velocity + after_velocity) / 2.0
             before_position = before.get("position", {}).get(axis.name)
             after_position = after.get("position", {}).get(axis.name)
+            observed_motion_gap = gap
+            before_millis = before.get("millis")
+            after_millis = after.get("millis")
+            if before_millis is not None and after_millis is not None:
+                board_gap = (
+                    (int(after_millis) - int(before_millis)) & 0xFFFFFFFF
+                ) / 1000.0
+                if board_gap > 0.0:
+                    observed_motion_gap = board_gap
             observed_velocity = (
-                (float(after_position) - float(before_position)) / gap
+                (float(after_position) - float(before_position))
+                / observed_motion_gap
                 if before_position is not None and after_position is not None
                 else float("inf")
             )
-            steady_interpolation_safe = (
+            moving_interpolation_safe = (
                 before.get("state") == "RUNNING"
                 and after.get("state") == "RUNNING"
                 and abs(before_velocity) >= velocity_threshold
@@ -1481,7 +1491,20 @@ def telemetry_timing_quality(
                 and abs(observed_velocity - mean_velocity)
                 <= max(velocity_threshold, abs(mean_velocity) * 0.10)
             )
-            if steady_interpolation_safe:
+            position_tolerance = (
+                RHO_POSITION_TOLERANCE_MM if axis.name == "rho" else 0.001
+            )
+            stationary_interpolation_safe = (
+                before.get("state") == "IDLE"
+                and after.get("state") == "IDLE"
+                and abs(before_velocity) < velocity_threshold
+                and abs(after_velocity) < velocity_threshold
+                and before_position is not None
+                and after_position is not None
+                and abs(float(after_position) - float(before_position))
+                <= position_tolerance
+            )
+            if moving_interpolation_safe or stationary_interpolation_safe:
                 interpolated_steady_gaps += 1
             else:
                 critical_gaps.append(float(gap))
@@ -2490,6 +2513,7 @@ def cmd_self_test(_: argparse.Namespace) -> int:
             "hostRequestRttS": 0.004,
             "state": "RUNNING" if velocity else "IDLE",
             "velocity": {"theta": velocity, "rho": 0.0},
+            "position": {"theta": 0.0, "rho": 0.0},
         })
     gated_metrics, _ = analyze_timed(
         gated_path, 2.0, 11.0, telemetry=telemetry, axis=AXES["theta"],
@@ -2544,6 +2568,18 @@ def cmd_self_test(_: argparse.Namespace) -> int:
     quality = telemetry_timing_quality(telemetry, AXES["theta"], 0.002)
     if not quality["valid"] or quality["motionStartCount"] != 4:
         raise RuntimeError(f"Good synthetic telemetry failed timing validation: {quality}")
+    telemetry_with_idle_gap = [
+        sample for sample in telemetry
+        if not 0.25 < float(sample["hostOffsetS"]) < 1.25
+    ]
+    idle_gap_quality = telemetry_timing_quality(
+        telemetry_with_idle_gap, AXES["theta"], 0.002,
+    )
+    if not idle_gap_quality["valid"]:
+        raise RuntimeError(
+            "Known stationary telemetry gap failed timing validation: "
+            f"{idle_gap_quality}"
+        )
     telemetry_with_gap = [
         sample for sample in telemetry
         if not 5.5 < float(sample["hostOffsetS"]) < 6.5
