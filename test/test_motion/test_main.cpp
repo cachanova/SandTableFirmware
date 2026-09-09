@@ -39,6 +39,171 @@ static constexpr float T_MAX_VEL = 0.25f;        // rad/s
 static constexpr float T_MAX_ACCEL = 1.0f;       // rad/s²
 static constexpr float T_MAX_JERK = 10.0f;       // rad/s³
 
+struct MotionRun {
+    float maxExecutedCartesianVelocity = 0.0f;
+    bool completed = false;
+};
+
+MotionRun runSingleMove(float speedMultiplier,
+                        float startTheta, float startRho,
+                        float targetTheta, float targetRho) {
+    resetMock();
+    MotionPlanner planner;
+    planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
+                 R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
+                 T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
+    planner.resetPosition(startTheta, startRho);
+    planner.setSpeedMultiplier(speedMultiplier);
+    planner.addSegment(targetTheta, targetRho);
+    planner.setEndOfPattern(true);
+    planner.recalculate();
+    planner.start();
+
+    MotionRun result;
+    float previousTheta = startTheta;
+    float previousRho = startRho;
+    for (int i = 0; i < 1000000 && !planner.isIdle(); ++i) {
+        planner.process();
+        advanceMicros(1000);
+
+        // Derive speed from executed steps over a one-second window instead of
+        // trusting the profile-derived velocity telemetry under test.
+        if ((i + 1) % 1000 == 0) {
+            float theta = 0.0f;
+            float rho = 0.0f;
+            planner.getCurrentPosition(theta, rho);
+            const float previousX = previousRho * cosf(previousTheta);
+            const float previousY = previousRho * sinf(previousTheta);
+            const float x = rho * cosf(theta);
+            const float y = rho * sinf(theta);
+            const float cartesianVelocity = std::hypot(
+                x - previousX, y - previousY);
+            result.maxExecutedCartesianVelocity = std::max(
+                result.maxExecutedCartesianVelocity, cartesianVelocity);
+            previousTheta = theta;
+            previousRho = rho;
+        }
+    }
+    result.completed = planner.isIdle();
+    return result;
+}
+
+bool testSpeedMultiplierScalesSpatialVelocity() {
+    std::cout << "\n=== Test: Speed Multiplier Scales Spatial Velocity ===" << std::endl;
+
+    const MotionRun radialFull = runSingleMove(1.0f, 0.0f, 20.0f, 0.0f, 420.0f);
+    const MotionRun radialHalf = runSingleMove(0.5f, 0.0f, 20.0f, 0.0f, 420.0f);
+    const MotionRun angularFull = runSingleMove(1.0f, 0.0f, 200.0f, 20.0f, 200.0f);
+    const MotionRun angularHalf = runSingleMove(0.5f, 0.0f, 200.0f, 20.0f, 200.0f);
+
+    const float radialRatio = radialHalf.maxExecutedCartesianVelocity /
+        radialFull.maxExecutedCartesianVelocity;
+    const float angularRatio = angularHalf.maxExecutedCartesianVelocity /
+        angularFull.maxExecutedCartesianVelocity;
+    const float expectedAngularChordPerSecond =
+        2.0f * 200.0f * sinf(T_MAX_VEL * 0.5f);
+    const bool passed = radialFull.completed && radialHalf.completed &&
+        angularFull.completed && angularHalf.completed &&
+        fabsf(radialFull.maxExecutedCartesianVelocity - R_MAX_VEL) < 0.02f &&
+        fabsf(radialRatio - 0.5f) < 0.005f &&
+        fabsf(angularFull.maxExecutedCartesianVelocity -
+              expectedAngularChordPerSecond) < 0.1f &&
+        fabsf(angularRatio - 0.5f) < 0.005f;
+
+    std::cout << (passed ? "PASS" : "FAIL")
+              << ": radial vxy " << radialFull.maxExecutedCartesianVelocity
+              << " -> " << radialHalf.maxExecutedCartesianVelocity
+              << " (ratio " << radialRatio << "), angular vxy "
+              << angularFull.maxExecutedCartesianVelocity << " -> "
+              << angularHalf.maxExecutedCartesianVelocity << " (ratio "
+              << angularRatio << ")" << std::endl;
+    return passed;
+}
+
+bool testControlledSpeedTransition() {
+    std::cout << "\n=== Test: Controlled Speed Transition ===" << std::endl;
+    resetMock();
+    MotionPlanner planner;
+    planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
+                 R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
+                 T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
+    planner.resetPosition(0.0f, 200.0f);
+    planner.setSpeedMultiplier(1.0f);
+    planner.addSegment(5.0f, 200.0f);
+    planner.addSegment(10.0f, 200.0f);
+    planner.setEndOfPattern(true);
+    planner.recalculate();
+    planner.start();
+
+    for (int i = 0; i < 2000; ++i) {
+        planner.process();
+        advanceMicros(1000);
+    }
+    float velocityBefore = 0.0f;
+    float unusedRhoVelocity = 0.0f;
+    planner.getCurrentVelocity(velocityBefore, unusedRhoVelocity);
+
+    float pendingTheta[SEGMENT_BUFFER_SIZE];
+    float pendingRho[SEGMENT_BUFFER_SIZE];
+    const size_t pending = planner.copyPendingTargets(
+        pendingTheta, pendingRho, SEGMENT_BUFFER_SIZE);
+    planner.stopGracefully();
+
+    float previousVelocity = velocityBefore;
+    float maxBrakeVelocityJump = 0.0f;
+    for (int i = 0; i < 10000 && !planner.isIdle(); ++i) {
+        planner.process();
+        advanceMicros(1000);
+        float thetaVelocity = 0.0f;
+        float rhoVelocity = 0.0f;
+        planner.getCurrentVelocity(thetaVelocity, rhoVelocity);
+        maxBrakeVelocityJump = std::max(
+            maxBrakeVelocityJump, fabsf(thetaVelocity - previousVelocity));
+        previousVelocity = thetaVelocity;
+    }
+
+    planner.setSpeedMultiplier(0.5f);
+    for (size_t i = 0; i < pending; ++i) {
+        planner.addSegment(pendingTheta[i], pendingRho[i]);
+    }
+    planner.setEndOfPattern(true);
+    planner.recalculate();
+    const float resumedBoundaryJump = planner.getMaxBoundaryVelocityDiscontinuity();
+    planner.start();
+
+    float maxResumedVelocity = 0.0f;
+    for (int i = 0; i < 100000 && !planner.isIdle(); ++i) {
+        planner.process();
+        advanceMicros(1000);
+        float thetaVelocity = 0.0f;
+        float rhoVelocity = 0.0f;
+        planner.getCurrentVelocity(thetaVelocity, rhoVelocity);
+        maxResumedVelocity = std::max(maxResumedVelocity, fabsf(thetaVelocity));
+    }
+
+    float finalTheta = 0.0f;
+    float finalRho = 0.0f;
+    planner.getCurrentPosition(finalTheta, finalRho);
+    PlannerTelemetry telemetry;
+    planner.getTelemetry(telemetry);
+    const bool passed = pending == 2 && velocityBefore > 0.24f &&
+        maxBrakeVelocityJump < 0.005f && planner.isIdle() &&
+        maxResumedVelocity > 0.124f && maxResumedVelocity < 0.126f &&
+        resumedBoundaryJump < 0.001f &&
+        fabsf(finalTheta - 10.0f) <= 2.0f / STEPS_PER_RAD_T &&
+        fabsf(finalRho - 200.0f) <= 2.0f / STEPS_PER_MM_R &&
+        telemetry.underruns == 0;
+
+    std::cout << (passed ? "PASS" : "FAIL")
+              << ": pending=" << pending
+              << ", brake jump=" << maxBrakeVelocityJump
+              << " rad/s, resumed max=" << maxResumedVelocity
+              << " rad/s, boundary jump=" << resumedBoundaryJump
+              << ", final=(" << finalTheta << ", " << finalRho << ")"
+              << std::endl;
+    return passed;
+}
+
 bool testStallGuardFiltering() {
     std::cout << "\n=== Test: StallGuard Homing Filter ===" << std::endl;
     StallGuardDetector detector(200, 12, 0.65f);
@@ -917,6 +1082,8 @@ int main(int argc, char* argv[]) {
 
     // Run S-curve tests
     allPassed &= testStallGuardFiltering();
+    allPassed &= testSpeedMultiplierScalesSpatialVelocity();
+    allPassed &= testControlledSpeedTransition();
     allPassed &= testSynchronizedBoundaryVelocity();
     allPassed &= testMixedAxisBoundaryContinuityRegression();
     allPassed &= testCoordinatedAxisArrival();

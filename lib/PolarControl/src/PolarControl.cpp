@@ -1435,16 +1435,7 @@ bool PolarControl::loadAndRunFile(String filePath, float maxRho) {
 bool PolarControl::pause() {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     if (m_state == RUNNING) {
-        float theta[SEGMENT_BUFFER_SIZE];
-        float rho[SEGMENT_BUFFER_SIZE];
-        const size_t pending = m_planner.copyPendingTargets(
-            theta, rho, SEGMENT_BUFFER_SIZE);
-        m_resumePoints.clear();
-        m_resumePoints.reserve(pending);
-        for (size_t i = 0; i < pending; ++i) {
-            m_resumePoints.push_back({theta[i], rho[i]});
-        }
-        m_resumePointIndex = 0;
+        capturePendingTargetsForResume();
         m_pauseAfterStop = true;
         m_planner.stopGracefully();
         m_state = STOPPING;
@@ -1477,6 +1468,7 @@ bool PolarControl::stop() {
         m_resumePoints.clear();
         m_resumePointIndex = 0;
         m_pauseAfterStop = false;
+        m_restartAfterSpeedChange = false;
 
         // Send stop command to file task
         FileCommand cmd;
@@ -1491,7 +1483,13 @@ bool PolarControl::stop() {
 
         if (m_state == CLEARING && m_clearingSpeedActive) {
             m_clearingSpeedActive = false;
-            updateSpeedSettings();
+            if (m_planner.isIdle()) {
+                updateSpeedSettings();
+            } else {
+                // Keep the full-speed limits used to construct the controlled
+                // clearing brake until it has finished.
+                m_speedUpdatePending = true;
+            }
         }
 
         m_state = m_planner.isIdle() ? IDLE : STOPPING;
@@ -1506,8 +1504,30 @@ bool PolarControl::stop() {
 
 void PolarControl::setSpeed(uint8_t speed) {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
-    m_speed.store(std::max<uint8_t>(1, std::min<uint8_t>(speed, 10)));
-    if (!m_clearingSpeedActive) {
+    const uint8_t newSpeed = std::max<uint8_t>(1, std::min<uint8_t>(speed, 10));
+    if (newSpeed == m_speed.load()) {
+        xSemaphoreGive(m_mutex);
+        return;
+    }
+    m_speed.store(newSpeed);
+
+    if (m_clearingSpeedActive) {
+        // Clearing deliberately runs at full speed. The selected value takes
+        // effect when clearing completes or is stopped.
+    } else if (m_state == RUNNING) {
+        // Generated events are immutable. Preserve their remaining targets,
+        // brake with the current limits, and apply the newest requested speed
+        // only after reaching zero velocity.
+        capturePendingTargetsForResume();
+        m_restartAfterSpeedChange = true;
+        m_speedUpdatePending = true;
+        m_planner.stopGracefully();
+        m_state = STOPPING;
+    } else if (m_state == STOPPING) {
+        // Do not re-plan a braking segment in flight. Multiple slider changes
+        // collapse to the last stored value and are applied once stationary.
+        m_speedUpdatePending = true;
+    } else {
         updateSpeedSettings();
     }
     xSemaphoreGive(m_mutex);
@@ -1640,6 +1660,10 @@ void PolarControl::emergencyStop() {
     m_resumePoints.clear();
     m_resumePointIndex = 0;
     m_pauseAfterStop = false;
+    m_restartAfterSpeedChange = false;
+    m_speedUpdatePending = false;
+    m_clearingSpeedActive = false;
+    updateSpeedSettings();
     if (m_cmdQueue) {
         FileCommand cmd{};
         cmd.type = FileCommand::CMD_STOP;
@@ -1659,6 +1683,26 @@ uint32_t PolarControl::getFileTaskHighWater() const {
 // ============================================================================
 // Feed segments to planner
 // ============================================================================
+
+void PolarControl::capturePendingTargetsForResume() {
+    float theta[SEGMENT_BUFFER_SIZE];
+    float rho[SEGMENT_BUFFER_SIZE];
+    const size_t pending = m_planner.copyPendingTargets(
+        theta, rho, SEGMENT_BUFFER_SIZE);
+    const size_t savedRemaining = m_resumePoints.size() - m_resumePointIndex;
+    std::vector<PolarCord_t> targets;
+    targets.reserve(pending + savedRemaining);
+    for (size_t i = 0; i < pending; ++i) {
+        targets.push_back({theta[i], rho[i]});
+    }
+    // A second pause or speed change can arrive before a previous replay has
+    // drained. Those not-yet-requeued points follow the planner's targets.
+    for (size_t i = m_resumePointIndex; i < m_resumePoints.size(); ++i) {
+        targets.push_back(m_resumePoints[i]);
+    }
+    m_resumePoints = std::move(targets);
+    m_resumePointIndex = 0;
+}
 
 void PolarControl::feedPlanner() {
     bool replayAdded = false;
@@ -1778,7 +1822,23 @@ bool PolarControl::processNextMove() {
 
     if (m_state == STOPPING) {
         if (m_planner.isIdle()) {
-            if (m_pauseAfterStop) {
+            if (m_speedUpdatePending) {
+                m_speedUpdatePending = false;
+                updateSpeedSettings();
+            }
+            if (m_restartAfterSpeedChange) {
+                m_restartAfterSpeedChange = false;
+                m_state = RUNNING;
+                feedPlanner();
+                if (!m_planner.isIdle()) {
+                    m_planner.start();
+                    LOG("Motion resumed after speed change\r\n");
+                } else {
+                    m_posGen.reset();
+                    m_state = m_motionCompletionState.exchange(IDLE);
+                    LOG("Speed changed after motion completed\r\n");
+                }
+            } else if (m_pauseAfterStop) {
                 m_pauseAfterStop = false;
                 m_state = PAUSED;
                 LOG("Paused after controlled deceleration\r\n");

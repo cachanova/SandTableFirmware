@@ -291,11 +291,14 @@ private:
   std::atomic<uint8_t> m_speed{5};
   bool m_clearingSpeedActive = false;
   bool m_pauseAfterStop = false;
+  bool m_restartAfterSpeedChange = false;
+  bool m_speedUpdatePending = false;
   std::vector<PolarCord_t> m_resumePoints;
   size_t m_resumePointIndex = 0;
 
   // Helpers
   void updateSpeedSettings();
+  void capturePendingTargetsForResume();
   void feedPlanner();
   bool writeTuningSettingsLocked(const MotionSettings& motionSettings,
                                  const DriverSettings& thetaSettings,
