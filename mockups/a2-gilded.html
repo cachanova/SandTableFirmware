@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sisyphus — Gallery / Gilded</title>
+<style>
+  :root {
+    --paper: #f4eedf;
+    --sand: #eadfc4;
+    --ink: #221e17;
+    --ink-soft: #5c564a;
+    --ink-faint: #9c9483;
+    --gold: #b8860b;
+    --gold-bright: #d4a017;
+    --gold-wash: rgba(184,134,11,.09);
+    --sienna: #8a4b2d;
+    --hair: #dcd3bd;
+    --ok: #4c7a4c;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif; background: var(--paper); color: var(--ink); min-height: 100vh; font-size: 14px; }
+
+  header {
+    display:flex; align-items:baseline; justify-content:space-between;
+    padding: 26px 48px; border-bottom: 1px solid var(--ink);
+    position: relative;
+  }
+  header::after { content:''; position:absolute; left: 0; right: 0; bottom: -4px; height: 1px; background: var(--gold); }
+  .brand { font-family: Georgia, serif; font-size: 21px; letter-spacing: .5px; }
+  .brand i { font-style: normal; border-bottom: 3px double var(--gold); padding-bottom: 2px; }
+  .brand em { font-style: normal; color: var(--gold); }
+  nav { display:flex; gap: 34px; }
+  nav a { color: var(--ink-faint); text-decoration:none; font-size: 12px; letter-spacing: 2.5px; text-transform: uppercase; }
+  nav a:hover { color: var(--ink-soft); }
+  nav a.active { color: var(--ink); border-bottom: 2px solid var(--gold); padding-bottom: 3px; }
+  .conn { font-size: 12px; color: var(--ink-faint); font-family: ui-monospace, Menlo, monospace; }
+  .conn b { color: var(--ok); font-weight: 400; }
+
+  main { max-width: 1120px; margin: 0 auto; padding: 48px 48px 90px; display: grid; grid-template-columns: minmax(0,1.15fr) minmax(0,1fr); gap: 64px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+
+  .stage-state { font-size: 11px; letter-spacing: 3px; text-transform: uppercase; color: var(--sienna); margin-bottom: 8px; }
+  .stage-state b { color: var(--gold); }
+  .stage-title { font-family: Georgia, serif; font-size: 32px; font-weight: 400; margin-bottom: 28px; }
+  .stage-title em { color: var(--ink-faint); font-size: 18px; margin-left: 10px; }
+
+  .table-frame {
+    position: relative; width: min(100%, 440px); aspect-ratio: 1;
+    border-radius: 50%; background: radial-gradient(circle at 43% 39%, #f0e6cc, var(--sand) 65%, #ddcfa9 100%);
+    border: 1px solid var(--ink);
+    outline: 3px solid var(--gold);
+    outline-offset: 6px;
+    box-shadow: inset 0 1px 16px rgba(34,30,23,.12), 0 18px 40px rgba(34,30,23,.14);
+  }
+  .table-frame canvas { position:absolute; inset:0; width:100%; height:100%; border-radius:50%; }
+  .coords { margin-top: 30px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; color: var(--ink-faint); }
+  .coords b { color: var(--ink); font-weight: 500; }
+
+  .transport { display:flex; gap: 0; margin-top: 26px; border: 1px solid var(--ink); width: fit-content; }
+  .t-btn {
+    width: 58px; height: 46px; border: none; background: none; color: var(--ink); font-size: 14px; cursor: pointer;
+    border-right: 1px solid var(--ink); transition: all .12s;
+  }
+  .t-btn:last-child { border-right: none; }
+  .t-btn:hover { background: var(--gold-wash); }
+  .t-btn.main { background: linear-gradient(160deg, var(--gold-bright), var(--gold)); color: var(--paper); }
+  .t-btn.main:hover { filter: brightness(1.08); }
+
+  .sliders { max-width: 380px; margin-top: 38px; }
+  .slider-row { margin-bottom: 22px; }
+  .slider-row .lbl { display:flex; justify-content: space-between; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--ink-soft); margin-bottom: 10px; }
+  .slider-row .lbl span:last-child { font-family: ui-monospace, Menlo, monospace; color: var(--gold); font-weight: 600; }
+  input[type=range] { width: 100%; -webkit-appearance:none; height: 1px; background: var(--ink); outline:none; }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance:none; width: 15px; height: 15px; border-radius: 50%;
+    background: linear-gradient(160deg, var(--gold-bright), var(--gold)); border: 2px solid var(--paper);
+    box-shadow: 0 0 0 1px var(--ink); cursor:pointer;
+  }
+
+  h2 { font-size: 11px; font-weight: 600; letter-spacing: 3px; text-transform: uppercase; padding-bottom: 10px; border-bottom: 1px solid var(--ink); display:flex; justify-content: space-between; position: relative; }
+  h2::after { content:''; position:absolute; left:0; right:0; bottom:-4px; height:1px; background: var(--gold); }
+  h2 span { color: var(--ink-faint); font-weight: 400; letter-spacing: 1px; }
+  section { margin-bottom: 48px; }
+
+  .seg { display:flex; gap: 20px; margin: 18px 0 4px; }
+  .seg button { border:none; background:none; font-size: 12.5px; color: var(--ink-faint); cursor:pointer; padding: 4px 0; letter-spacing: .5px; }
+  .seg button.active { color: var(--sienna); border-bottom: 2px solid var(--gold); font-weight: 600; }
+
+  .pattern-row { display:flex; align-items: baseline; gap: 14px; padding: 12px 2px; border-bottom: 1px solid var(--hair); cursor: pointer; }
+  .pattern-row:hover { background: var(--gold-wash); }
+  .pattern-row .idx { font-family: Georgia, serif; font-style: italic; font-size: 13px; color: var(--gold); width: 26px; }
+  .p-name { font-family: Georgia, serif; font-size: 17px; flex: 1; }
+  .pattern-row.sel { background: var(--gold-wash); box-shadow: inset 3px 0 0 var(--gold); padding-left: 10px; }
+  .pattern-row.sel .p-name { font-style: italic; color: var(--sienna); }
+  .p-dur { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; color: var(--ink-faint); }
+
+  .actions { display:flex; gap: 12px; margin-top: 18px; }
+  .btn {
+    padding: 11px 24px; border: 1px solid var(--ink); background: none; color: var(--ink);
+    font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase; cursor:pointer; transition: all .12s;
+  }
+  .btn:hover { background: var(--sand); }
+  .btn.primary { background: linear-gradient(160deg, var(--gold-bright), var(--gold)); border-color: var(--gold); color: #fff; font-weight: 600; }
+  .btn.primary:hover { filter: brightness(1.08); background: linear-gradient(160deg, var(--gold-bright), var(--gold)); }
+  .btn.ghost { border-color: var(--hair); color: var(--ink-soft); }
+
+  select { width: 100%; padding: 11px 12px; border: 1px solid var(--hair); background: var(--paper); color: var(--ink); font-size: 13px; margin-top: 14px; }
+
+  .facts { margin-top: 4px; }
+  .fact { display:flex; justify-content: space-between; padding: 10px 2px; border-bottom: 1px solid var(--hair); }
+  .fact .k { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--ink-faint); }
+  .fact .v { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
+  .fact .v.run { color: var(--sienna); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand"><i>Sisyphus</i> &nbsp;<em>№ 01</em></div>
+  <nav>
+    <a class="active" href="#">Patterns</a>
+    <a href="#">Manual</a>
+    <a href="#">Files</a>
+    <a href="#">Tuning</a>
+  </nav>
+  <div class="conn"><b>●</b> 100.76.149.200 · −52 dBm</div>
+</header>
+
+<main>
+  <div class="stage">
+    <div class="stage-state">Now drawing · <b>42%</b></div>
+    <div class="stage-title">Fibonacci Bloom <em>2024, steel on sand</em></div>
+    <div class="table-frame"><canvas id="viz" width="880" height="880"></canvas></div>
+    <div class="coords">ρ <b>182.4</b> mm · θ <b>214.7</b>° · v <b>38.2</b> mm/s</div>
+    <div class="transport">
+      <button class="t-btn">⏮</button>
+      <button class="t-btn main">⏸</button>
+      <button class="t-btn">⏹</button>
+      <button class="t-btn">⏭</button>
+    </div>
+    <div class="sliders">
+      <div class="slider-row">
+        <div class="lbl"><span>Light</span><span>62%</span></div>
+        <input type="range" value="62">
+      </div>
+      <div class="slider-row">
+        <div class="lbl"><span>Speed</span><span>5 / 10</span></div>
+        <input type="range" min="1" max="10" value="5">
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <section>
+      <h2>Collection <span>36 works</span></h2>
+      <div class="seg"><button class="active">Single</button><button>Playlist</button></div>
+      <div class="pattern-row sel"><span class="idx">i.</span><span class="p-name">Fibonacci Bloom</span><span class="p-dur">54′</span></div>
+      <div class="pattern-row"><span class="idx">ii.</span><span class="p-name">Tidal Spiral</span><span class="p-dur">38′</span></div>
+      <div class="pattern-row"><span class="idx">iii.</span><span class="p-name">Moth Orbit</span><span class="p-dur">81′</span></div>
+      <div class="pattern-row"><span class="idx">iv.</span><span class="p-name">Sand Dollar</span><span class="p-dur">25′</span></div>
+      <div class="pattern-row"><span class="idx">v.</span><span class="p-name">Hepta Weave</span><span class="p-dur">62′</span></div>
+      <div class="actions">
+        <button class="btn primary">Start</button>
+        <button class="btn">+ Playlist</button>
+        <button class="btn ghost" style="margin-left:auto">Upload</button>
+      </div>
+      <select>
+        <option>Clear first — spiral inward (CW)</option>
+        <option>Clear first — random</option>
+        <option>No clearing</option>
+      </select>
+    </section>
+
+    <section>
+      <h2>Machine <span>homed · no errors</span></h2>
+      <div class="facts">
+        <div class="fact"><span class="k">State</span><span class="v run">RUNNING</span></div>
+        <div class="fact"><span class="k">Uptime</span><span class="v">6h 12m</span></div>
+        <div class="fact"><span class="k">Free memory</span><span class="v">148 KB</span></div>
+        <div class="fact"><span class="k">Wi-Fi</span><span class="v">HomeNet · −52 dBm</span></div>
+      </div>
+      <div class="actions">
+        <button class="btn">Run homing</button>
+        <button class="btn ghost" style="margin-left:auto">Error log (0)</button>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+const c = document.getElementById('viz'), x = c.getContext('2d');
+const W = c.width, cx = W/2, cy = W/2, R = W/2 - 40;
+x.strokeStyle = 'rgba(90,72,40,0.6)'; x.lineWidth = 2.4; x.lineCap = 'round';
+x.beginPath();
+for (let i = 0; i <= 1100; i++) {
+  const t = i/2600 * Math.PI * 14;
+  const r = R * (0.15 + 0.85*Math.abs(Math.sin(t*5/14))) * (i/2600*0.55 + 0.45);
+  const px = cx + r*Math.cos(t), py = cy + r*Math.sin(t);
+  i ? x.lineTo(px,py) : x.moveTo(px,py);
+}
+x.stroke();
+const t = 1100/2600 * Math.PI * 14;
+const r = R * (0.15 + 0.85*Math.abs(Math.sin(t*5/14))) * (1100/2600*0.55 + 0.45);
+const bx = cx + r*Math.cos(t), by = cy + r*Math.sin(t);
+const g = x.createRadialGradient(bx-4, by-4, 1, bx, by, 11);
+g.addColorStop(0, '#f4dd9a'); g.addColorStop(1, '#a3720a');
+x.shadowColor = 'rgba(34,30,23,.4)'; x.shadowBlur = 8; x.shadowOffsetY = 3;
+x.fillStyle = g; x.beginPath(); x.arc(bx, by, 11, 0, 7); x.fill();
+</script>
+</body>
+</html>
