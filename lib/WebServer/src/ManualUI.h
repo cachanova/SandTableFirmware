@@ -9,71 +9,126 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
     <title>Sisyphus Manual Control</title>
     <style>
         :root {
-            --bg: #0f0f1a; --card: rgba(30,30,50,.84); --border: rgba(255,255,255,.1);
-            --accent: #c9a227; --accent-light: #e8c547; --text: #f5f5f5;
-            --muted: #a0a0b0; --danger: #f87171; --success: #4ade80;
+            --paper: #fafaf7;
+            --sand: #eeeade;
+            --ink: #1a1917;
+            --ink-soft: #57544e;
+            --ink-faint: #97938a;
+            --hair: #dbd8cf;
+            --wash: #f2f1ea;
+            --ok: #3d6b3d;
+            --warn: #8a6d1a;
+            --danger: #9e3a2e;
+            --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+            --serif: Georgia, "Times New Roman", serif;
         }
-        * { box-sizing: border-box; }
-        body { margin: 0; min-height: 100vh; padding: 20px; color: var(--text);
-            font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background: var(--bg);
-            background-image: radial-gradient(ellipse at top,rgba(201,162,39,.15),transparent 50%); }
-        .container { max-width: 760px; margin: auto; }
-        header { text-align: center; margin-bottom: 26px; }
-        h1 { margin: 0 0 6px; font-size: 2.4rem; font-weight: 300; letter-spacing: 8px; text-transform: uppercase; }
-        h1 span { color: var(--accent); }
-        .tagline { color: #707080; letter-spacing: 2px; font-size: .85rem; }
-        nav { display: flex; justify-content: center; gap: 6px; width: fit-content; max-width: 100%; margin: 0 auto 28px;
-            padding: 6px; border: 1px solid var(--border); border-radius: 50px; background: var(--card); }
-        nav a { padding: 9px 18px; border-radius: 50px; color: var(--muted); text-decoration: none; font-size: .88rem; }
-        nav a.active { color: var(--bg); background: var(--accent); font-weight: 650; }
-        .card { padding: 24px; border: 1px solid var(--border); border-radius: 20px; background: var(--card); }
-        .status-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 18px; }
-        .status { color: var(--muted); font-size: .9rem; }
-        .status strong { color: var(--text); }
-        .dot { display: inline-block; width: 8px; height: 8px; margin-right: 7px; border-radius: 50%; background: var(--muted); }
-        .dot.ready { background: var(--success); box-shadow: 0 0 10px var(--success); }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+            background: var(--paper);
+            color: var(--ink);
+            min-height: 100vh;
+            font-size: 14px;
+        }
+
+        .topbar {
+            display: flex; align-items: baseline; justify-content: space-between;
+            gap: 18px; flex-wrap: wrap;
+            padding: 22px 40px; border-bottom: 1px solid var(--ink);
+        }
+        .brand { font-family: var(--serif); font-size: 20px; letter-spacing: .5px; white-space: nowrap; }
+        .brand i { font-style: normal; border-bottom: 3px double var(--ink); padding-bottom: 2px; }
+        .brand span { color: var(--ink-faint); font-size: 14px; margin-left: 6px; }
+        .topnav { display: flex; gap: 30px; }
+        .topnav a { color: var(--ink-faint); text-decoration: none; font-size: 12px; letter-spacing: 2.5px; text-transform: uppercase; padding-bottom: 3px; }
+        .topnav a:hover { color: var(--ink-soft); }
+        .topnav a.active { color: var(--ink); border-bottom: 1px solid var(--ink); }
+
+        .container { max-width: 720px; margin: 0 auto; padding: 38px 24px 80px; }
+
+        .status-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 20px; }
+        .status { font-size: 13px; color: var(--ink-soft); }
+        .status strong { font-weight: 600; letter-spacing: 1.5px; text-transform: uppercase; font-size: 11.5px; }
+        #sendState { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
+        .dot { display: inline-block; width: 8px; height: 8px; margin-right: 8px; border-radius: 50%; background: var(--ink-faint); vertical-align: 1px; }
+        .dot.ready { background: var(--ok); }
         .dot.blocked { background: var(--danger); }
-        .stage { position: relative; width: min(100%, 560px); margin: auto; aspect-ratio: 1; touch-action: none; user-select: none; }
+
+        .stage { position: relative; width: min(100%, 480px); margin: 0 auto; aspect-ratio: 1; touch-action: none; user-select: none; }
         canvas { width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
-        .hint { margin: 17px 0 3px; color: var(--muted); text-align: center; font-size: .9rem; line-height: 1.45; }
-        .readouts { display: grid; grid-template-columns: repeat(2,1fr); gap: 10px; margin-top: 18px; }
-        .readout { padding: 13px; border: 1px solid var(--border); border-radius: 12px; background: rgba(0,0,0,.18); }
-        .label { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: 1px; }
-        .value { margin-top: 4px; font-variant-numeric: tabular-nums; }
-        .drivers { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0; }
-        .driver { padding: 6px 10px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; font-size: .78rem; }
-        .driver::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--danger); }
-        .driver.connected { color: var(--text); }
-        .driver.connected::before { background: var(--success); }
-        .jog-controls { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; margin-top: 18px; }
-        .jog-card { padding: 16px; border: 1px solid var(--border); border-radius: 14px; background: rgba(0,0,0,.18); }
-        .jog-card h2 { margin: 0; font-size: 1rem; font-weight: 600; }
-        .jog-card p { min-height: 2.5em; margin: 6px 0 13px; color: var(--muted); font-size: .8rem; line-height: 1.35; }
-        .jog-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; }
-        button { color: var(--text); border-radius: 10px; font: inherit; cursor: pointer; }
-        .jog { min-height: 46px; padding: 8px 5px; border: 1px solid rgba(201,162,39,.42); background: rgba(201,162,39,.12); font-size: .82rem; }
-        .jog:hover { background: rgba(201,162,39,.22); }
-        .jog .arrow { display: inline-block; margin-right: 3px; color: var(--accent-light); font-size: 1rem; line-height: .7; }
-        button:disabled { opacity: .35; cursor: not-allowed; }
-        #stop { width: 100%; margin-top: 18px; padding: 12px; border: 1px solid rgba(248,113,113,.45); background: rgba(248,113,113,.13); }
-        #stop:hover { background: rgba(248,113,113,.22); }
-        .error { min-height: 1.3em; margin-top: 12px; color: var(--danger); text-align: center; font-size: .86rem; }
-        .mode-control { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
-        .mode-control strong { margin-right: auto; }
-        .mode-control button { width: auto; min-width: 150px; margin: 0; }
-        .mode-active { border-color: var(--accent); background: rgba(201,162,39,.22); }
-        #setAsHome { border: 1px solid rgba(74,222,128,.5); background: rgba(74,222,128,.13); }
-        #setAsHome:hover { background: rgba(74,222,128,.22); }
-        @media (max-width: 560px) { body { padding: 12px; } .card { padding: 14px; } nav a { padding: 8px 10px; font-size: .78rem; } h1 { font-size: 1.9rem; } .jog-controls { grid-template-columns: 1fr; } }
+        .hint { margin: 18px 0 4px; color: var(--ink-faint); text-align: center; font-size: 12.5px; line-height: 1.5; font-style: italic; font-family: var(--serif); }
+
+        .readouts { display: grid; grid-template-columns: 1fr 1fr; gap: 0 32px; margin-top: 20px; }
+        .readout { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 10px 2px; border-bottom: 1px solid var(--hair); }
+        .label { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--ink-faint); }
+        .value { font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums; text-align: right; }
+
+        .drivers { display: flex; flex-wrap: wrap; gap: 8px; margin: 20px 0; }
+        .driver { padding: 5px 12px; color: var(--ink-faint); border: 1px solid var(--hair); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; }
+        .driver::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--danger); vertical-align: 1px; }
+        .driver.connected { color: var(--ink); border-color: var(--ink); }
+        .driver.connected::before { background: var(--ok); }
+
+        .jog-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; margin-top: 24px; }
+        .jog-card h2 {
+            font-size: 11px; font-weight: 600; letter-spacing: 3px; text-transform: uppercase;
+            padding-bottom: 8px; border-bottom: 1px solid var(--ink); margin-bottom: 8px;
+        }
+        .jog-card p { min-height: 2.5em; margin: 0 0 12px; color: var(--ink-faint); font-size: 12px; line-height: 1.4; }
+        .jog-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+        button { color: var(--ink); font: inherit; cursor: pointer; }
+        .jog {
+            min-height: 42px; padding: 8px 4px;
+            border: 1px solid var(--ink);
+            background: none;
+            font-size: 12px;
+            transition: background .12s;
+        }
+        .jog:hover { background: var(--sand); }
+        .jog .arrow { display: inline-block; margin-right: 3px; color: var(--ink-soft); font-size: 13px; line-height: .7; }
+        button:disabled { opacity: .3; cursor: not-allowed; }
+        .jog:disabled:hover { background: none; }
+        #stop {
+            width: 100%; margin-top: 26px; padding: 13px;
+            border: 1px solid var(--danger); background: none; color: var(--danger);
+            font-size: 11.5px; font-weight: 600; letter-spacing: 2px; text-transform: uppercase;
+            transition: all .12s;
+        }
+        #stop:hover { background: var(--danger); color: var(--paper); }
+        .error { min-height: 1.3em; margin-top: 14px; color: var(--danger); text-align: center; font-size: 12.5px; }
+        .service-card {
+            margin-bottom: 28px; padding: 18px 20px;
+            border: 1px solid var(--hair); background: var(--wash);
+        }
+        .mode-control { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+        .mode-control strong { margin-right: auto; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; }
+        .mode-control button, #setAsHome {
+            min-height: 38px; padding: 8px 12px; border: 1px solid var(--ink);
+            background: none; font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
+        }
+        .mode-control button:hover, #setAsHome:hover { background: var(--sand); }
+        .mode-control .mode-active { color: var(--paper); background: var(--ink); }
+        #setAsHome { width: 100%; margin-bottom: 18px; border-color: var(--ok); color: var(--ok); }
+        #setAsHome:hover { color: var(--paper); background: var(--ok); }
+
+        @media (max-width: 560px) {
+            .topbar { padding: 16px 20px; }
+            .topnav { gap: 16px; }
+            .container { padding: 24px 16px 60px; }
+            .jog-controls { grid-template-columns: 1fr; gap: 22px; }
+            .readouts { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body>
-<div class="container">
-    <header><h1>Sisyphus<span>.</span></h1><div class="tagline">Manual Control</div></header>
-    <nav>
+<header class="topbar">
+    <div class="brand"><i>Sisyphus</i><span>Manual</span></div>
+    <nav class="topnav">
         <a href="/">Patterns</a><a href="/manual" class="active">Manual</a><a href="/files">Files</a><a href="/tuning">Tuning</a>
     </nav>
-    <section class="card" id="rhoServiceCard" hidden>
+</header>
+<div class="container">
+    <section class="service-card" id="rhoServiceCard" hidden>
         <div class="mode-control">
             <strong>RHO service mode: <span id="rhoServiceMode">—</span></strong>
             <button id="modeManual">Manual RHO</button>
@@ -81,7 +136,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
         </div>
         <p class="hint">Manual mode permits relative RHO jogs without homing. Set as home assigns the current physical position as RHO 0 mm, marks the controller homed, and unlocks absolute manual positioning. Theta and patterns stay locked out in this service image.</p>
     </section>
-    <section class="card">
+    <section>
         <div class="status-row"><div class="status"><span id="stateDot" class="dot"></span><strong id="state">Connecting</strong></div><div class="status" id="sendState">Waiting</div></div>
         <button id="setAsHome">Set current position as home</button>
         <div class="stage"><canvas id="table" aria-label="Manual table position control"></canvas></div>
@@ -97,7 +152,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
         </div>
         <div class="jog-controls">
             <section class="jog-card">
-                <h2>Theta · rotation</h2>
+                <h2>Theta · Rotation</h2>
                 <p>Jog counterclockwise or clockwise from the latest target.</p>
                 <div class="jog-grid">
                     <button class="jog" data-axis="theta" data-delta="-1" aria-label="Theta 1 degree counterclockwise"><span class="arrow">↺</span>1°</button>
@@ -109,7 +164,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
                 </div>
             </section>
             <section class="jog-card">
-                <h2>Rho · radius</h2>
+                <h2>Rho · Radius</h2>
                 <p>Jog inward or outward from the latest target.</p>
                 <div class="jog-grid">
                     <button class="jog" data-axis="rho" data-delta="-1">In 1 mm</button>
@@ -196,14 +251,14 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
     function draw() {
         const s = canvas.getBoundingClientRect().width; if (!s) return;
         const pad = 12, r = (s-pad*2)/2, c = s/2; ctx.clearRect(0,0,s,s);
-        const grad = ctx.createRadialGradient(c,c,0,c,c,r); grad.addColorStop(0,'#28283b'); grad.addColorStop(1,'#171724');
-        ctx.beginPath(); ctx.arc(c,c,r,0,Math.PI*2); ctx.fillStyle=grad; ctx.fill(); ctx.lineWidth=2; ctx.strokeStyle='rgba(201,162,39,.65)'; ctx.stroke();
-        ctx.strokeStyle='rgba(255,255,255,.07)'; ctx.lineWidth=1;
+        const grad = ctx.createRadialGradient(c,c,0,c,c,r); grad.addColorStop(0,'#f2eddd'); grad.addColorStop(1,'#e4ddc6');
+        ctx.beginPath(); ctx.arc(c,c,r,0,Math.PI*2); ctx.fillStyle=grad; ctx.fill(); ctx.lineWidth=2; ctx.strokeStyle='rgba(26,25,23,.85)'; ctx.stroke();
+        ctx.strokeStyle='rgba(26,25,23,.08)'; ctx.lineWidth=1;
         [0.25,0.5,0.75].forEach(f => { ctx.beginPath(); ctx.arc(c,c,r*f,0,Math.PI*2); ctx.stroke(); });
         ctx.beginPath(); ctx.moveTo(pad,c); ctx.lineTo(s-pad,c); ctx.moveTo(c,pad); ctx.lineTo(c,s-pad); ctx.stroke();
-        if (target) drawMarker(target.x,target.y,'#e8c547',9,true);
-        if (current) drawMarker(current.x,current.y,'#4ade80',7,false);
-        if (!canvasEnabled) { ctx.fillStyle='rgba(15,15,26,.55)'; ctx.beginPath(); ctx.arc(c,c,r,0,Math.PI*2); ctx.fill(); }
+        if (target) drawMarker(target.x,target.y,'#1a1917',9,true);
+        if (current) drawMarker(current.x,current.y,'#3d6b3d',7,false);
+        if (!canvasEnabled) { ctx.fillStyle='rgba(250,250,247,.6)'; ctx.beginPath(); ctx.arc(c,c,r,0,Math.PI*2); ctx.fill(); }
     }
     function pointerTarget(ev) {
         const rect=canvas.getBoundingClientRect(), s=rect.width, pad=12, d=s-pad*2;

@@ -9,1102 +9,574 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
     <title>Sisyphus Table</title>
     <style>
         :root {
-            --bg-dark: #0f0f1a;
-            --bg-card: rgba(30, 30, 50, 0.8);
-            --bg-card-hover: rgba(40, 40, 65, 0.9);
-            --accent: #c9a227;
-            --accent-light: #e8c547;
-            --accent-dim: rgba(201, 162, 39, 0.3);
-            --text-primary: #f5f5f5;
-            --text-secondary: #a0a0b0;
-            --text-muted: #606070;
-            --border: rgba(255, 255, 255, 0.1);
-            --success: #4ade80;
-            --warning: #fbbf24;
-            --danger: #f87171;
-            --sand-light: #e8dcc4;
-            --sand-dark: #2a2520;
+            --paper: #fafaf7;
+            --sand: #eeeade;
+            --ink: #1a1917;
+            --ink-soft: #57544e;
+            --ink-faint: #97938a;
+            --hair: #dbd8cf;
+            --wash: #f2f1ea;
+            --ok: #3d6b3d;
+            --warn: #8a6d1a;
+            --danger: #9e3a2e;
+            --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+            --serif: Georgia, "Times New Roman", serif;
         }
 
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
-            font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: var(--bg-dark);
-            background-image:
-                radial-gradient(ellipse at top, rgba(201, 162, 39, 0.15) 0%, transparent 50%),
-                radial-gradient(ellipse at bottom, rgba(30, 30, 50, 0.5) 0%, transparent 50%);
+            font-family: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+            background: var(--paper);
+            color: var(--ink);
             min-height: 100vh;
-            padding: 20px;
-            color: var(--text-primary);
+            font-size: 14px;
         }
 
-        .container {
-            max-width: 1000px;
-            margin: 0 auto;
-        }
-
-        /* Header */
-        .header {
-            text-align: center;
-            margin-bottom: 32px;
-        }
-
-        .logo {
-            font-size: 2.5em;
-            font-weight: 300;
-            letter-spacing: 8px;
-            color: var(--text-primary);
-            text-transform: uppercase;
-            margin-bottom: 8px;
-        }
-
-        .logo span {
-            color: var(--accent);
-        }
-
-        .tagline {
-            font-size: 0.9em;
-            color: var(--text-muted);
-            letter-spacing: 2px;
-        }
-
-        /* Navigation */
-        .navbar {
+        /* ── Header ─────────────────────── */
+        .topbar {
             display: flex;
-            justify-content: center;
-            gap: 8px;
-            margin-bottom: 32px;
-            padding: 6px;
-            background: var(--bg-card);
-            border-radius: 50px;
-            backdrop-filter: blur(10px);
-            border: 1px solid var(--border);
-            width: fit-content;
-            margin-left: auto;
-            margin-right: auto;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 18px;
+            flex-wrap: wrap;
+            padding: 22px 40px;
+            border-bottom: 1px solid var(--ink);
         }
+        .brand { font-family: var(--serif); font-size: 20px; letter-spacing: .5px; white-space: nowrap; }
+        .brand i { font-style: normal; border-bottom: 3px double var(--ink); padding-bottom: 2px; }
+        .brand span { color: var(--ink-faint); font-size: 14px; margin-left: 6px; }
+        .topnav { display: flex; gap: 30px; }
+        .topnav a { color: var(--ink-faint); text-decoration: none; font-size: 12px; letter-spacing: 2.5px; text-transform: uppercase; padding-bottom: 3px; }
+        .topnav a:hover { color: var(--ink-soft); }
+        .topnav a.active { color: var(--ink); border-bottom: 1px solid var(--ink); }
 
-        .nav-link {
-            color: var(--text-secondary);
-            text-decoration: none;
-            padding: 10px 24px;
-            border-radius: 50px;
-            font-weight: 500;
-            font-size: 0.9em;
-            transition: all 0.3s ease;
-        }
-
-        .nav-link:hover {
-            color: var(--text-primary);
-            background: rgba(255, 255, 255, 0.05);
-        }
-
-        .nav-link.active {
-            background: var(--accent);
-            color: var(--bg-dark);
-            font-weight: 600;
-        }
-
-        /* Cards */
-        .card {
-            background: var(--bg-card);
-            border-radius: 20px;
-            padding: 24px;
-            margin-bottom: 20px;
-            backdrop-filter: blur(10px);
-            border: 1px solid var(--border);
-            transition: all 0.3s ease;
-        }
-
-        .card:hover {
-            background: var(--bg-card-hover);
-            border-color: rgba(201, 162, 39, 0.2);
-        }
-
-        .card-title {
-            font-size: 0.8em;
-            font-weight: 600;
-            letter-spacing: 2px;
-            text-transform: uppercase;
-            color: var(--accent);
-            margin-bottom: 16px;
-        }
-
-        /* Status Grid */
-        .status-grid {
+        /* ── Layout ─────────────────────── */
+        .layout {
+            max-width: 1120px;
+            margin: 0 auto;
+            padding: 42px 40px 90px;
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 16px;
+            grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+            gap: 56px;
+            align-items: start;
         }
 
-        .status-item {
-            text-align: center;
-            padding: 16px;
-            background: rgba(0, 0, 0, 0.2);
-            border-radius: 12px;
-        }
-
-        .status-label {
-            font-size: 0.75em;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 8px;
-        }
-
-        .status-value {
-            font-size: 1.2em;
-            font-weight: 600;
-            color: var(--text-primary);
-        }
-
+        /* ── Stage (left) ───────────────── */
+        .stage-state { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
         .status-badge {
             display: inline-block;
-            padding: 6px 16px;
-            border-radius: 20px;
-            font-size: 0.8em;
+            padding: 4px 12px;
+            border: 1px solid var(--ink);
+            font-size: 10px;
             font-weight: 600;
+            letter-spacing: 2.5px;
             text-transform: uppercase;
-            letter-spacing: 1px;
         }
+        .status-idle { color: var(--ink); }
+        .status-running, .status-clearing { background: var(--ink); color: var(--paper); }
+        .status-paused, .status-initialized, .status-homing, .status-homing_review, .status-warning { color: var(--warn); border-color: var(--warn); }
+        .status-stopping, .status-homing_failed, .status-uninitialized { color: var(--danger); border-color: var(--danger); }
+        .stage-uptime { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
 
-        .status-idle { background: var(--success); color: #000; }
-        .status-running { background: var(--accent); color: #000; }
-        .status-paused { background: var(--warning); color: #000; }
-        .status-clearing { background: #a78bfa; color: #000; }
-        .status-stopping { background: var(--danger); color: #000; }
-        .status-initialized, .status-homing { background: var(--warning); color: #000; }
-        .status-homing_review { background: var(--warning); color: #000; }
-        .status-homing_failed { background: var(--danger); color: #000; }
-        .status-uninitialized { background: var(--danger); color: #000; }
-
-        /* Canvas Viewer */
-        .viewer-wrapper {
-            display: flex;
-            justify-content: center;
-            margin-bottom: 16px;
+        .stage-title {
+            font-family: var(--serif);
+            font-size: 30px;
+            font-weight: 400;
+            margin-bottom: 8px;
+            overflow-wrap: anywhere;
         }
+        .progress-rule { height: 2px; background: var(--hair); max-width: 440px; }
+        .progress-rule-fill { height: 100%; width: 0%; background: var(--ink); transition: width .3s ease; }
+        .progress-pct { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); margin-top: 4px; }
 
+        .viewer-wrapper { margin-top: 22px; }
         .canvas-container {
             position: relative;
-            width: 100%;
-            max-width: 500px;
+            width: min(100%, 440px);
             aspect-ratio: 1;
             border-radius: 50%;
-            background: radial-gradient(circle, #8b7d6b 0%, #4a4238 70%, #2a2520 100%);
-            box-shadow:
-                inset 0 0 60px rgba(0, 0, 0, 0.5),
-                0 0 40px rgba(201, 162, 39, 0.1),
-                0 20px 60px rgba(0, 0, 0, 0.5);
-            padding: 8px;
+            background: var(--sand);
+            border: 1px solid var(--ink);
+            box-shadow: inset 0 1px 14px rgba(26, 25, 23, 0.10);
         }
-
-        .canvas-inner {
-            position: relative;
-            width: 100%;
-            height: 100%;
-            border-radius: 50%;
-            overflow: hidden;
-        }
-
-        .viewer-canvas {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-        }
-
+        .canvas-inner { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; }
+        .viewer-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
         #pattern-overlay { z-index: 1; }
         #path-canvas { z-index: 2; }
         #ball-canvas { z-index: 3; }
 
         .position-display {
-            text-align: center;
-            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
-            font-size: 0.9em;
-            color: var(--text-secondary);
+            margin-top: 20px;
+            font-family: var(--mono);
+            font-size: 12.5px;
+            color: var(--ink-faint);
         }
 
-        /* Sliders */
-        .slider-section {
-            margin-bottom: 20px;
+        /* ── Transport ──────────────────── */
+        .transport { display: flex; margin-top: 24px; border: 1px solid var(--ink); width: fit-content; max-width: 100%; }
+        .t-btn {
+            min-width: 86px;
+            padding: 13px 18px;
+            border: none;
+            border-right: 1px solid var(--ink);
+            background: none;
+            color: var(--ink);
+            font-size: 11.5px;
+            font-weight: 600;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: background .12s;
         }
+        .t-btn:last-child { border-right: none; }
+        .t-btn:hover { background: var(--sand); }
+        .t-btn.t-main { background: var(--ink); color: var(--paper); }
+        .t-btn.t-main:hover { background: #34322c; }
+        .t-btn:disabled { opacity: .35; cursor: not-allowed; }
+        .t-btn:disabled:hover { background: none; }
+        .t-btn.t-main:disabled:hover { background: var(--ink); }
 
+        /* ── Sliders ────────────────────── */
+        .sliders { max-width: 380px; margin-top: 34px; }
+        .slider-section { margin-bottom: 22px; }
         .slider-header {
             display: flex;
             justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px;
-        }
-
-        .slider-title {
-            font-size: 0.9em;
-            color: var(--text-secondary);
-        }
-
-        .slider-value {
-            font-size: 1.1em;
-            font-weight: 600;
-            color: var(--accent);
-            min-width: 50px;
-            text-align: right;
-        }
-
-        input[type="range"] {
-            width: 100%;
-            height: 6px;
-            border-radius: 3px;
-            background: rgba(255, 255, 255, 0.1);
-            outline: none;
-            -webkit-appearance: none;
-        }
-
-        input[type="range"]::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            background: var(--accent);
-            cursor: pointer;
-            box-shadow: 0 2px 10px rgba(201, 162, 39, 0.5);
-            transition: transform 0.2s;
-        }
-
-        input[type="range"]::-webkit-slider-thumb:hover {
-            transform: scale(1.1);
-        }
-
-        /* Tabs */
-        .tabs {
-            display: flex;
-            gap: 4px;
-            margin-bottom: 24px;
-            padding: 4px;
-            background: rgba(0, 0, 0, 0.2);
-            border-radius: 12px;
-        }
-
-        .tab-btn {
-            flex: 1;
-            background: none;
-            border: none;
-            color: var(--text-secondary);
-            font-weight: 500;
-            padding: 12px 20px;
-            cursor: pointer;
-            border-radius: 10px;
-            transition: all 0.3s;
-            font-size: 0.9em;
-        }
-
-        .tab-btn:hover {
-            color: var(--text-primary);
-        }
-
-        .tab-btn.active {
-            background: var(--accent);
-            color: var(--bg-dark);
-            font-weight: 600;
-        }
-
-        /* Form Elements */
-        select {
-            width: 100%;
-            padding: 14px 16px;
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            font-size: 1em;
-            background: #1a1a2e;
-            color: var(--text-primary);
-            cursor: pointer;
-            margin-bottom: 12px;
-        }
-
-        select:focus {
-            outline: none;
-            border-color: var(--accent);
-        }
-
-        select option {
-            background: #1a1a2e;
-            color: #f5f5f5;
-            padding: 12px;
-        }
-
-        /* Buttons */
-        .button-row {
-            display: flex;
-            gap: 10px;
-        }
-
-        button {
-            flex: 1;
-            padding: 14px 20px;
-            border: none;
-            border-radius: 12px;
-            font-size: 0.95em;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-
-        .btn-primary {
-            background: var(--accent);
-            color: var(--bg-dark);
-        }
-
-        .btn-primary:hover {
-            background: var(--accent-light);
-            transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(201, 162, 39, 0.3);
-        }
-
-        .btn-secondary {
-            background: rgba(255, 255, 255, 0.1);
-            color: var(--text-primary);
-            border: 1px solid var(--border);
-        }
-
-        .btn-secondary:hover {
-            background: rgba(255, 255, 255, 0.15);
-            border-color: var(--accent-dim);
-        }
-
-        .btn-danger {
-            background: rgba(248, 113, 113, 0.2);
-            color: var(--danger);
-            border: 1px solid rgba(248, 113, 113, 0.3);
-        }
-
-        .btn-danger:hover {
-            background: var(--danger);
-            color: #000;
-        }
-
-        /* Now Playing Card */
-        .now-playing {
-            background: linear-gradient(135deg, var(--accent) 0%, #8b6914 100%);
-            border-radius: 16px;
-            padding: 20px;
-            margin-bottom: 20px;
-            color: var(--bg-dark);
-        }
-
-        .np-label {
-            font-size: 0.7em;
+            font-size: 11px;
             letter-spacing: 2px;
             text-transform: uppercase;
-            opacity: 0.7;
-            text-align: center;
-            margin-bottom: 8px;
+            color: var(--ink-soft);
+            margin-bottom: 10px;
+        }
+        .slider-value { font-family: var(--mono); color: var(--ink); }
+        input[type="range"] {
+            width: 100%;
+            -webkit-appearance: none;
+            appearance: none;
+            height: 1px;
+            background: var(--ink);
+            outline: none;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: var(--paper);
+            border: 1.5px solid var(--ink);
+            cursor: pointer;
         }
 
-        .np-title {
-            font-size: 1.2em;
+        /* ── Right column sections ──────── */
+        .rule-head {
+            font-size: 11px;
             font-weight: 600;
-            text-align: center;
-            margin-bottom: 4px;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--ink);
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 10px;
+        }
+        .rule-head span { color: var(--ink-faint); font-weight: 400; letter-spacing: 1px; }
+        section { margin-bottom: 44px; }
+
+        .homing-panel { border: 1px solid var(--warn); padding: 18px; }
+        .homing-panel .rule-head { border-color: var(--warn); color: var(--warn); }
+        .homing-panel p { margin: 12px 0 8px; color: var(--ink-soft); line-height: 1.5; font-size: 13.5px; }
+        #homing-details { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); margin-bottom: 6px; }
+
+        /* Tabs */
+        .seg { display: flex; gap: 20px; margin: 14px 0 6px; }
+        .tab-btn {
+            border: none;
+            background: none;
+            font-size: 12.5px;
+            color: var(--ink-faint);
+            cursor: pointer;
+            padding: 4px 0;
+            letter-spacing: .5px;
+            font-family: inherit;
+        }
+        .tab-btn.active { color: var(--ink); border-bottom: 1px solid var(--ink); }
+
+        /* Pattern catalogue */
+        .pattern-list { max-height: 320px; overflow-y: auto; }
+        .pattern-list-item {
+            display: flex;
+            align-items: baseline;
+            gap: 14px;
+            padding: 11px 2px;
+            border-bottom: 1px solid var(--hair);
+            cursor: pointer;
+        }
+        .pattern-list-item:hover { background: var(--wash); }
+        .pattern-list-item.selected { background: var(--wash); box-shadow: inset 3px 0 0 var(--ink); padding-left: 10px; }
+        .pattern-info { flex: 1; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
+        .pattern-name {
+            font-family: var(--serif);
+            font-size: 16px;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
+        .pattern-list-item.selected .pattern-name { font-style: italic; }
+        .pattern-size { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); flex: none; }
 
-        .np-progress {
-            font-size: 0.85em;
-            text-align: center;
-            opacity: 0.8;
-            margin-bottom: 16px;
-        }
-
-        /* File Progress Bar */
-        .progress-container {
-            margin-top: 8px;
-        }
-
-        .progress-bar-bg {
-            width: 100%;
-            height: 6px;
-            background: rgba(255, 255, 255, 0.2);
-            border-radius: 3px;
-            overflow: hidden;
-        }
-
-        .progress-bar-fill {
-            height: 100%;
-            background: var(--bg-dark);
-            border-radius: 3px;
-            transition: width 0.3s ease;
-            width: 0%;
-        }
-
-        .progress-text {
-            font-size: 0.75em;
-            text-align: center;
-            margin-top: 4px;
-            opacity: 0.8;
-        }
-
-        .status-progress-bar {
-            width: 100%;
-            height: 4px;
-            background: var(--bg-card);
-            border-radius: 2px;
-            overflow: hidden;
-            margin-top: 4px;
-        }
-
-        .status-progress-fill {
-            height: 100%;
-            background: var(--accent);
-            border-radius: 2px;
-            transition: width 0.3s ease;
-            width: 0%;
-        }
-
-        .np-controls {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .np-btn {
-            width: 44px;
-            height: 44px;
-            border-radius: 50%;
-            border: none;
+        /* Buttons */
+        .actions { display: flex; gap: 12px; margin-top: 18px; flex-wrap: wrap; }
+        .btn {
+            padding: 10px 20px;
+            border: 1px solid var(--ink);
+            background: none;
+            color: var(--ink);
+            font-size: 11.5px;
+            font-weight: 600;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
             cursor: pointer;
-            font-size: 16px;
-            transition: all 0.2s;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            flex: none;
-            padding: 0;
+            transition: background .12s;
+            font-family: inherit;
         }
+        .btn:hover { background: var(--sand); }
+        .btn.primary { background: var(--ink); color: var(--paper); }
+        .btn.primary:hover { background: #34322c; }
+        .btn.danger { border-color: var(--danger); color: var(--danger); }
+        .btn.danger:hover { background: var(--danger); color: var(--paper); }
+        .btn.ghost { border-color: var(--hair); color: var(--ink-soft); }
+        .btn.ghost:hover { border-color: var(--ink-faint); background: none; }
+        .btn:disabled { opacity: .35; cursor: not-allowed; }
+        .btn:disabled:hover { background: none; color: var(--ink); }
+        .btn.small { padding: 5px 12px; font-size: 10px; }
 
-        .np-btn-small {
-            background: rgba(0, 0, 0, 0.2);
-            color: var(--bg-dark);
+        select {
+            width: 100%;
+            padding: 11px 12px;
+            border: 1px solid var(--hair);
+            background: var(--paper);
+            color: var(--ink);
+            font-size: 13px;
+            margin-top: 16px;
+            font-family: inherit;
         }
+        select:focus { outline: none; border-color: var(--ink); }
 
-        .np-btn-small:hover {
-            background: rgba(0, 0, 0, 0.3);
-            transform: scale(1.1);
+        /* Now playing */
+        .now-playing { border: 1px solid var(--ink); padding: 18px; margin: 16px 0; }
+        .np-label { font-size: 10px; letter-spacing: 2.5px; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 6px; }
+        .np-title { font-family: var(--serif); font-size: 20px; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .np-progress { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); margin-bottom: 12px; }
+        .progress-container { margin-bottom: 12px; }
+        .progress-bar-bg { height: 2px; background: var(--hair); }
+        .progress-bar-fill { height: 100%; width: 0%; background: var(--ink); transition: width .3s ease; }
+        .progress-text { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); margin-top: 4px; }
+        .np-controls { display: flex; border: 1px solid var(--ink); width: fit-content; }
+        .np-btn {
+            width: 52px;
+            height: 40px;
+            border: none;
+            border-right: 1px solid var(--ink);
+            background: none;
+            color: var(--ink);
+            font-size: 13px;
+            cursor: pointer;
         }
-
-        .np-btn-main {
-            width: 56px;
-            height: 56px;
-            background: var(--bg-dark);
-            color: var(--accent);
-            font-size: 20px;
-        }
-
-        .np-btn-main:hover {
-            transform: scale(1.1);
-            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
-        }
+        .np-btn:last-child { border-right: none; }
+        .np-btn svg { width: 13px; height: 13px; fill: currentColor; display: inline-block; vertical-align: middle; }
+        .np-btn:hover { background: var(--sand); }
+        .np-btn-main { background: var(--ink); color: var(--paper); }
+        .np-btn-main:hover { background: #34322c; }
+        .np-btn:disabled { opacity: .35; cursor: not-allowed; }
 
         /* Playlist */
-        .playlist-options {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 16px;
-            flex-wrap: wrap;
-            gap: 12px;
-        }
-
-        .playlist-toggle {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 0.85em;
-            color: var(--text-secondary);
-            cursor: pointer;
-        }
-
-        .playlist-toggle input {
-            width: 18px;
-            height: 18px;
-            accent-color: var(--accent);
-        }
-
-        .playlist-container {
-            max-height: 300px;
-            overflow-y: auto;
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            margin-bottom: 16px;
-        }
-
-        .playlist-empty {
-            text-align: center;
-            color: var(--text-muted);
-            padding: 40px 20px;
-        }
-
+        .playlist-options { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+        .playlist-toggle { display: flex; align-items: center; gap: 7px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--ink-soft); cursor: pointer; }
+        .playlist-toggle input { width: 14px; height: 14px; accent-color: var(--ink); }
+        .playlist-container { max-height: 280px; overflow-y: auto; }
+        .playlist-empty { color: var(--ink-faint); padding: 28px 2px; font-style: italic; font-family: var(--serif); }
         .playlist-item {
             display: flex;
             align-items: center;
-            padding: 12px 16px;
-            border-bottom: 1px solid var(--border);
-            transition: background 0.2s;
+            gap: 12px;
+            padding: 10px 2px;
+            border-bottom: 1px solid var(--hair);
             cursor: pointer;
         }
-
-        .playlist-item:last-child {
-            border-bottom: none;
-        }
-
-        .playlist-item:hover {
-            background: rgba(255, 255, 255, 0.05);
-        }
-
-        .playlist-item.current {
-            background: var(--accent-dim);
-        }
-
-        .playlist-num {
-            width: 28px;
-            font-size: 0.85em;
-            color: var(--text-muted);
-        }
-
-        .playlist-item.current .playlist-num {
-            color: var(--accent);
-            font-weight: 600;
-        }
-
+        .playlist-item:hover { background: var(--wash); }
+        .playlist-item.current { background: var(--wash); box-shadow: inset 3px 0 0 var(--ink); padding-left: 10px; }
+        .playlist-num { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); width: 24px; flex: none; }
+        .playlist-item.current .playlist-num { color: var(--ink); }
         .playlist-name {
             flex: 1;
+            font-family: var(--serif);
+            font-size: 15px;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
-
-        .playlist-item.current .playlist-name {
-            color: var(--accent);
-            font-weight: 500;
-        }
-
-        .playlist-actions {
-            display: flex;
-            gap: 4px;
-        }
-
+        .playlist-item.current .playlist-name { font-style: italic; }
+        .playlist-actions { display: flex; gap: 4px; }
         .playlist-action-btn {
-            width: 28px;
-            height: 28px;
-            border-radius: 6px;
-            border: none;
-            background: rgba(255, 255, 255, 0.1);
-            color: var(--text-secondary);
+            width: 26px;
+            height: 26px;
+            border: 1px solid var(--hair);
+            background: none;
+            color: var(--ink-soft);
+            font-size: 10px;
             cursor: pointer;
-            font-size: 12px;
-            flex: none;
             padding: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
         }
+        .playlist-action-btn svg { width: 10px; height: 10px; fill: currentColor; display: block; margin: auto; }
+        .playlist-action-btn:hover { border-color: var(--ink); color: var(--ink); }
+        .playlist-action-btn:disabled { opacity: .3; cursor: not-allowed; }
+        .playlist-action-btn.delete:hover { border-color: var(--danger); color: var(--danger); }
 
-        .playlist-action-btn:hover {
-            background: rgba(255, 255, 255, 0.2);
-        }
-
-        .playlist-action-btn.delete:hover {
-            background: var(--danger);
-            color: #fff;
-        }
-
-        /* Playlist Save/Load */
-        .playlist-save-row {
-            display: flex;
-            gap: 8px;
-        }
-
+        .playlist-save-row { display: flex; gap: 10px; margin-top: 16px; }
         .playlist-save-row input {
             flex: 1;
-            padding: 12px 16px;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            background: rgba(0, 0, 0, 0.3);
-            color: var(--text-primary);
-            font-size: 0.9em;
+            min-width: 0;
+            padding: 10px 12px;
+            border: 1px solid var(--hair);
+            background: var(--paper);
+            color: var(--ink);
+            font-size: 13px;
+            font-family: inherit;
         }
+        .playlist-save-row input:focus { outline: none; border-color: var(--ink); }
 
-        .playlist-save-row input:focus {
-            outline: none;
-            border-color: var(--accent);
-        }
+        /* Machine facts */
+        .facts { margin-top: 2px; }
+        .fact { display: flex; justify-content: space-between; gap: 12px; padding: 10px 2px; border-bottom: 1px solid var(--hair); }
+        .fact .k { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--ink-faint); }
+        .fact .v { font-family: var(--mono); font-size: 12.5px; text-align: right; }
 
-        .playlist-save-row button {
-            flex: none;
-            padding: 12px 20px;
-        }
-
-        /* System Info */
-        .info-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 12px;
-        }
-
-        .info-item {
-            display: flex;
-            justify-content: space-between;
-            padding: 12px;
-            background: rgba(0, 0, 0, 0.2);
-            border-radius: 10px;
-        }
-
-        .info-label {
-            color: var(--text-muted);
-            font-size: 0.85em;
-        }
-
-        .info-value {
-            color: var(--text-primary);
-            font-weight: 500;
-            font-size: 0.85em;
-        }
-
-        /* Console */
-        .console-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px;
-        }
-
-        .console-status {
-            font-size: 0.75em;
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-weight: 500;
-        }
-
-        .console-connected {
-            background: var(--success);
-            color: #000;
-        }
-
-        .console-disconnected {
-            background: var(--danger);
-            color: #fff;
-        }
-
-        .console-container {
-            background: #0a0a12;
-            border-radius: 12px;
-            padding: 16px;
-            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
-            font-size: 11px;
-            line-height: 1.5;
-            max-height: 200px;
-            overflow-y: auto;
-            color: var(--success);
-        }
-
-        .console-line {
-            margin: 0;
-            padding: 1px 0;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-        }
-
-        /* Error Log */
-        .error-banner {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            align-items: center;
-            padding: 12px 16px;
-            border-radius: 12px;
-            background: rgba(239, 68, 68, 0.18);
-            border: 1px solid rgba(239, 68, 68, 0.4);
-            color: #fff0f0;
-            font-size: 0.9em;
-            margin-bottom: 16px;
-        }
-
-        .error-banner-title {
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            font-size: 0.75em;
-            color: #ffe0e0;
-        }
-
-        .error-banner-count {
-            padding: 2px 8px;
-            border-radius: 999px;
-            background: rgba(239, 68, 68, 0.6);
-            font-size: 0.8em;
-            font-weight: 600;
-        }
-
+        /* Error log */
         .error-log-meta {
             display: flex;
             justify-content: space-between;
-            align-items: center;
-            color: var(--text-muted);
-            font-size: 0.8em;
-            margin-bottom: 10px;
-        }
-
-        .error-log-container {
-            background: #0a0a12;
-            border-radius: 12px;
-            padding: 14px;
-            max-height: 240px;
-            overflow-y: auto;
-            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            font-family: var(--mono);
             font-size: 11px;
-            color: var(--text-primary);
+            color: var(--ink-faint);
+            margin: 12px 0 4px;
         }
-
+        .error-log-container { max-height: 240px; overflow-y: auto; font-family: var(--mono); font-size: 11px; }
+        .error-empty { color: var(--ink-faint); font-style: italic; font-family: var(--serif); font-size: 13px; padding: 10px 2px; }
         .error-line {
             display: grid;
-            grid-template-columns: 70px 60px 70px 1fr;
+            grid-template-columns: 62px 52px 70px 1fr;
             gap: 8px;
-            padding: 4px 0;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            padding: 6px 2px;
+            border-bottom: 1px solid var(--hair);
         }
-
-        .error-line:last-child {
-            border-bottom: none;
-        }
-
-        .error-time {
-            color: var(--text-muted);
-        }
-
-        .error-level {
-            font-weight: 600;
-            text-transform: uppercase;
-        }
-
-        .error-category {
-            color: #cbd5f5;
-            font-weight: 500;
-        }
-
-        .error-message {
-            color: var(--text-primary);
-        }
-
-        .error-line.error-error .error-level {
-            color: var(--danger);
-        }
-
-        .error-line.error-warn .error-level {
-            color: var(--warning);
-        }
-
-        .error-empty {
-            color: var(--text-muted);
-            font-size: 0.9em;
-        }
-
-        /* Pattern List */
-        .pattern-list {
-            height: 300px;
-            overflow-y: auto;
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            margin-bottom: 12px;
-            background: rgba(0, 0, 0, 0.2);
-        }
-
-        .pattern-list-item {
-            display: flex;
-            align-items: center;
-            padding: 8px;
-            border-bottom: 1px solid var(--border);
-            cursor: pointer;
-            transition: background 0.2s;
-        }
-
-        .pattern-list-item:hover {
-            background: rgba(255, 255, 255, 0.05);
-        }
-
-        .pattern-list-item.selected {
-            background: var(--accent-dim);
-            border-left: 3px solid var(--accent);
-        }
-
-        .pattern-thumb {
-            width: 48px;
-            height: 48px;
-            border-radius: 6px;
-            background: rgba(0,0,0,0.3);
-            margin-right: 12px;
-            object-fit: cover;
-        }
-
-        .pattern-info {
-            flex: 1;
-        }
-
-        .pattern-name {
-            font-weight: 500;
-            color: var(--text-primary);
-        }
-
-        .pattern-size {
-            font-size: 0.8em;
-            color: var(--text-muted);
-        }
-
-        /* Responsive */
-        @media (max-width: 768px) {
-            body { padding: 12px; }
-            .logo { font-size: 1.8em; letter-spacing: 4px; }
-            .status-grid { grid-template-columns: repeat(2, 1fr); }
-            .info-grid { grid-template-columns: 1fr; }
-            .canvas-container { max-width: 350px; }
-        }
+        .error-time { color: var(--ink-faint); }
+        .error-level { font-weight: 600; }
+        .error-category { color: var(--ink-soft); }
+        .error-message { color: var(--ink); overflow-wrap: anywhere; }
+        .error-line.error-error .error-level { color: var(--danger); }
+        .error-line.error-warn .error-level { color: var(--warn); }
 
         /* Scrollbar */
-        ::-webkit-scrollbar {
-            width: 6px;
-        }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--hair); }
+        ::-webkit-scrollbar-thumb:hover { background: var(--ink-faint); }
 
-        ::-webkit-scrollbar-track {
-            background: transparent;
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: var(--text-muted);
-            border-radius: 3px;
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-            background: var(--text-secondary);
+        /* Responsive */
+        @media (max-width: 900px) {
+            .layout { grid-template-columns: 1fr; gap: 40px; padding: 28px 20px 70px; }
+            .topbar { padding: 16px 20px; }
+            .topnav { gap: 18px; }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <div class="logo">Sisy<span>phus</span></div>
-            <div class="tagline">Sand Table Control</div>
-        </div>
-
-        <nav class="navbar">
-            <a href="/" class="nav-link active">Patterns</a>
-            <a href="/manual" class="nav-link">Manual</a>
-            <a href="/files" class="nav-link">Files</a>
-            <a href="/tuning" class="nav-link">Tuning</a>
+    <header class="topbar">
+        <div class="brand"><i>Sisyphus</i><span>№ 01</span></div>
+        <nav class="topnav">
+            <a href="/" class="active">Patterns</a>
+            <a href="/manual">Manual</a>
+            <a href="/files">Files</a>
+            <a href="/tuning">Tuning</a>
         </nav>
+    </header>
 
-        <div class="card">
-            <div class="card-title">Status</div>
-            <div class="status-grid">
-                <div class="status-item">
-                    <div class="status-label">State</div>
-                    <div class="status-value">
-                        <span id="state-badge" class="status-badge status-idle">IDLE</span>
-                    </div>
-                </div>
-                <div class="status-item">
-                    <div class="status-label">Pattern</div>
-                    <div class="status-value" id="current-pattern" style="font-size: 0.9em;">None</div>
-                    <div id="file-progress-container" style="display: none;">
-                        <div class="status-progress-bar">
-                            <div class="status-progress-fill" id="file-progress-bar"></div>
-                        </div>
-                        <div style="font-size: 0.75em; color: var(--text-secondary); margin-top: 2px;" id="file-progress-text">0%</div>
-                    </div>
-                </div>
-                <div class="status-item">
-                    <div class="status-label">Brightness</div>
-                    <div class="status-value"><span id="status-brightness">50</span>%</div>
-                </div>
-                <div class="status-item">
-                    <div class="status-label">Uptime</div>
-                    <div class="status-value" id="uptime">0s</div>
-                </div>
+    <main class="layout">
+        <!-- Stage -->
+        <div class="stage">
+            <div class="stage-state">
+                <span id="state-badge" class="status-badge status-idle">IDLE</span>
+                <span class="stage-uptime">up <span id="uptime">0s</span></span>
             </div>
-        </div>
-
-        <div class="card" id="homing-card" style="display: none; border-color: var(--warning);">
-            <div class="card-title">Home Position Check</div>
-            <p id="homing-message" style="color: var(--text-secondary); line-height: 1.5; margin-bottom: 12px;"></p>
-            <div id="homing-details" style="font-size: 0.8em; color: var(--text-muted); margin-bottom: 12px;"></div>
-            <div class="button-row">
-                <button class="btn-primary" id="btn-home-confirm" style="display: none;">Yes, It Reached Home</button>
-                <button class="btn-danger" id="btn-home-reject" style="display: none;">No, It Stopped Early</button>
-                <button class="btn-secondary" id="btn-home-retry" style="display: none;">Run Homing</button>
+            <div class="stage-title" id="current-pattern">None</div>
+            <div id="file-progress-container" style="display: none;">
+                <div class="progress-rule"><div class="progress-rule-fill" id="file-progress-bar"></div></div>
+                <div class="progress-pct" id="file-progress-text">0%</div>
             </div>
-        </div>
 
-        <div class="card">
-            <div class="card-title">Position</div>
             <div class="viewer-wrapper">
                 <div class="canvas-container">
                     <div class="canvas-inner">
-                        <img id="pattern-overlay" class="viewer-canvas" style="object-fit: cover; opacity: 0.6; display: none;" src="" onerror="this.style.display='none'">
+                        <img id="pattern-overlay" class="viewer-canvas" style="object-fit: cover; opacity: 0.45; display: none;" src="" onerror="this.style.display='none'">
                         <canvas id="path-canvas" class="viewer-canvas" width="800" height="800"></canvas>
                         <canvas id="ball-canvas" class="viewer-canvas" width="800" height="800"></canvas>
                     </div>
                 </div>
             </div>
             <div class="position-display" id="position-coords">Loading...</div>
+
+            <div class="transport">
+                <button class="t-btn t-main" id="btn-start">Start</button>
+                <button class="t-btn" id="btn-pause">Pause</button>
+                <button class="t-btn" id="btn-stop">Stop</button>
+                <button class="t-btn" id="btn-home">Home</button>
+            </div>
+
+            <div class="sliders">
+                <div class="slider-section">
+                    <div class="slider-header">
+                        <span>Light</span>
+                        <span class="slider-value" id="brightness-value">50%</span>
+                    </div>
+                    <input type="range" id="brightness-slider" min="0" max="100" value="50">
+                </div>
+                <div class="slider-section">
+                    <div class="slider-header">
+                        <span>Speed</span>
+                        <span class="slider-value" id="speed-value">5</span>
+                    </div>
+                    <input type="range" id="speed-slider" min="1" max="10" value="5">
+                </div>
+            </div>
         </div>
 
-        <div class="card">
-            <div class="card-title">Controls</div>
-            <div class="slider-section">
-                <div class="slider-header">
-                    <span class="slider-title">LED Brightness</span>
-                    <span class="slider-value" id="brightness-value">50%</span>
+        <!-- Right column -->
+        <div>
+            <section class="homing-panel" id="homing-card" style="display: none;">
+                <h2 class="rule-head">Home Position Check</h2>
+                <p id="homing-message"></p>
+                <div id="homing-details"></div>
+                <div class="actions">
+                    <button class="btn primary" id="btn-home-confirm" style="display: none;">Yes, It Reached Home</button>
+                    <button class="btn danger" id="btn-home-reject" style="display: none;">No, It Stopped Early</button>
+                    <button class="btn" id="btn-home-retry" style="display: none;">Run Homing</button>
                 </div>
-                <input type="range" id="brightness-slider" min="0" max="100" value="50">
-            </div>
-            <div class="slider-section">
-                <div class="slider-header">
-                    <span class="slider-title">Motor Speed</span>
-                    <span class="slider-value" id="speed-value">5</span>
-                </div>
-                <input type="range" id="speed-slider" min="1" max="10" value="5">
-            </div>
-        </div>
+            </section>
 
-        <div class="card">
-            <div class="tabs">
-                <button class="tab-btn active" id="tab-btn-single" onclick="controller.switchTab('single')">Single Pattern</button>
-                <button class="tab-btn" id="tab-btn-playlist" onclick="controller.switchTab('playlist')">Playlist</button>
-            </div>
-
-            <div id="tab-single">
-                <div id="pattern-list-container" class="pattern-list">
-                    <!-- Populated by JS -->
-                    <div style="padding: 20px; text-align: center; color: var(--text-muted);">Loading patterns...</div>
-                </div>
-                
-                <div class="button-row" style="margin-bottom: 12px;">
-                    <button class="btn-secondary" id="btn-upload-new">Upload New Pattern</button>
-                    <input type="file" id="upload-pattern" accept=".thr" style="display: none;">
-                    <input type="file" id="upload-image" accept="image/png,image/jpeg" style="display: none;">
+            <section>
+                <h2 class="rule-head">Collection</h2>
+                <div class="seg">
+                    <button class="tab-btn active" id="tab-btn-single" onclick="controller.switchTab('single')">Single</button>
+                    <button class="tab-btn" id="tab-btn-playlist" onclick="controller.switchTab('playlist')">Playlist</button>
                 </div>
 
-                <select id="clearing-select">
-                    <option value="0">No Clearing</option>
-                    <option value="6">Random</option>
-                    <option value="1">Spiral Inward (CW)</option>
-                    <option value="2">Spiral Inward (CCW)</option>
-                    <option value="3">Concentric Circles (Inward)</option>
-                    <option value="4">ZigZag</option>
-                    <option value="5">Petal Flower</option>
-                </select>
-                <div class="button-row" style="margin-bottom: 12px;">
-                    <button class="btn-primary" id="btn-start">Start</button>
-                    <button class="btn-secondary" id="btn-pause">Pause</button>
-                    <button class="btn-danger" id="btn-stop">Stop</button>
+                <div id="tab-single">
+                    <div id="pattern-list-container" class="pattern-list">
+                        <div style="padding: 20px 2px; color: var(--ink-faint); font-style: italic;">Loading patterns...</div>
+                    </div>
+                    <select id="clearing-select">
+                        <option value="0">No Clearing</option>
+                        <option value="6">Clear first — Random</option>
+                        <option value="1">Clear first — Spiral Inward (CW)</option>
+                        <option value="2">Clear first — Spiral Inward (CCW)</option>
+                        <option value="3">Clear first — Concentric Circles (Inward)</option>
+                        <option value="4">Clear first — ZigZag</option>
+                        <option value="5">Clear first — Petal Flower</option>
+                    </select>
+                    <div class="actions">
+                        <button class="btn" id="btn-add-to-playlist">+ Playlist</button>
+                        <button class="btn ghost" id="btn-upload-new" style="margin-left: auto;">Upload</button>
+                        <input type="file" id="upload-pattern" accept=".thr" style="display: none;">
+                        <input type="file" id="upload-image" accept="image/png,image/jpeg" style="display: none;">
+                    </div>
                 </div>
-                <div class="button-row">
-                    <button class="btn-secondary" id="btn-add-to-playlist">+ Add to Playlist</button>
-                    <button class="btn-secondary" id="btn-home">Home</button>
-                </div>
-            </div>
 
-            <div id="tab-playlist" style="display: none;">
-                <div class="now-playing">
-                    <div class="np-label">Now Playing</div>
-                    <div class="np-title" id="now-playing-name">No pattern playing</div>
-                    <div class="np-progress" id="playlist-progress">0 / 0</div>
-                    <div class="progress-container" id="np-file-progress-container" style="display: none;">
-                        <div class="progress-bar-bg">
-                            <div class="progress-bar-fill" id="np-file-progress-bar"></div>
+                <div id="tab-playlist" style="display: none;">
+                    <div class="now-playing">
+                        <div class="np-label">Now Playing</div>
+                        <div class="np-title" id="now-playing-name">No pattern playing</div>
+                        <div class="np-progress" id="playlist-progress">0 / 0</div>
+                        <div class="progress-container" id="np-file-progress-container" style="display: none;">
+                            <div class="progress-bar-bg">
+                                <div class="progress-bar-fill" id="np-file-progress-bar"></div>
+                            </div>
+                            <div class="progress-text" id="np-file-progress-text">0%</div>
                         </div>
-                        <div class="progress-text" id="np-file-progress-text">0%</div>
+                        <div class="np-controls">
+                            <button class="np-btn" id="btn-playlist-prev" aria-label="Previous">
+                                <svg viewBox="0 0 16 16"><path d="M3 2.5h1.6v11H3zM13 2.9v10.2L5.6 8z"/></svg>
+                            </button>
+                            <button class="np-btn np-btn-main" id="btn-playlist-start" aria-label="Play">
+                                <svg viewBox="0 0 16 16"><path d="M4 2.4v11.2L13.4 8z"/></svg>
+                            </button>
+                            <button class="np-btn" id="btn-playlist-stop" aria-label="Stop">
+                                <svg viewBox="0 0 16 16"><rect x="3.4" y="3.4" width="9.2" height="9.2"/></svg>
+                            </button>
+                            <button class="np-btn" id="btn-playlist-next" aria-label="Next">
+                                <svg viewBox="0 0 16 16"><path d="M11.4 2.5H13v11h-1.6zM3 2.9v10.2L10.4 8z"/></svg>
+                            </button>
+                        </div>
                     </div>
-                    <div class="np-controls">
-                        <button class="np-btn np-btn-small" id="btn-playlist-prev">⏮</button>
-                        <button class="np-btn np-btn-main" id="btn-playlist-start">▶</button>
-                        <button class="np-btn np-btn-small" id="btn-playlist-stop">⏹</button>
-                        <button class="np-btn np-btn-small" id="btn-playlist-next">⏭</button>
+
+                    <div class="playlist-options">
+                        <button class="btn ghost small" id="btn-playlist-shuffle">Shuffle</button>
+                        <div style="display: flex; gap: 16px;">
+                            <label class="playlist-toggle">
+                                <input type="checkbox" id="playlist-loop-toggle">
+                                Loop
+                            </label>
+                            <label class="playlist-toggle">
+                                <input type="checkbox" id="playlist-clearing-toggle" checked>
+                                Clearing
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="playlist-container" id="playlist-items">
+                        <div class="playlist-empty">Playlist is empty</div>
+                    </div>
+
+                    <div class="actions">
+                        <button class="btn" id="btn-add-all-to-playlist">+ Add All</button>
+                        <button class="btn danger" id="btn-clear-playlist">Clear</button>
+                    </div>
+
+                    <div class="playlist-save-row">
+                        <input type="text" id="playlist-name-input" placeholder="Playlist name…">
+                        <button class="btn ghost" id="btn-save-playlist">Save</button>
+                        <button class="btn ghost" id="btn-load-playlist">Load</button>
                     </div>
                 </div>
+            </section>
 
-                <div class="playlist-options">
-                    <button class="btn-secondary" id="btn-playlist-shuffle" style="flex: none; padding: 10px 16px;">Shuffle</button>
-                    <div style="display: flex; gap: 16px;">
-                        <label class="playlist-toggle">
-                            <input type="checkbox" id="playlist-loop-toggle">
-                            Loop
-                        </label>
-                        <label class="playlist-toggle">
-                            <input type="checkbox" id="playlist-clearing-toggle" checked>
-                            Clearing
-                        </label>
-                    </div>
+            <section>
+                <h2 class="rule-head">Machine</h2>
+                <div class="facts">
+                    <div class="fact"><span class="k">Free Memory</span><span class="v" id="heap">—</span></div>
+                    <div class="fact"><span class="k">Wi-Fi</span><span class="v" id="wifi-ssid">—</span></div>
+                    <div class="fact"><span class="k">IP Address</span><span class="v" id="wifi-ip">—</span></div>
+                    <div class="fact"><span class="k">Signal</span><span class="v" id="wifi-rssi">—</span></div>
+                    <div class="fact"><span class="k">Light</span><span class="v"><span id="status-brightness">50</span>%</span></div>
                 </div>
+            </section>
 
-                <div class="playlist-container" id="playlist-items">
-                    <div class="playlist-empty">Playlist is empty</div>
+            <section>
+                <h2 class="rule-head">
+                    Errors
+                    <button class="btn ghost small" id="btn-clear-errors">Clear</button>
+                </h2>
+                <div class="error-log-meta">
+                    <span><span id="error-log-count">0</span> since boot</span>
+                    <span id="error-log-dropped" style="display: none;">Dropped: 0</span>
                 </div>
-
-                <div class="button-row" style="margin-bottom: 16px;">
-                    <button class="btn-primary" id="btn-add-all-to-playlist">+ Add All Patterns</button>
-                    <button class="btn-danger" id="btn-clear-playlist" style="flex: 0.4;">Clear</button>
+                <div class="error-log-container" id="error-log">
+                    <div class="error-empty">No errors since boot.</div>
                 </div>
-
-                <div class="playlist-save-row">
-                    <input type="text" id="playlist-name-input" placeholder="Playlist name...">
-                    <button class="btn-secondary" id="btn-save-playlist">Save</button>
-                    <button class="btn-secondary" id="btn-load-playlist">Load</button>
-                </div>
-            </div>
+            </section>
         </div>
-
-        <div class="card">
-            <div class="card-title">System</div>
-            <div class="info-grid">
-                <div class="info-item">
-                    <span class="info-label">Free Memory</span>
-                    <span class="info-value" id="heap">-</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">WiFi</span>
-                    <span class="info-value" id="wifi-ssid">-</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">IP Address</span>
-                    <span class="info-value" id="wifi-ip">-</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">Signal</span>
-                    <span class="info-value" id="wifi-rssi">-</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
-                Error Log
-                <button class="btn-secondary" id="btn-clear-errors" style="flex: none; padding: 4px 12px; font-size: 0.75em; border-radius: 8px;">Clear</button>
-            </div>
-            <div class="error-log-meta">
-                <span><span id="error-log-count">0</span> errors since boot</span>
-                <span id="error-log-dropped" style="display: none;">Dropped: 0</span>
-            </div>
-            <div class="error-log-container" id="error-log">
-                <div class="error-empty">No errors since boot.</div>
-            </div>
-        </div>
-    </div>
+    </main>
 
     <script>
         class SisyphusController {
@@ -1157,15 +629,16 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     
                     if (confirm('Do you want to add a preview image for this pattern?')) {
                         fileImage.value = ''; // Reset
-                        fileImage.click();
-                        
-                        // Wait for image selection
+                        // Runs on selection or on picker cancel (uploads without image)
                         const handleImage = async () => {
+                            fileImage.removeEventListener('change', handleImage);
+                            fileImage.removeEventListener('cancel', handleImage);
                             const imageFile = fileImage.files.length > 0 ? fileImage.files[0] : null;
                             await this.performUpload(patternFile, imageFile);
-                            fileImage.removeEventListener('change', handleImage); // Cleanup
                         };
                         fileImage.addEventListener('change', handleImage);
+                        fileImage.addEventListener('cancel', handleImage);
+                        fileImage.click();
                     } else {
                         await this.performUpload(patternFile, null);
                     }
@@ -1271,7 +744,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 // Draw path line
                 if (this.lastX !== undefined) {
                     const ctx = this.ctxPath;
-                    ctx.strokeStyle = 'rgba(42, 37, 32, 0.8)';
+                    ctx.strokeStyle = 'rgba(26, 25, 23, 0.8)';
                     ctx.lineWidth = 3;
                     ctx.lineCap = 'round';
                     ctx.beginPath();
@@ -1470,11 +943,11 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             renderPatternList() {
                 const container = document.getElementById('pattern-list-container');
                 if (!this.storageAvailable) {
-                    container.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--warning);">SD card not detected — patterns are unavailable</div>';
+                    container.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--warn);">SD card not detected — patterns are unavailable</div>';
                     return;
                 }
                 if (this.files.length === 0) {
-                    container.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--text-muted);">No patterns found</div>';
+                    container.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--ink-faint);">No patterns found</div>';
                     return;
                 }
 
@@ -1862,6 +1335,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     document.getElementById('btn-upload-new').disabled = false;
                     document.getElementById('btn-add-to-playlist').disabled = false;
                     document.getElementById('btn-add-all-to-playlist').disabled = false;
+                    document.getElementById('btn-playlist-start').disabled = false;
                     document.getElementById('btn-save-playlist').disabled = false;
                     document.getElementById('btn-load-playlist').disabled = false;
                 }
@@ -1974,12 +1448,12 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                         const isCurrent = index === currentIndex;
                         return `
                         <div class="playlist-item ${isCurrent ? 'current' : ''}" onclick="controller.playlistSkipTo(${index})">
-                            <div class="playlist-num">${isCurrent ? '▶' : index + 1}</div>
+                            <div class="playlist-num">${isCurrent ? '▸' : index + 1}</div>
                             <div class="playlist-name">${this.escapeHtml(item.filename.replace('.thr', ''))}</div>
                             <div class="playlist-actions" onclick="event.stopPropagation()">
-                                <button class="playlist-action-btn" onclick="controller.playlistMoveUp(${index})" ${index === 0 ? 'disabled' : ''}>▲</button>
-                                <button class="playlist-action-btn" onclick="controller.playlistMoveDown(${index})" ${index === data.items.length - 1 ? 'disabled' : ''}>▼</button>
-                                <button class="playlist-action-btn delete" onclick="controller.removeFromPlaylist(${index})">✕</button>
+                                <button class="playlist-action-btn" onclick="controller.playlistMoveUp(${index})" ${index === 0 ? 'disabled' : ''} aria-label="Move up"><svg viewBox="0 0 16 16"><path d="M8 4.2l5 6.3H3z"/></svg></button>
+                                <button class="playlist-action-btn" onclick="controller.playlistMoveDown(${index})" ${index === data.items.length - 1 ? 'disabled' : ''} aria-label="Move down"><svg viewBox="0 0 16 16"><path d="M8 11.8L3 5.5h10z"/></svg></button>
+                                <button class="playlist-action-btn delete" onclick="controller.removeFromPlaylist(${index})" aria-label="Remove"><svg viewBox="0 0 16 16"><path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6" stroke="currentColor" stroke-width="1.6" fill="none"/></svg></button>
                             </div>
                         </div>`;
                     }).join('');

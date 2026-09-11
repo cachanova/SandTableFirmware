@@ -9,283 +9,214 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
     <title>Sisyphus Tuning</title>
     <style>
         :root {
-            --bg-dark: #0f0f1a;
-            --bg-card: rgba(30, 30, 50, 0.8);
-            --bg-card-hover: rgba(40, 40, 65, 0.9);
-            --accent: #c9a227;
-            --accent-light: #e8c547;
-            --accent-dim: rgba(201, 162, 39, 0.3);
-            --text-primary: #f5f5f5;
-            --text-secondary: #a0a0b0;
-            --text-muted: #606070;
-            --border: rgba(255, 255, 255, 0.1);
-            --success: #4ade80;
-            --warning: #fbbf24;
-            --danger: #f87171;
+            --paper: #fafaf7;
+            --sand: #eeeade;
+            --ink: #1a1917;
+            --ink-soft: #57544e;
+            --ink-faint: #97938a;
+            --hair: #dbd8cf;
+            --wash: #f2f1ea;
+            --ok: #3d6b3d;
+            --warn: #8a6d1a;
+            --danger: #9e3a2e;
+            --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+            --serif: Georgia, "Times New Roman", serif;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
-            font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: var(--bg-dark);
-            background-image:
-                radial-gradient(ellipse at top, rgba(201, 162, 39, 0.15) 0%, transparent 50%),
-                radial-gradient(ellipse at bottom, rgba(30, 30, 50, 0.5) 0%, transparent 50%);
+            font-family: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+            background: var(--paper);
+            color: var(--ink);
             min-height: 100vh;
-            padding: 20px;
-            color: var(--text-primary);
+            font-size: 14px;
         }
 
-        .container { max-width: 900px; margin: 0 auto; }
-
-        .header { text-align: center; margin-bottom: 32px; }
-
-        .logo {
-            font-size: 2.5em;
-            font-weight: 300;
-            letter-spacing: 8px;
-            color: var(--text-primary);
-            text-transform: uppercase;
-            margin-bottom: 8px;
+        .topbar {
+            display: flex; align-items: baseline; justify-content: space-between;
+            gap: 18px; flex-wrap: wrap;
+            padding: 22px 40px; border-bottom: 1px solid var(--ink);
         }
+        .brand { font-family: var(--serif); font-size: 20px; letter-spacing: .5px; white-space: nowrap; }
+        .brand i { font-style: normal; border-bottom: 3px double var(--ink); padding-bottom: 2px; }
+        .brand span { color: var(--ink-faint); font-size: 14px; margin-left: 6px; }
+        .topnav { display: flex; gap: 30px; }
+        .topnav a { color: var(--ink-faint); text-decoration: none; font-size: 12px; letter-spacing: 2.5px; text-transform: uppercase; padding-bottom: 3px; }
+        .topnav a:hover { color: var(--ink-soft); }
+        .topnav a.active { color: var(--ink); border-bottom: 1px solid var(--ink); }
 
-        .logo span { color: var(--accent); }
+        .container { max-width: 840px; margin: 0 auto; padding: 38px 24px 80px; }
 
-        .tagline {
-            font-size: 0.9em;
-            color: var(--text-muted);
-            letter-spacing: 2px;
-        }
-
-        .navbar {
-            display: flex;
-            justify-content: center;
-            gap: 8px;
-            margin-bottom: 32px;
-            padding: 6px;
-            background: var(--bg-card);
-            border-radius: 50px;
-            backdrop-filter: blur(10px);
-            border: 1px solid var(--border);
-            width: fit-content;
-            margin-left: auto;
-            margin-right: auto;
-        }
-
-        .nav-link {
-            color: var(--text-secondary);
-            text-decoration: none;
-            padding: 10px 24px;
-            border-radius: 50px;
-            font-weight: 500;
-            font-size: 0.9em;
-            transition: all 0.3s ease;
-        }
-
-        .nav-link:hover {
-            color: var(--text-primary);
-            background: rgba(255, 255, 255, 0.05);
-        }
-
-        .nav-link.active {
-            background: var(--accent);
-            color: var(--bg-dark);
+        .rule-head {
+            font-size: 11px;
             font-weight: 600;
-        }
-
-        .card {
-            background: var(--bg-card);
-            border-radius: 20px;
-            padding: 24px;
-            margin-bottom: 20px;
-            backdrop-filter: blur(10px);
-            border: 1px solid var(--border);
-        }
-
-        .card-title {
-            font-size: 0.8em;
-            font-weight: 600;
-            letter-spacing: 2px;
+            letter-spacing: 3px;
             text-transform: uppercase;
-            color: var(--accent);
-            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--ink);
+            margin-bottom: 14px;
         }
+        section.block { margin-bottom: 48px; }
+        .commissioning { border: 1px solid var(--warn); padding: 16px 18px; }
+        .commissioning .rule-head { border-color: var(--warn); color: var(--warn); margin-bottom: 10px; }
 
         .section-title {
-            font-size: 0.75em;
+            font-size: 10.5px;
             font-weight: 600;
-            letter-spacing: 1px;
+            letter-spacing: 2px;
             text-transform: uppercase;
-            color: var(--text-muted);
-            margin-bottom: 16px;
-            margin-top: 24px;
-            padding-top: 16px;
-            border-top: 1px solid var(--border);
+            color: var(--ink-faint);
+            margin: 22px 0 12px;
         }
-
-        .section-title:first-of-type {
-            margin-top: 0;
-            padding-top: 0;
-            border-top: none;
-        }
+        .section-title:first-of-type { margin-top: 0; }
 
         .grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-            gap: 12px;
-            margin-bottom: 16px;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 14px 18px;
+            margin-bottom: 18px;
         }
-
-        .grid-2 {
-            grid-template-columns: repeat(2, 1fr);
-        }
+        .grid-2 { grid-template-columns: repeat(2, 1fr); }
 
         .form-group { margin-bottom: 0; }
 
         label {
             display: block;
             margin-bottom: 6px;
-            font-size: 0.75em;
-            color: var(--text-secondary);
+            font-size: 11px;
+            letter-spacing: .5px;
+            color: var(--ink-soft);
         }
+        label span { font-family: var(--mono); color: var(--ink); }
 
         input[type="number"], select {
             width: 100%;
-            padding: 10px;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            font-size: 0.9em;
-            background: #1a1a2e;
-            color: var(--text-primary);
-            transition: border-color 0.2s;
+            padding: 9px 10px;
+            border: 1px solid var(--hair);
+            font-size: 13px;
+            font-family: var(--mono);
+            background: var(--paper);
+            color: var(--ink);
+            transition: border-color .15s;
         }
+        input[type="number"]:focus, select:focus { outline: none; border-color: var(--ink); }
+        select { font-family: inherit; }
 
-        input[type="number"]:focus, select:focus {
+        input[type="range"] {
+            width: 100%;
+            -webkit-appearance: none;
+            appearance: none;
+            height: 1px;
+            background: var(--ink);
             outline: none;
-            border-color: var(--accent);
+            margin: 14px 0 6px;
         }
-
-        select option {
-            background: #1a1a2e;
-            color: #f5f5f5;
-            padding: 12px;
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: var(--paper);
+            border: 1.5px solid var(--ink);
+            cursor: pointer;
         }
 
         button {
-            width: 100%;
-            padding: 14px;
-            border: none;
-            border-radius: 12px;
-            font-size: 0.95em;
+            padding: 11px 22px;
+            border: 1px solid var(--ink);
+            background: none;
+            color: var(--ink);
+            font-size: 11.5px;
             font-weight: 600;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
             cursor: pointer;
-            transition: all 0.3s ease;
+            transition: all .12s;
+            font-family: inherit;
             margin-bottom: 8px;
         }
+        button:hover { background: var(--sand); }
+        button:disabled { opacity: .35; cursor: not-allowed; }
+        button:disabled:hover { background: none; }
 
-        .btn-primary {
-            background: var(--accent);
-            color: var(--bg-dark);
-        }
+        .btn-primary { background: var(--ink); color: var(--paper); width: 100%; }
+        .btn-primary:hover { background: #34322c; }
+        .btn-primary:disabled:hover { background: var(--ink); }
 
-        .btn-primary:hover {
-            background: var(--accent-light);
-            transform: translateY(-2px);
-            box-shadow: 0 8px 20px rgba(201, 162, 39, 0.3);
-        }
-
-        .btn-secondary {
-            background: rgba(255, 255, 255, 0.1);
-            color: var(--text-primary);
-            border: 1px solid var(--border);
-        }
-
-        .btn-secondary:hover {
-            background: rgba(255, 255, 255, 0.15);
-        }
+        .btn-secondary { width: 100%; }
 
         .test-buttons {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 12px;
-            margin-top: 16px;
+            gap: 10px;
+            margin: 16px 0 10px;
         }
-
-        .btn-test-theta {
-            background: var(--success);
-            color: #000;
-        }
-
-        .btn-test-theta:hover { background: #6ee7a0; }
-
-        .btn-test-rho {
-            background: var(--warning);
-            color: #000;
-        }
-
-        .btn-test-rho:hover { background: #fcd34d; }
+        .btn-test-theta, .btn-test-rho { width: 100%; }
+        .btn-test-rho { border-color: var(--warn); color: var(--warn); }
+        .btn-test-rho:hover { background: var(--warn); color: var(--paper); }
 
         .test-description {
-            font-size: 0.85em;
-            color: var(--text-muted);
-            margin-bottom: 16px;
-            line-height: 1.5;
+            font-size: 13px;
+            color: var(--ink-faint);
+            margin-bottom: 14px;
+            line-height: 1.55;
+            font-family: var(--serif);
+            font-style: italic;
         }
 
         .dump-output {
-            background: #0a0a12;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 16px;
-            font-family: monospace;
-            font-size: 0.8em;
+            border: 1px solid var(--hair);
+            background: var(--wash);
+            padding: 14px;
+            font-family: var(--mono);
+            font-size: 11.5px;
             white-space: pre-wrap;
             max-height: 400px;
             overflow-y: auto;
-            color: var(--text-secondary);
-            margin-top: 12px;
+            color: var(--ink-soft);
+            margin-top: 8px;
         }
 
         .dump-buttons {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
         }
 
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: var(--text-muted); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb { background: var(--hair); }
 
-        @media (max-width: 768px) {
-            body { padding: 12px; }
-            .logo { font-size: 1.8em; letter-spacing: 4px; }
+        @media (max-width: 700px) {
+            .topbar { padding: 16px 20px; }
+            .topnav { gap: 16px; }
+            .container { padding: 24px 16px 60px; }
             .grid { grid-template-columns: 1fr 1fr; }
+            .dump-buttons { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <div class="logo">Sisy<span>phus</span></div>
-            <div class="tagline">System Tuning</div>
-        </div>
-
-        <nav class="navbar">
-            <a href="/" class="nav-link">Patterns</a>
-            <a href="/manual" class="nav-link">Manual</a>
-            <a href="/files" class="nav-link">Files</a>
-            <a href="/tuning" class="nav-link active">Tuning</a>
+    <header class="topbar">
+        <div class="brand"><i>Sisyphus</i><span>Tuning</span></div>
+        <nav class="topnav">
+            <a href="/">Patterns</a>
+            <a href="/manual">Manual</a>
+            <a href="/files">Files</a>
+            <a href="/tuning" class="active">Tuning</a>
         </nav>
+    </header>
 
-        <div class="card" style="border-color: var(--warning);">
-            <div class="card-title">Commissioning Settings</div>
+    <div class="container">
+        <section class="block commissioning">
+            <h2 class="rule-head">Commissioning Settings</h2>
             <p class="test-description">These values are intended for one-time setup. Motion must be stopped before saving. Changing either microstep setting invalidates the logical position, so the dashboard will require homing again.</p>
             <p class="test-description" id="tuning-storage-warning" hidden>Internal settings storage is unavailable. Values can be viewed, but they cannot be saved until LittleFS mounts successfully.</p>
-        </div>
+        </section>
 
-        <div class="card">
-            <div class="card-title">Sensorless Homing</div>
+        <section class="block">
+            <h2 class="rule-head">Sensorless Homing</h2>
             <p class="test-description">Use the dashboard result and visual confirmation to tune out false stops. Lower trigger sensitivity or require more samples when a stiff section is mistaken for home.</p>
             <div class="grid">
                 <div class="form-group">
@@ -302,10 +233,10 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
                 </div>
             </div>
             <button class="btn-primary" id="btn-save-homing">Save Homing Settings</button>
-        </div>
+        </section>
 
-        <div class="card">
-            <div class="card-title">Motion Settings</div>
+        <section class="block">
+            <h2 class="rule-head">Motion Settings</h2>
             <div class="grid">
                 <div class="form-group">
                     <label>Rho Max Velocity (mm/s)</label>
@@ -333,10 +264,10 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
                 </div>
             </div>
             <button class="btn-primary" id="btn-save-motion">Save Motion Settings</button>
-        </div>
+        </section>
 
-        <div class="card">
-            <div class="card-title">Theta Driver</div>
+        <section class="block">
+            <h2 class="rule-head">Theta Driver</h2>
 
             <div class="section-title">Current &amp; Microstepping</div>
             <div class="grid">
@@ -425,10 +356,10 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
             </div>
 
             <button class="btn-primary" id="btn-save-theta">Save Theta Driver</button>
-        </div>
+        </section>
 
-        <div class="card">
-            <div class="card-title">Rho Driver</div>
+        <section class="block">
+            <h2 class="rule-head">Rho Driver</h2>
 
             <div class="section-title">Current &amp; Microstepping</div>
             <div class="grid">
@@ -517,10 +448,10 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
             </div>
 
             <button class="btn-primary" id="btn-save-rho">Save Rho Driver</button>
-        </div>
+        </section>
 
-        <div class="card">
-            <div class="card-title">Motor Tests</div>
+        <section class="block">
+            <h2 class="rule-head">Motor Tests</h2>
             <p class="test-description">
                 Tests ramp up to full speed, slow down, reverse direction, then perform quick random start/stops.
                 Clear the table before testing.
@@ -532,10 +463,10 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
                 <button class="btn-test-rho" id="btn-test-rho-stress">Rho Stress</button>
             </div>
             <button class="btn-secondary" id="btn-stop-motion">Stop Motion</button>
-        </div>
+        </section>
 
-        <div class="card">
-            <div class="card-title">Driver Diagnostics</div>
+        <section class="block">
+            <h2 class="rule-head">Driver Diagnostics</h2>
             <p class="test-description">
                 Dump all current register values and status from the TMC2209 drivers for debugging.
             </p>
@@ -545,7 +476,7 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
                 <button class="btn-secondary" id="btn-dump-rho-companion">Dump Rho Companion</button>
             </div>
             <pre class="dump-output" id="dump-output">Click a dump button to view driver registers...</pre>
-        </div>
+        </section>
     </div>
 
     <script>
