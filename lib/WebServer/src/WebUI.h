@@ -264,6 +264,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
         .btn:disabled { opacity: .35; cursor: not-allowed; }
         .btn:disabled:hover { background: none; color: var(--ink); }
         .btn.small { padding: 5px 12px; font-size: 10px; }
+        .presence-note { margin-top: 10px; color: var(--ink-faint); font-size: 11px; line-height: 1.45; }
 
         select {
             width: 100%;
@@ -575,7 +576,13 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     <div class="fact"><span class="k">IP Address</span><span class="v" id="wifi-ip">—</span></div>
                     <div class="fact"><span class="k">Signal</span><span class="v" id="wifi-rssi">—</span></div>
                     <div class="fact"><span class="k">Light</span><span class="v"><span id="status-brightness">50</span>%</span></div>
+                    <div class="fact"><span class="k">Presence</span><span class="v" id="presence-state">Starting…</span></div>
+                    <div class="fact"><span class="k">CSI activity</span><span class="v" id="presence-score">—</span></div>
                 </div>
+                <div class="actions">
+                    <button class="btn ghost small" id="btn-presence-calibrate">Calibrate empty room</button>
+                </div>
+                <p class="presence-note">Experimental Wi-Fi sensing. Calibration requires a still table and an empty room; results never control motor motion.</p>
             </section>
 
             <section>
@@ -907,6 +914,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 document.getElementById('btn-add-all-to-playlist').addEventListener('click', () => this.addAllToPlaylist());
                 document.getElementById('btn-clear-playlist').addEventListener('click', () => this.clearPlaylist());
                 document.getElementById('btn-clear-errors').addEventListener('click', () => this.clearErrors());
+                document.getElementById('btn-presence-calibrate').addEventListener('click', () => this.calibratePresence());
                 document.getElementById('btn-playlist-start').addEventListener('click', () => { this.clearPath(); this.startPlaylist(); });
                 document.getElementById('btn-playlist-stop').addEventListener('click', () => this.stopPlaylist());
                 document.getElementById('btn-playlist-prev').addEventListener('click', () => this.playlistPrev());
@@ -1055,6 +1063,16 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 const formData = new FormData();
                 formData.append('speed', value);
                 await fetch(this.apiBase + '/speed', { method: 'POST', body: formData });
+            }
+
+            async calibratePresence() {
+                if (!confirm('Keep the room empty and the table completely still for about 20 seconds. Start calibration?')) return;
+                const response = await fetch(this.apiBase + '/presence/calibrate', { method: 'POST' });
+                const result = await response.json().catch(() => ({}));
+                if (!response.ok || !result.success) {
+                    alert('Calibration failed: ' + (result.message || `HTTP ${response.status}`));
+                }
+                await this.pollStatusOnce();
             }
 
             async loadFileList() {
@@ -1533,6 +1551,32 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 document.getElementById('current-pattern').textContent = displayPattern.replace('.thr', '');
                 document.getElementById('status-brightness').textContent = status.ledBrightness;
                 document.getElementById('uptime').textContent = this.formatUptime(status.uptime);
+
+                const presence = status.presence || {};
+                const presenceState = document.getElementById('presence-state');
+                const presenceScore = document.getElementById('presence-score');
+                const presenceCalibrate = document.getElementById('btn-presence-calibrate');
+                if (!presence.available) {
+                    presenceState.textContent = 'Unavailable';
+                } else if (presence.suppressed) {
+                    presenceState.textContent = 'Suspended';
+                } else if (presence.calibrating) {
+                    presenceState.textContent = `Calibrating ${presence.calibrationProgress || 0}%`;
+                } else if (!presence.receiving) {
+                    presenceState.textContent = 'No CSI samples';
+                } else if (!presence.calibrated) {
+                    presenceState.textContent = 'Needs calibration';
+                } else if (presence.motion) {
+                    presenceState.textContent = 'Motion';
+                } else if (presence.occupied) {
+                    presenceState.textContent = 'Occupied';
+                } else {
+                    presenceState.textContent = 'Clear';
+                }
+                presenceScore.textContent = presence.calibrated && Number.isFinite(presence.score)
+                    ? `${presence.score.toFixed(2)}× threshold` : '—';
+                presenceCalibrate.disabled = !presence.available || !presence.receiving ||
+                    presence.suppressed || presence.calibrating;
 
                 const slider = document.getElementById('brightness-slider');
                 if (document.activeElement !== slider) {

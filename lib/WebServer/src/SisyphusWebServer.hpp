@@ -9,13 +9,15 @@
 #include <SDCard.hpp>
 #include <PolarControl.hpp>
 #include <LEDController.hpp>
+#include <PresenceSensor.hpp>
 #include <PlaylistManager.hpp>
 #include "Logger.hpp"
 
 class SisyphusWebServer {
 public:
     SisyphusWebServer(uint16_t port = 80);
-    void begin(PolarControl *polarControl, LEDController *ledController);
+    void begin(PolarControl *polarControl, LEDController *ledController,
+               PresenceSensor *presenceSensor);
     void loop(); // Check for pattern queue processing
     void getRequestStats(uint32_t& total, uint32_t& inflight) const;
 
@@ -24,6 +26,7 @@ private:
     AsyncEventSource m_events;  // SSE for console logs
     PolarControl *m_polarControl;
     LEDController *m_ledController;
+    PresenceSensor *m_presenceSensor;
 
     enum class MotionOwner : uint8_t { NONE, PATTERN, MANUAL, TUNING };
     enum class PendingMotion : uint8_t {
@@ -101,6 +104,8 @@ private:
     void handleSpeedGet(AsyncWebServerRequest *request);
     void handleSpeedSet(AsyncWebServerRequest *request);
     void handleSystemInfo(AsyncWebServerRequest *request);
+    void handlePresenceGet(AsyncWebServerRequest *request);
+    void handlePresenceCalibrate(AsyncWebServerRequest *request);
     void handleRoot(AsyncWebServerRequest *request);
 
     // Playlist handlers

@@ -886,7 +886,7 @@ void MotionPlanner::stopGracefully() {
         ((vTheta > 0.0f) ? thetaBrakeSteps : -thetaBrakeSteps);
     int32_t targetRhoSteps = m_queuedRSteps.load() +
         ((vRho > 0.0f) ? rhoBrakeSteps : -rhoBrakeSteps);
-    targetRhoSteps = std::max(0, std::min(targetRhoSteps,
+    targetRhoSteps = std::max(int32_t{0}, std::min(targetRhoSteps,
         static_cast<int32_t>(m_maxRho * m_stepsPerMmR)));
     float targetT = stepsToTheta(targetThetaSteps);
     float targetR = stepsToRho(targetRhoSteps);

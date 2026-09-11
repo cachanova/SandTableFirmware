@@ -1,0 +1,10 @@
+{
+  "name": "PresenceSensor",
+  "version": "1.0.0",
+  "dependencies": {
+    "PresenceDetection": "*"
+  },
+  "build": {
+    "srcDir": "src"
+  }
+}

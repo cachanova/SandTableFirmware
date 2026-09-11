@@ -170,6 +170,7 @@ SisyphusWebServer::SisyphusWebServer(uint16_t port)
       m_events("/api/stream"),
       m_polarControl(nullptr),
       m_ledController(nullptr),
+      m_presenceSensor(nullptr),
       m_hasQueuedPattern(false),
       m_singlePatternClearing(false),
       m_selectedClearing(CLEARING_NONE),
@@ -210,9 +211,12 @@ void SisyphusWebServer::noteRequest(AsyncWebServerRequest *request) {
     if (imageRequest) m_imageInflight.fetch_add(1);
 }
 
-void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledController) {
+void SisyphusWebServer::begin(PolarControl *polarControl,
+                              LEDController *ledController,
+                              PresenceSensor *presenceSensor) {
     m_polarControl = polarControl;
     m_ledController = ledController;
+    m_presenceSensor = presenceSensor;
 
     // Fragmentation can refuse even a small response object while total heap
     // is healthy. Keep a failed HTTP allocation from rebooting running motion.
@@ -273,6 +277,16 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
     m_server.on("/api/status", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handleStatus(request);
+    });
+
+    m_server.on("/api/presence", HTTP_GET, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handlePresenceGet(request);
+    });
+
+    m_server.on("/api/presence/calibrate", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handlePresenceCalibrate(request);
     });
 
     m_server.on("/api/errors", HTTP_GET, [this](AsyncWebServerRequest *request) {
@@ -1225,7 +1239,8 @@ void SisyphusWebServer::writeStatusJSON(Print& out) {
     if (m_polarControl->getState() == PolarControl::CLEARING) {
         clearingPattern = getClearingPatternName(m_activeClearingPattern);
     }
-    JsonHelpers::writeStatusJSON(out, m_polarControl, m_ledController, m_currentPattern,
+    JsonHelpers::writeStatusJSON(out, m_polarControl, m_ledController,
+        m_presenceSensor, m_currentPattern,
         clearingPattern, m_hasQueuedPattern ? m_queuedPattern : m_pendingPattern,
         m_fileListRevision.load());
 }
@@ -1249,6 +1264,46 @@ void SisyphusWebServer::handleStatus(AsyncWebServerRequest *request) {
     auto response = std_patch::make_unique<BufferedResponse>("application/json", 0, true);
     writeStatusJSON(*response);
     request->send(response.release());
+}
+
+void SisyphusWebServer::handlePresenceGet(AsyncWebServerRequest *request) {
+    AsyncResponseStream *response = request->beginResponseStream(
+        "application/json", kResponseBufferSize);
+    JsonHelpers::writePresenceJSON(*response, m_presenceSensor);
+    request->send(response);
+}
+
+void SisyphusWebServer::handlePresenceCalibrate(AsyncWebServerRequest *request) {
+    if (m_presenceSensor == nullptr) {
+        request->send(503, "application/json",
+            "{\"success\":false,\"message\":\"Presence sensing is unavailable\"}");
+        return;
+    }
+
+    const PresenceStatus status = m_presenceSensor->getStatus();
+    if (!status.available) {
+        request->send(503, "application/json",
+            "{\"success\":false,\"message\":\"CSI initialization failed\"}");
+        return;
+    }
+    if (status.suppressed) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"Wait for table motion and the five-second settling period to finish\"}");
+        return;
+    }
+    if (!status.receiving) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"No fresh CSI samples; check the Wi-Fi connection and gateway\"}");
+        return;
+    }
+    if (!m_presenceSensor->startCalibration()) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"Calibration could not start\"}");
+        return;
+    }
+
+    request->send(202, "application/json",
+        "{\"success\":true,\"message\":\"Keep the room empty and the table still until calibration reaches 100%\"}");
 }
 
 void SisyphusWebServer::handleErrors(AsyncWebServerRequest *request) {

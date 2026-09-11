@@ -9,11 +9,13 @@
 #include <PolarControl.hpp>
 #include <SisyphusWebServer.hpp>
 #include <LEDController.hpp>
+#include <PresenceSensor.hpp>
 
 #include <Config.h>
 PolarControl polarControl;
 SisyphusWebServer webServer(Config::kWebServerPort);
 LEDController ledController(Config::kLedPin);
+PresenceSensor presenceSensor;
 
 TaskHandle_t motorTaskHandle = NULL;
 TaskHandle_t webTaskHandle = NULL;
@@ -106,6 +108,11 @@ void webTask(void *parameter) {
     uint32_t maxLoopUs = 0;
     while (true) {
         uint32_t startUs = micros();
+        const auto state = polarControl.getState();
+        const bool mechanismMoving = state == PolarControl::RUNNING ||
+            state == PolarControl::STOPPING || state == PolarControl::CLEARING ||
+            state == PolarControl::PREPARING || state == PolarControl::HOMING;
+        presenceSensor.loop(mechanismMoving);
         webServer.loop();
 #ifndef SISYPHUS_SKIP_OTA
         ArduinoOTA.handle();
@@ -213,6 +220,10 @@ void setup() {
     LOG("IP Address: %s\r\n", WiFi.localIP().toString().c_str());
     LOG("SSID: %s\r\n", WiFi.SSID().c_str());
 
+    // CSI uses the existing Wi-Fi link as an ambient motion sensor. It is
+    // telemetry-only: no presence result is allowed to start or stop motion.
+    presenceSensor.begin(WiFi.gatewayIP());
+
     // Setup OTA updates
 #ifdef SISYPHUS_SKIP_OTA
     LOG("DIAGNOSTIC: OTA initialization is disabled.\r\n");
@@ -299,7 +310,7 @@ void setup() {
 
     // Start web server
     LOG("Starting web server...\r\n");
-    webServer.begin(&polarControl, &ledController);
+    webServer.begin(&polarControl, &ledController, &presenceSensor);
 
 #if !defined(SISYPHUS_BENCH_MOTION_TEST) && !defined(SISYPHUS_THETA_COMMISSIONING) && !defined(SISYPHUS_RHO_COMMISSIONING)
     // Serve the abort endpoint before allowing startup motion. The website

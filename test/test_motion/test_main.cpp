@@ -18,6 +18,7 @@
 #include "RhoContactConsensus.hpp"
 #include "RhoStartupEntry.hpp"
 #include "RhoRollingSearch.hpp"
+#include "PresenceDetector.hpp"
 
 // Directly include implementations for native build to resolve linker errors
 // This mimics a unity build
@@ -1521,6 +1522,69 @@ bool testPatternFile(const std::string& filepath) {
     return false;
 }
 
+bool testPresenceDetectionCalibrationAndHold() {
+    std::cout << "\n=== Test: Presence Detection Calibration And Hold ===" << std::endl;
+    PresenceDetector detector;
+    float quiet[PresenceDetector::kMaxBins];
+    float changed[PresenceDetector::kMaxBins];
+    for (size_t bin = 0; bin < PresenceDetector::kMaxBins; ++bin) {
+        quiet[bin] = 100.0f + static_cast<float>(bin * 3);
+        changed[bin] = quiet[bin] * ((bin % 2) == 0 ? 0.45f : 1.75f);
+    }
+
+    bool passed = detector.startCalibration();
+    uint32_t nowMs = 0;
+    for (uint16_t sample = 0;
+         sample < PresenceDetector::kBaselineSamples + PresenceDetector::kNoiseSamples;
+         ++sample) {
+        float frame[PresenceDetector::kMaxBins];
+        for (size_t bin = 0; bin < PresenceDetector::kMaxBins; ++bin) {
+            const int jitter = static_cast<int>((sample + bin) % 3) - 1;
+            frame[bin] = quiet[bin] + static_cast<float>(jitter) * 0.1f;
+        }
+        nowMs += 100;
+        passed &= detector.addPowers(frame, PresenceDetector::kMaxBins, nowMs);
+    }
+
+    auto status = detector.status(nowMs);
+    std::cout << "  calibrated phase=" << static_cast<int>(status.phase)
+              << " threshold=" << status.threshold << std::endl;
+    passed &= status.phase == PresenceDetector::Phase::READY;
+    passed &= status.calibrationProgress == 100;
+    passed &= status.threshold >= 0.02f;
+
+    for (int sample = 0; sample < 5; ++sample) {
+        nowMs += 100;
+        passed &= detector.addPowers(changed, PresenceDetector::kMaxBins, nowMs);
+    }
+    status = detector.status(nowMs);
+    std::cout << "  changed motion=" << status.motion
+              << " occupied=" << status.occupied
+              << " score=" << status.score << std::endl;
+    passed &= status.motion && status.occupied && status.score > 1.0f;
+    for (int sample = 0; sample < 80; ++sample) {
+        nowMs += 100;
+        passed &= detector.addPowers(quiet, PresenceDetector::kMaxBins, nowMs);
+    }
+    status = detector.status(nowMs);
+    std::cout << "  settled motion=" << status.motion
+              << " occupied=" << status.occupied
+              << " score=" << status.score << std::endl;
+    passed &= !status.motion && status.occupied;
+    passed &= !detector.status(status.lastMotionMs +
+        PresenceDetector::kOccupancyHoldMs + 1).occupied;
+
+    detector.setSuppressed(true);
+    passed &= !detector.addPowers(changed, PresenceDetector::kMaxBins, nowMs + 100);
+    passed &= !detector.startCalibration();
+    passed &= detector.status(nowMs).suppressed;
+
+    std::cout << (passed ? "PASS" : "FAIL")
+              << ": threshold=" << status.threshold
+              << ", quiet score=" << status.score << std::endl;
+    return passed;
+}
+
 int main(int argc, char* argv[]) {
     std::cout << "========================================" << std::endl;
     std::cout << "MotionPlanner Desktop Test Harness" << std::endl;
@@ -1536,6 +1600,7 @@ int main(int argc, char* argv[]) {
     allPassed &= testStallGuardFiltering();
     allPassed &= testRhoContactConsensus();
     allPassed &= testRhoAcousticProfiles();
+    allPassed &= testPresenceDetectionCalibrationAndHold();
     allPassed &= testSpeedMultiplierScalesSpatialVelocity();
     allPassed &= testControlledSpeedTransition();
     allPassed &= testSynchronizedBoundaryVelocity();

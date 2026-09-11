@@ -5,6 +5,7 @@
 #include <Print.h>
 #include "PolarControl.hpp"
 #include "LEDController.hpp"
+#include "PresenceSensor.hpp"
 #include "SDCard.hpp"
 
 class JsonHelpers {
@@ -14,7 +15,12 @@ public:
         return (static_cast<unsigned>(brightness) * 100U + 127U) / 255U;
     }
 
-    static void writeStatusJSON(Print& out, PolarControl* polarControl, LEDController* ledController, const String& currentPattern, const String& clearingPattern, const String& queuedPattern, uint32_t fileListRevision) {
+    static void writeStatusJSON(Print& out, PolarControl* polarControl,
+                                LEDController* ledController,
+                                PresenceSensor* presenceSensor,
+                                const String& currentPattern,
+                                const String& clearingPattern,
+                                const String& queuedPattern, uint32_t fileListRevision) {
         String state = getStateString(polarControl->getState());
         int progress = polarControl->getProgressPercent();
         uint8_t brightness = ledController->getBrightness();
@@ -52,6 +58,8 @@ public:
         out.print(isSDCardReady() ? "true" : "false");
         out.print(",\"fileListRevision\":");
         out.print(fileListRevision);
+        out.print(",\"presence\":");
+        writePresenceJSON(out, presenceSensor);
         out.print(",\"drivers\":{\"theta\":");
         out.print(drivers.theta ? "true" : "false");
         out.print(",\"rho\":");
@@ -112,6 +120,44 @@ public:
         out.print(",\"failedAxis\":");
         out.print(homing.failedAxis);
         out.print("}");
+        out.print("}");
+    }
+
+    static void writePresenceJSON(Print& out, PresenceSensor* presenceSensor) {
+        const PresenceStatus status = presenceSensor == nullptr
+            ? PresenceStatus{} : presenceSensor->getStatus();
+        out.print("{\"available\":");
+        out.print(status.available ? "true" : "false");
+        out.print(",\"receiving\":");
+        out.print(status.receiving ? "true" : "false");
+        out.print(",\"calibrated\":");
+        out.print(status.calibrated ? "true" : "false");
+        out.print(",\"calibrating\":");
+        out.print(status.calibrating ? "true" : "false");
+        out.print(",\"suppressed\":");
+        out.print(status.suppressed ? "true" : "false");
+        out.print(",\"motion\":");
+        out.print(status.motion ? "true" : "false");
+        out.print(",\"occupied\":");
+        out.print(status.occupied ? "true" : "false");
+        out.print(",\"calibrationProgress\":");
+        out.print(status.calibrationProgress);
+        out.print(",\"score\":");
+        out.print(status.score, 3);
+        out.print(",\"threshold\":");
+        out.print(status.threshold, 4);
+        out.print(",\"rssi\":");
+        out.print(status.rssi);
+        out.print(",\"packets\":");
+        out.print(status.packets);
+        out.print(",\"dropped\":");
+        out.print(status.dropped);
+        out.print(",\"acceptedSamples\":");
+        out.print(status.acceptedSamples);
+        out.print(",\"sampleAgeMs\":");
+        out.print(status.sampleAgeMs);
+        out.print(",\"lastMotionMs\":");
+        out.print(status.lastMotionMs);
         out.print("}");
     }
 

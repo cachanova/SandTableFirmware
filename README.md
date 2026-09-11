@@ -8,6 +8,7 @@ ESP32 firmware for a Sisyphus-style polar-coordinate sand table. It drives Theta
 - Web UI with live position visualization, playlist control, and tuning controls.
 - SD card pattern storage, uploads, and optional PNG previews.
 - OTA firmware updates and runtime telemetry.
+- Experimental Wi-Fi CSI motion/occupancy telemetry with empty-room calibration.
 
 ## Architecture
 At a high level the firmware is organized around three FreeRTOS tasks pinned across the two ESP32 cores. `src/main.cpp` creates a MotorTask on Core 1 for deterministic step generation, and a WebTask on Core 0 for the Web UI/API, WiFi, and OTA handling. `lib/PolarControl` owns the motion planner, driver configuration, and the inter-task queues. It also spins up a FileReadTask on Core 0 to stream `.thr` pattern points from SD/LittleFS into a coordinate queue. The MotorTask drains that queue and drives the stepper outputs, while the WebTask sends commands (start/stop/speed/tuning) and exposes telemetry back to the UI via SSE and JSON APIs.
@@ -71,6 +72,8 @@ Core endpoints (see `lib/WebServer/src/SisyphusWebServer.cpp`):
 - `GET|POST /api/led/brightness` LED control
 - `GET|POST /api/speed` speed control
 - `GET /api/tuning/*` driver and motion tuning
+- `GET /api/presence` CSI presence telemetry
+- `POST /api/presence/calibrate` start empty-room calibration
 - `POST /api/home` start sensorless homing
 - `POST /api/home/confirm` accept or reject the observed home position
 
@@ -110,6 +113,11 @@ defaults, and the repeatable retuning procedure are documented in the
 
 RHO acoustic commissioning uses an outward-only temporary origin and is
 documented in the [rho acoustic tuning playbook](docs/RHO_ACOUSTIC_TUNING.md).
+
+Wi-Fi sensing setup, behavior, and limitations are documented in the
+[presence sensing guide](docs/PRESENCE_SENSING.md). The measured ESP-IDF 5.4
+migration surface and recommendation are in the
+[upgrade assessment](docs/ESP_IDF_5_4_UPGRADE.md).
 
 ## Sensorless Homing
 

@@ -2,6 +2,7 @@
 
 #ifndef NATIVE_BUILD
 #include <Arduino.h>
+#include <soc/gpio_struct.h>
 #else
 #include "esp32_mock.hpp"
 #endif
