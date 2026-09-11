@@ -47,9 +47,12 @@ static constexpr uint8_t kThetaDirPin = 22;
 // TMC2209 UART pins and driver addresses.
 static constexpr uint8_t kUartRxPin = 27;
 static constexpr uint8_t kUartTxPin = 26;
-static constexpr uint8_t kRhoDriverAddress = 1;
-static constexpr uint8_t kRhoCDriverAddress = 0;
+// Daughterboard socket mapping: main RHO uses address 0 and the counterweight
+// companion uses address 1. Both receive the shared RHO STEP/DIR signals.
+static constexpr uint8_t kRhoDriverAddress = 0;
+static constexpr uint8_t kRhoCDriverAddress = 1;
 static constexpr uint8_t kThetaDriverAddress = 2;
+static constexpr bool kRhoCompanionMotorEnabled = true;
 
 // FYSETC TMC2209 V3.0 uses 0.11 ohm external sense resistors. UART operation
 // disables analog current scaling, so the onboard VREF potentiometer does not

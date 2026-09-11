@@ -33,8 +33,8 @@
 #define T_DIR_PIN 22
 #define RX_PIN 27
 #define TX_PIN 26
-#define R_ADDR 1
-#define RC_ADDR 0
+#define R_ADDR 0
+#define RC_ADDR 1
 #define T_ADDR 2
 #endif
 
@@ -53,6 +53,10 @@ struct MotionSettings {
 };
 
 struct DriverSettings {
+  // Persistent UART direction compensation for the installed motor wiring.
+  // This is a hardware property, not an acoustic tuning parameter.
+  bool inverseMotorDirection = false;
+
   // Current settings (in mA)
   uint16_t runCurrent = 800;          // Run current in mA
   uint16_t holdCurrent = 400;         // Hold current in mA
@@ -177,12 +181,14 @@ public:
   // against the stop for an entire unknown-position travel span.
   bool home(bool confirmedOriginBounded = false);
   bool confirmHome(bool successful);
+  // Accept the current physical location as theta=0, rho=0 without moving.
+  // The caller must require explicit operator confirmation first.
+  bool setCurrentPositionAsHome();
   HomingStatus getHomingStatus() const;
   size_t getHomingTrace(HomingTraceSample* output, size_t capacity) const;
   DriverAvailability getDriverAvailability() const;
 #if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
-  // Test/commissioning-only escape hatch: establish a logical origin without
-  // moving the mechanism. This must never be present in a production build.
+  // Test/commissioning convenience wrapper around setCurrentPositionAsHome().
   void assumeBenchTestOrigin();
 #endif
 #ifdef SISYPHUS_RHO_COMMISSIONING
@@ -266,6 +272,7 @@ public:
   // Motor stress tests (blocking calls - run from main task)
   bool testThetaContinuous();
   bool testThetaStress();
+  bool testThetaSegment(float targetThetaRad);
   bool testRhoContinuous();
   bool testRhoStress();
   bool testRhoSegment(float targetRhoMm);
@@ -371,11 +378,14 @@ private:
   std::atomic<uint8_t> m_speed{5};
   bool m_clearingSpeedActive = false;
   bool m_pauseAfterStop = false;
+  bool m_restartAfterSpeedChange = false;
+  bool m_speedUpdatePending = false;
   std::vector<PolarCord_t> m_resumePoints;
   size_t m_resumePointIndex = 0;
 
   // Helpers
   void updateSpeedSettings();
+  void capturePendingTargetsForResume();
   void feedPlanner();
   bool writeTuningSettingsLocked(const MotionSettings& motionSettings,
                                  const DriverSettings& thetaSettings,

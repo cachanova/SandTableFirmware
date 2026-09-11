@@ -62,6 +62,8 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
         .mode-control strong { margin-right: auto; }
         .mode-control button { width: auto; min-width: 150px; margin: 0; }
         .mode-active { border-color: var(--accent); background: rgba(201,162,39,.22); }
+        #setAsHome { border: 1px solid rgba(74,222,128,.5); background: rgba(74,222,128,.13); }
+        #setAsHome:hover { background: rgba(74,222,128,.22); }
         @media (max-width: 560px) { body { padding: 12px; } .card { padding: 14px; } nav a { padding: 8px 10px; font-size: .78rem; } h1 { font-size: 1.9rem; } .jog-controls { grid-template-columns: 1fr; } }
     </style>
 </head>
@@ -77,10 +79,11 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
             <button id="modeManual">Manual RHO</button>
             <button id="modeCommissioning">RHO Commissioning</button>
         </div>
-        <p class="hint">Manual mode permits relative RHO jogs without homing. Commissioning mode assigns the current physical position as temporary zero and permits only bounded outward-return tests. Theta and patterns stay locked out.</p>
+        <p class="hint">Manual mode permits relative RHO jogs without homing. Set as home assigns the current physical position as RHO 0 mm, marks the controller homed, and unlocks absolute manual positioning. Theta and patterns stay locked out in this service image.</p>
     </section>
     <section class="card">
         <div class="status-row"><div class="status"><span id="stateDot" class="dot"></span><strong id="state">Connecting</strong></div><div class="status" id="sendState">Waiting</div></div>
+        <button id="setAsHome">Set current position as home</button>
         <div class="stage"><canvas id="table" aria-label="Manual table position control"></canvas></div>
         <p class="hint">The jog buttons work before homing; their moves are relative and the displayed absolute position is unconfirmed. The canvas unlocks after homing.</p>
         <div class="readouts">
@@ -152,7 +155,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
     async function setRhoServiceMode(mode) {
         if (mode===rhoServiceMode) return;
         if (mode==='commissioning' && !confirm(
-            'Confirm both RHO mechanisms are at the intended test origin. This assigns the current physical position as logical zero.')) return;
+            'Confirm the connected main RHO mechanism is physically at home. This assigns the current position as RHO 0 mm and marks the controller homed.')) return;
         commandGeneration++; queued=null; clearTimeout(sendTimer); dragging=false;
         const body=new URLSearchParams({mode});
         if (mode==='commissioning') body.set('confirmOrigin','true');
@@ -163,6 +166,19 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
             errorEl.textContent=''; sendEl.textContent=`Switched to ${mode}`;
             await refreshRhoServiceMode(); await refreshStatus();
         } catch (err) { errorEl.textContent=err.message; }
+    }
+
+    async function setCurrentAsHome() {
+        if (!confirm(
+            'Confirm theta and the connected main RHO mechanism are at their intended home positions. This sets both logical positions to zero.')) return;
+        commandGeneration++; queued=null; clearTimeout(sendTimer); dragging=false;
+        try {
+            const response=await fetch('/api/manual/set-home',{method:'POST'});
+            const data=await response.json().catch(()=>({}));
+            if (!response.ok) throw new Error(data.message || `Request failed (${response.status})`);
+            errorEl.textContent=''; sendEl.textContent='Home accepted';
+            await refreshRhoServiceMode(); await initialPosition(); await refreshStatus();
+        } catch (err) { errorEl.textContent=err.message; sendEl.textContent='Home not changed'; }
     }
 
     function resize() {
@@ -262,6 +278,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
     document.querySelectorAll('.jog').forEach(button => button.addEventListener('click',() => jog(button.dataset.axis,Number(button.dataset.delta))));
     document.getElementById('modeManual').addEventListener('click',()=>setRhoServiceMode('manual'));
     document.getElementById('modeCommissioning').addEventListener('click',()=>setRhoServiceMode('commissioning'));
+    document.getElementById('setAsHome').addEventListener('click',setCurrentAsHome);
     document.getElementById('stop').addEventListener('click', async () => {
         commandGeneration++; queued=null; clearTimeout(sendTimer); dragging=false; stopInProgress=true; enabled=false; jogEnabled=false; updateControls();
         if (sendController) sendController.abort();

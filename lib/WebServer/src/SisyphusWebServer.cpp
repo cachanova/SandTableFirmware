@@ -322,6 +322,12 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
         handleManualJog(request);
     });
 
+    m_server.on(AsyncURIMatcher::exact("/api/manual/set-home"), HTTP_POST,
+        [this](AsyncWebServerRequest *request) {
+            noteRequest(request);
+            handleManualSetHome(request);
+        });
+
     m_server.on("/api/motion/stop", HTTP_POST, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handleMotionStop(request);
@@ -629,6 +635,11 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
         handleTuningTestThetaStress(request);
     });
 
+    m_server.on("/api/tuning/test/theta/segment", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handleTuningTestThetaSegment(request);
+    });
+
     m_server.on("/api/tuning/test/rho/continuous", HTTP_POST, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handleTuningTestRhoContinuous(request);
@@ -910,6 +921,7 @@ void SisyphusWebServer::processPatternQueue() {
         const float rho = m_pendingManualRho;
         const float jogTheta = m_pendingJogTheta;
         const float jogRho = m_pendingJogRho;
+        const float thetaSegmentTarget = m_pendingThetaSegmentTarget;
         const float rhoSegmentTarget = m_pendingRhoSegmentTarget;
         m_pendingMotion = PendingMotion::NONE;
 
@@ -929,6 +941,10 @@ void SisyphusWebServer::processPatternQueue() {
                 break;
             case PendingMotion::THETA_STRESS:
                 started = m_polarControl->testThetaStress();
+                m_activeMotion = MotionOwner::TUNING;
+                break;
+            case PendingMotion::THETA_SEGMENT:
+                started = m_polarControl->testThetaSegment(thetaSegmentTarget);
                 m_activeMotion = MotionOwner::TUNING;
                 break;
             case PendingMotion::RHO_CONTINUOUS:
@@ -1458,9 +1474,9 @@ void SisyphusWebServer::handleRhoServiceModeSet(
 
     if (mode == "commissioning") {
         const DriverAvailability drivers = m_polarControl->getDriverAvailability();
-        if (!drivers.rho || !drivers.rhoCompanion) {
+        if (!drivers.rho) {
             request->send(409, "application/json",
-                "{\"success\":false,\"message\":\"Both RHO drivers are required for commissioning\"}");
+                "{\"success\":false,\"message\":\"The main RHO driver is required to set home\"}");
             return;
         }
         m_polarControl->assumeBenchTestOrigin();
@@ -1545,6 +1561,42 @@ void SisyphusWebServer::handleManualMove(AsyncWebServerRequest *request) {
     m_pendingMotion = PendingMotion::MANUAL;
     request->send(202, "application/json",
         "{\"success\":true,\"message\":\"Manual target queued\"}");
+}
+
+void SisyphusWebServer::handleManualSetHome(
+        AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
+    const auto state = m_polarControl->getState();
+    if ((state != PolarControl::INITIALIZED && state != PolarControl::IDLE &&
+         state != PolarControl::HOMING_FAILED) ||
+        m_activeMotion != MotionOwner::NONE ||
+        m_pendingMotion != PendingMotion::NONE) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"Stop motion before setting home\"}");
+        return;
+    }
+
+    const DriverAvailability drivers = m_polarControl->getDriverAvailability();
+    bool requiredDriversReady = drivers.rhoAxis();
+#ifndef SISYPHUS_RHO_COMMISSIONING
+    requiredDriversReady = requiredDriversReady && drivers.thetaAxis();
+#endif
+    if (!requiredDriversReady) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"Required motor drivers are unavailable\"}");
+        return;
+    }
+    clearPlaybackLocked();
+    if (!m_polarControl->setCurrentPositionAsHome()) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"Could not set home in the current state\"}");
+        return;
+    }
+#ifdef SISYPHUS_RHO_COMMISSIONING
+    m_rhoCommissioningMode.store(true);
+#endif
+    request->send(200, "application/json",
+        "{\"success\":true,\"homed\":true,\"rho\":0,\"theta\":0}");
 }
 
 void SisyphusWebServer::handleManualJog(AsyncWebServerRequest *request) {
@@ -2707,6 +2759,38 @@ void SisyphusWebServer::handleTuningTestThetaStress(AsyncWebServerRequest *reque
         return;
     }
     request->send(202, "application/json", "{\"success\":true,\"message\":\"Test queued\"}");
+}
+
+void SisyphusWebServer::handleTuningTestThetaSegment(
+        AsyncWebServerRequest *request) {
+#ifndef SISYPHUS_THETA_COMMISSIONING
+    request->send(409, "application/json",
+        "{\"success\":false,\"message\":\"Segmented theta tests require theta commissioning mode\"}");
+    return;
+#else
+    if (!request->hasParam("targetRadians", true)) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Missing targetRadians\"}");
+        return;
+    }
+    float target = 0.0f;
+    if (!parseStrictFloat(
+            request->getParam("targetRadians", true)->value(), target) ||
+        target < 0.0f || target > 2.0f * PI) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"targetRadians must be within 0..2pi\"}");
+        return;
+    }
+    SemaphoreGuard stateLock(m_stateMutex);
+    if (!queueTuningTestLocked(PendingMotion::THETA_SEGMENT)) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"Theta segment is unavailable\"}");
+        return;
+    }
+    m_pendingThetaSegmentTarget = target;
+    request->send(202, "application/json",
+        "{\"success\":true,\"message\":\"Theta segment queued\"}");
+#endif
 }
 
 void SisyphusWebServer::handleTuningTestRhoContinuous(AsyncWebServerRequest *request) {

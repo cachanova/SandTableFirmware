@@ -1,6 +1,6 @@
 # Theta commissioning and acoustic tuning playbook
 
-Use this playbook to re-establish the fastest useful theta settings at three
+Use this playbook to re-establish the fastest useful theta settings at the
 operator-selected noise limits. It is written for an agent working with the
 operator present. The operator's report always overrides a microphone pass.
 
@@ -21,11 +21,13 @@ the UI confirmation flow apply only to rho.
   operator could hear. Historical artifacts may contain Logitech fields; ignore
   them for every comparison and acceptance decision.
 
-The last selected theta candidate was 64 external microsteps, TMC2209
+The last operator-selected production candidate was 64 external microsteps, TMC2209
 interpolation to 256, StealthChop, CoolStep off, 700 mA run / 200 mA hold,
 0.48 rad/s velocity, 2 rad/s² acceleration, and 10 rad/s³ jerk. Re-run the
 procedure after mechanical, microphone, motor, driver, supply, or mounting
-changes rather than assuming those values still apply.
+changes rather than assuming those values still apply. The 2026-09-11 loaded
+retune below found a quieter 16-microstep driver profile, but it does not become
+the production selection until the operator listens to and chooses a tier.
 
 ## Sources of truth
 
@@ -38,14 +40,15 @@ boot envelope:
 | LittleFS tuning store | Query with `GET /api/tuning` | Query with `GET /api/tuning` | Runtime/production authority when persistence is available |
 | Theta commissioning after reboot | 0.05 rad/s / 0.10 rad/s² / 0.50 rad/s³ | 250 mA run / 100 mA hold | Deliberately safe start; a trial applies its requested values |
 
-All three use 64 external microsteps, StealthChop, and CoolStep off. The
+The production fallback and commissioning boot envelope use 64 external
+microsteps, StealthChop, and CoolStep off. The
 production fallback lives in `MotionSettings` plus the `PolarControl`
 constructor. The commissioning override lives in `PolarControl::begin()` and
 uses the current constants in `Config.h`. A tuning trial posts and persists its
 requested values, but a commissioning reboot still replaces the runtime values
 with its safe envelope. A production boot will load the persisted profile.
 
-The complete selected theta driver record is:
+The historical operator-selected production driver record is:
 
 | Setting | Value |
 |---|---:|
@@ -63,6 +66,88 @@ The complete selected theta driver record is:
 The Antlion calibration fingerprint was mono, signed 16-bit PCM at 48 kHz,
 capture volume 100% / 0.00 dB, base volume 56% / -15.00 dB, and unmuted. Any
 change to those values starts a new calibration session.
+
+## Final retune targets (2026-09-11)
+
+The current campaign replaces the old three relative line tiers with an
+integer ladder of explicit sustained-motor-excess targets. The earlier
+`-55 dBFS` performance tier was dropped after live listening:
+
+| Tier | Maximum adjacent-idle-subtracted A-weighted motor excess |
+|---|---:|
+| -58 | -58 dBFS |
+| -59 | -59 dBFS |
+| -60 | -60 dBFS |
+| -61 | -61 dBFS |
+| -62 | -62 dBFS |
+| -63 | -63 dBFS |
+| -64 | -64 dBFS |
+| -65 | -65 dBFS |
+
+These thresholds apply to the loudest telemetry-confirmed constant-velocity
+gate and its conservative 95% upper bound. They do not apply numerically to an
+FFT bin: motion-locked spectral lines are recorded separately with their own
+absolute dBFS values and must disappear in adjacent idle gates. The operator's
+listening verdict is still required before calling any tier inaudible.
+
+For each tier, first minimize driver noise at the known 0.48 rad/s reference,
+then find the highest velocity that passes, then maximize acceleration and
+jerk without creating audible reversal or ramp noise. A faster velocity is not
+accepted merely because a slower ramp lowers the whole-window average; every
+scored gate must sustain at least 90% of commanded velocity for one second.
+
+### Loaded retune result
+
+With the loaded theta mechanism and fixed Antlion setup, all eight requested
+ceilings collapse into two measured velocity profiles. These are the fastest
+points that completed the full eight-gate, two-repeat qualification in the
+sampled search; they are not claims of a continuous mathematical maximum.
+
+| Tier | Fastest qualified velocity | Conservative broadband upper bound | Confirmed limiting tone | First faster full-run failure |
+|---|---:|---:|---:|---:|
+| -58 | 0.548125 rad/s | -62.90 dBFS | none | 0.554062 rad/s: 70.31 Hz at -56.32 dBFS |
+| -59 | 0.548125 rad/s | -62.90 dBFS | none | 0.554062 rad/s: 70.31 Hz at -56.32 dBFS |
+| -60 | 0.548125 rad/s | -62.90 dBFS | none | 0.554062 rad/s: 70.31 Hz at -56.32 dBFS |
+| -61 | 0.548125 rad/s | -62.90 dBFS | none | 0.554062 rad/s: 70.31 Hz at -56.32 dBFS |
+| -62 | 0.548125 rad/s | -62.90 dBFS | none | 0.554062 rad/s: 70.31 Hz at -56.32 dBFS |
+| -63 | 0.231250 rad/s | -65.18 dBFS | none | 0.234375 rad/s: -61.63 dBFS upper bound |
+| -64 | 0.231250 rad/s | -65.18 dBFS | none | 0.234375 rad/s: -61.63 dBFS upper bound |
+| -65 | 0.231250 rad/s | -65.18 dBFS | none | 0.234375 rad/s: -61.63 dBFS upper bound |
+
+Both profiles use 700 mA run / 200 mA hold, 16 external microsteps with
+interpolation to 256, always-on StealthChop, CoolStep off, standard current
+scale, `TOFF=5`, `HSTRT=5`, `HEND=0`, `TBL=2`, `PWM_FREQ=1`, manual
+`PWM_OFS=76` / `PWM_GRAD=23`, `PWM_REG=1`, `PWM_LIM=12`, hold delay 8,
+power-down delay 20, and standstill mode 0. Motion uses 2 rad/s² acceleration
+and 10 rad/s³ jerk. The search exercised microstep/interpolation choices,
+standard and high-sensitivity current scaling, current, StealthChop PWM,
+chopper timing, SpreadCycle, hybrid switching, CoolStep, velocity, acceleration,
+and jerk. SpreadCycle, hybrid switching, CoolStep, 800 mA at the high-speed
+edge, and alternate PWM families did not improve the loaded acoustic result.
+
+The passing high-speed artifact is
+`20260911T162221Z-theta-cert-tier58-v0p548125-current700-a2-j10-g23-result.json`.
+The adjacent failing artifact is
+`20260911T162646Z-theta-cert-fail-tier58-v0p5540625-current700-a2-j10-g23-result.json`.
+The strict-profile artifact is
+`20260911T160148Z-theta-cert-tiers63to65-v0p23125-current700-a2-j10-g23-result.json`,
+and its adjacent failing artifact is
+`20260911T152817Z-theta-cert-tier65-v0p234375-current700-a2-j10-g23-result.json`.
+All four have healthy UART/readback, no driver or planner faults, stationary
+rho, and exact return to the recorded theta start.
+
+The -65 result has only 0.18 dB of measured margin. Use 0.225 rad/s as the
+more conservative strict profile when repeatability matters more than the
+2.8% speed increase; its full-run upper bound was -65.59 dBFS. Conversely,
+0.548125 rad/s has 0.90 dB of margin at -62. Every listed pass still requires
+the operator's listening approval before it may be described as inaudible.
+
+These tier measurements cover sustained constant-velocity gates. They do not
+claim that ramp/reversal transients meet the same numerical ceilings: the ramp
+matrix found substantially louder position-dependent mechanism transients even
+with gentler profiles. Among the tested practical motion profiles,
+2 rad/s² / 10 rad/s³ retained the best balance, but final human listening and
+the coupled rho/theta test remain mandatory.
 
 ## Current three-profile measurements (2026-09-07)
 
@@ -309,10 +394,12 @@ missing gates, clipping, microphone-gain changes, unstable timing, or
 unexplained background drift. The operator's audible verdict overrides a
 numeric pass.
 
-The current segmented screen endpoint is rho-only. Add and validate the theta
-equivalent before the next theta session. Until then, use one full continuous
-repeat as the theta screening pass; do not invoke `--profile screen` or
-`--profile gated` with `--axis theta`.
+Theta commissioning provides a bounded segmented endpoint. The default screen
+is `0 -> 90deg -> 0 -> 90deg -> 0`, and the gated qualification repeats that
+out/back pair four times with an idle interval after every leg. Set
+`--theta-excursion-deg` larger when telemetry cannot prove one second at 90% of
+commanded velocity. The firmware accepts only targets from 0 through 2pi and
+the host rejects any sequence that does not return to its exact start.
 
 1. Establish one known pass.
 2. Change only one family at a time: microsteps, current, velocity, or ramp.
@@ -332,17 +419,18 @@ repeat as the theta screening pass; do not invoke `--profile screen` or
 python scripts/acoustic_tuner.py trial \
   --label PROFILE-CANDIDATE \
   --rated-current-ma 1500 \
-  --acceptable-ceiling-dbfs -53.92 \
+  --acceptable-ceiling-dbfs TIER_CEILING \
   --tone-ceiling-dbfs TONE_CEILING \
   --minimum-persistence 0.25 \
-  --profile both --repeats 1 \
-  --pre-idle 3 --duration 300 --post-idle 3 \
+  --profile screen --theta-excursion-deg 90 --repeats 1 \
+  --pre-idle 3 --gated-idle 2 --duration 120 --post-idle 3 \
   --run-current-ma CURRENT --hold-current-ma HOLD \
   --velocity VELOCITY --accel ACCEL --jerk JERK \
   --microsteps MICROSTEPS --mode stealthchop --coolstep off
 ```
 
-Recommended search order:
+Required search order (do not skip a family merely because the historical
+baseline passed):
 
 1. Compare 32, 64, and 128 external microsteps. Prefer lower CPU cost unless a
    higher value materially improves sound or visible smoothness. Confirm
@@ -352,9 +440,15 @@ Recommended search order:
 3. Increase velocity with full rotations while retaining timing headroom.
 4. Tune acceleration and jerk with stress motion. Test gentler and faster ramps
    because slow traversal can dwell in a resonance.
-5. Keep StealthChop and automatic PWM calibration as primary quiet mode. Test
-   SpreadCycle/hybrid only if torque or stability requires it. Keep CoolStep
-   off until reproducible fixed-current profiles exist.
+5. Keep StealthChop and automatic PWM calibration as the first quiet mode, then
+   compare manual PWM derived from the observed automatic values.
+6. Exercise the SpreadCycle chopper controls and a hybrid threshold at least
+   once as controls; reject them quickly if the first screen is clearly louder.
+7. Test the complete CoolStep parameter set after the best fixed-current
+   profile exists. A CoolStep result is valid only when `CS_ACTUAL`, SG data,
+   motion, and sound remain repeatable in both directions.
+8. Tune hold current, hold delay, power-down delay, and standstill mode after
+   motion passes. Score stop/idle transients separately from cruise.
 
 ### TMC2209 parameter matrix
 
@@ -373,7 +467,7 @@ rotation and stress. Record the raw register dump with each artifact.
 | SpreadCycle | `TOFF`, `TBL`, `HSTRT`, `HEND` | Start at 3, 2, 5, 0; sweep one field at a time within datasheet ranges | Reject `TOFF=1` with `TBL<2` and raw `HSTRT + HEND > 18`; use only in SpreadCycle or hybrid trials |
 | Standstill | `IHOLD`, `IHOLDDELAY`, `TPOWERDOWN`, `FREEWHEEL` | Tune after motion sound passes; keep `TPOWERDOWN >= 12` | Score stop transients and idle separately; preserve enough hold torque for the mechanism |
 | CoolStep | `SEMIN`, `SEMAX`, `SEUP`, `SEDN`, `TCOOLTHRS` | Keep off for the fixed-current baseline; test the complete set afterward | Accept only if current modulation stays repeatable and does not worsen tones or missed motion |
-| Hybrid mode | `TPWMTHRS` | Test only when all-StealthChop cannot meet torque or speed | Place the transition outside common operating resonances and test it in both directions |
+| Hybrid mode | `TPWMTHRS` | One controlled screen after SpreadCycle characterization; expand only if useful | Place the transition outside common operating resonances and test it in both directions |
 
 The host exposes these controls as `--current-scale`, `--run-current-ma`,
 `--hold-current-ma`, `--microsteps`, `--interpolation`, `--pwm-frequency`,
@@ -438,7 +532,7 @@ Then run the operator-selected profile for five of each:
 python scripts/acoustic_tuner.py trial \
   --label theta-selected-loaded-soak \
   --rated-current-ma 1500 \
-  --acceptable-ceiling-dbfs -53.92 \
+  --acceptable-ceiling-dbfs TIER_CEILING \
   --tone-ceiling-dbfs TONE_CEILING \
   --minimum-persistence 0.20 \
   --profile both --repeats 5 \

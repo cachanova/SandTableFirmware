@@ -11,7 +11,7 @@ the mechanism is connected.
    GPIO1/GPIO3 belong to the USB debug UART and must not connect to PDN_UART.
    Use the board-required one-wire UART coupling resistor (typically about 1 kΩ).
 2. Confirm the three drivers have unique UART address straps: theta 2, primary
-   rho 1, and companion rho 0. All VIO connections must be 3.3 V and share a
+   rho 0, and companion rho 1. All VIO connections must be 3.3 V and share a
    ground with the ESP32.
 3. Make sure the carriage can move through the full rho path by hand and note
    the angular regions that are mechanically stiff.
@@ -68,10 +68,10 @@ pio run -e esp32dev -t upload --upload-port /dev/ttyUSB0
 3. Start homing from the dashboard and watch both sequential motor passes.
    For each motor, verify a short outward runway, a constant-speed inward
    approach, a 4 mm verification backoff, and a slow inward return. The other
-   rho motor must remain de-energized and mechanically stationary during that
-   pass. If its shaft is back-driven, cut power and do not use this sequential
-   homing method: electrical-phase restoration assumes the disabled rotor did
-   not move.
+   rho motor must remain mechanically stationary while its driver holds its
+   saved phase at 256 microsteps using `VACTUAL=+/-1`. If that shaft moves,
+   drifts, or jumps when STEP/DIR control is restored, cut power and reject the
+   sequential homing method for this hardware.
 4. If motion stops in a stiff section, choose **No, It Stopped Early**. On the
    Tuning page, first lower the trigger percentage, then increase consecutive
    samples or ignored initial travel. Change one value at a time.

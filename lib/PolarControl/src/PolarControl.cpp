@@ -75,9 +75,19 @@ static uint8_t tmcCrc(const uint8_t* bytes, size_t length) {
     return crc;
 }
 
+struct TmcReadProbe {
+    size_t echoCount = 0;
+    bool echoMatches = false;
+    size_t replyCount = 0;
+    bool frameMatches = false;
+    bool crcMatches = false;
+    uint8_t reply[8] = {};
+};
+
 static bool readTmcRegisterCheckedOnce(uint8_t driverAddress,
                                        uint8_t registerAddress,
-                                       uint32_t& value) {
+                                       uint32_t& value,
+                                       TmcReadProbe* probe = nullptr) {
     constexpr uint8_t kSync = 0x05;
     constexpr uint8_t kMasterAddress = 0xFF;
     constexpr uint32_t kEchoTimeoutUs = 4000;
@@ -99,7 +109,13 @@ static bool readTmcRegisterCheckedOnce(uint8_t driverAddress,
             echo[echoCount++] = static_cast<uint8_t>(Serial1.read());
         }
     }
-    if (echoCount != sizeof(echo) || memcmp(echo, request, sizeof(request)) != 0) {
+    const bool echoMatches = echoCount == sizeof(echo) &&
+        memcmp(echo, request, sizeof(request)) == 0;
+    if (probe != nullptr) {
+        probe->echoCount = echoCount;
+        probe->echoMatches = echoMatches;
+    }
+    if (!echoMatches) {
         return false;
     }
 
@@ -111,9 +127,17 @@ static bool readTmcRegisterCheckedOnce(uint8_t driverAddress,
             reply[replyCount++] = static_cast<uint8_t>(Serial1.read());
         }
     }
-    if (replyCount != sizeof(reply) || reply[0] != kSync ||
-        reply[1] != kMasterAddress || (reply[2] & 0x7F) != (registerAddress & 0x7F) ||
-        tmcCrc(reply, 7) != reply[7]) {
+    const bool frameMatches = replyCount == sizeof(reply) &&
+        reply[0] == kSync && reply[1] == kMasterAddress &&
+        (reply[2] & 0x7F) == (registerAddress & 0x7F);
+    const bool crcMatches = frameMatches && tmcCrc(reply, 7) == reply[7];
+    if (probe != nullptr) {
+        probe->replyCount = replyCount;
+        probe->frameMatches = frameMatches;
+        probe->crcMatches = crcMatches;
+        memcpy(probe->reply, reply, sizeof(reply));
+    }
+    if (!crcMatches) {
         return false;
     }
 
@@ -221,6 +245,23 @@ static bool setDriverEnabled(TMC2209& driver, uint8_t driverAddress,
         (((verified & (1UL << 28)) != 0) == settings.interpolationEnabled);
 }
 
+static bool disableDriverMotion(TMC2209& driver, uint8_t driverAddress,
+                                const DriverSettings& settings) {
+    // An OTA reboot does not reset the TMC2209. Stop a possibly active UART
+    // velocity command as well as turning off the power stage, then verify the
+    // bridge is disabled. This keeps a deliberately unavailable motor from
+    // reacting to the shared RHO STEP/DIR signals.
+    const bool velocityStopped = writeTmcRegisterAcknowledged(
+        driverAddress, 0x22, 0);
+    const bool bridgeCommanded = setDriverEnabled(
+        driver, driverAddress, settings, false);
+    uint32_t chopconf = 0;
+    const bool bridgeDisabled =
+        readTmcRegisterChecked(driverAddress, 0x6C, chopconf) &&
+        (chopconf & 0x0FU) == 0;
+    return velocityStopped && bridgeCommanded && bridgeDisabled;
+}
+
 static bool tmcDriverPresent(uint8_t driverAddress) {
     uint32_t ioInput = 0;
     return readTmcRegisterChecked(driverAddress, 0x06, ioInput) &&
@@ -313,11 +354,13 @@ bool PolarControl::begin() {
     m_tDriver.setup(Serial1, 115200, toSerialAddress(T_ADDR), RX_PIN, TX_PIN);
     m_rDriver.setup(Serial1, 115200, toSerialAddress(R_ADDR), RX_PIN, TX_PIN);
     m_rCDriver.setup(Serial1, 115200, toSerialAddress(RC_ADDR), RX_PIN, TX_PIN);
+#ifndef SISYPHUS_TMC_UART_SCAN_ONLY
     // Datasheet SENDDELAY requirement for multiple addressed nodes sharing a
     // single-wire UART. Apply it before the first bidirectional status read.
     m_tDriver.setReplyDelay(2);
     m_rDriver.setReplyDelay(2);
     m_rCDriver.setReplyDelay(2);
+#endif
     m_driverBusInitialized.store(true);
 
     delay(100);  // Allow drivers to initialize
@@ -387,6 +430,115 @@ bool PolarControl::setupDrivers() {
         return false;
     }
 
+#ifdef SISYPHUS_TMC_UART_SCAN_ONLY
+    // Non-motion address discovery: do not call the general TMC configuration
+    // methods or setDriverEnabled(), because either could energize a bridge.
+    // Multiple passes distinguish a valid addressed reply from intermittent
+    // bus noise; readTmcRegisterChecked() already validates framing and CRC.
+    // First verify the board-level 1 kOhm TX-to-RX link without sending any
+    // TMC datagram. A healthy link must let RX follow TX high, low, then high.
+    Serial1.end();
+    pinMode(TX_PIN, OUTPUT);
+    pinMode(RX_PIN, INPUT_PULLUP);
+    digitalWrite(TX_PIN, HIGH);
+    delayMicroseconds(50);
+    const bool linkHighBefore = digitalRead(RX_PIN) == HIGH;
+    digitalWrite(TX_PIN, LOW);
+    delayMicroseconds(50);
+    const bool linkLow = digitalRead(RX_PIN) == LOW;
+    digitalWrite(TX_PIN, HIGH);
+    delayMicroseconds(50);
+    const bool linkHighAfter = digitalRead(RX_PIN) == HIGH;
+    LOG("TMC UART GPIO link TX26->RX27: high=%u low=%u high=%u result=%s\r\n",
+        linkHighBefore, linkLow, linkHighAfter,
+        (linkHighBefore && linkLow && linkHighAfter) ? "PASS" : "FAIL");
+    Serial1.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
+    delay(10);
+
+    uint8_t validReplies[4] = {};
+    uint8_t validEchoes[4] = {};
+    uint8_t fullReplies[4] = {};
+    uint8_t framedReplies[4] = {};
+    uint8_t crcReplies[4] = {};
+    uint32_t lastIoInput[4] = {};
+    TmcReadProbe lastProbe[4] = {};
+    constexpr uint8_t kScanPasses = 5;
+    LOG("TMC UART read-only scan starting on RX=%u TX=%u at 115200 baud\r\n",
+        RX_PIN, TX_PIN);
+    for (uint8_t pass = 0; pass < kScanPasses; ++pass) {
+        for (uint8_t address = 0; address < 4; ++address) {
+            uint32_t ioInput = 0;
+            TmcReadProbe probe;
+            const bool readValid = readTmcRegisterCheckedOnce(
+                address, 0x06, ioInput, &probe);
+            if (probe.echoMatches) ++validEchoes[address];
+            if (probe.replyCount == sizeof(probe.reply)) ++fullReplies[address];
+            if (probe.frameMatches) ++framedReplies[address];
+            if (probe.crcMatches) ++crcReplies[address];
+            lastProbe[address] = probe;
+            if (readValid &&
+                ((ioInput >> 24) & 0xFFU) == 0x21U) {
+                ++validReplies[address];
+                lastIoInput[address] = ioInput;
+            }
+        }
+        delay(5);
+    }
+    for (uint8_t address = 0; address < 4; ++address) {
+        if (validReplies[address] > 0) {
+            LOG("TMC UART scan address %u: %u/%u valid, IOIN=0x%08lX\r\n",
+                address, validReplies[address], kScanPasses,
+                static_cast<unsigned long>(lastIoInput[address]));
+        } else {
+            LOG("TMC UART scan address %u: 0/%u valid\r\n",
+                address, kScanPasses);
+        }
+        LOG("  echo=%u/%u full-reply=%u/%u frame=%u/%u crc=%u/%u "
+            "last-counts=%u/%u last-reply="
+            "%02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+            validEchoes[address], kScanPasses,
+            fullReplies[address], kScanPasses,
+            framedReplies[address], kScanPasses,
+            crcReplies[address], kScanPasses,
+            static_cast<unsigned>(lastProbe[address].echoCount),
+            static_cast<unsigned>(lastProbe[address].replyCount),
+            lastProbe[address].reply[0], lastProbe[address].reply[1],
+            lastProbe[address].reply[2], lastProbe[address].reply[3],
+            lastProbe[address].reply[4], lastProbe[address].reply[5],
+            lastProbe[address].reply[6], lastProbe[address].reply[7]);
+    }
+
+    // Repeat after a deliberately inert bootstrap. Every possible target gets
+    // zero phase current and TOFF=0 before GCONF selects UART operation. This
+    // mirrors the production library's safe initialization ordering without
+    // enabling a bridge or producing a STEP pulse.
+    LOG("TMC UART safe bootstrap scan starting (IRUN=0, TOFF=0)\r\n");
+    for (uint8_t address = 0; address < 4; ++address) {
+        const bool zeroCurrentEcho = writeTmcRegister(address, 0x10, 0x00000000UL);
+        const bool bridgeOffEcho = writeTmcRegister(address, 0x6C, 0x00000000UL);
+        const bool velocityZeroEcho = writeTmcRegister(address, 0x22, 0x00000000UL);
+        const bool uartModeEcho = writeTmcRegister(address, 0x00, 0x000001C0UL);
+        const bool replyDelayEcho = writeTmcRegister(address, 0x03, 0x00000200UL);
+        delay(2);
+        uint32_t ioInput = 0;
+        const bool readValid = readTmcRegisterChecked(address, 0x06, ioInput);
+        const bool versionValid = readValid &&
+            ((ioInput >> 24) & 0xFFU) == 0x21U;
+        LOG("TMC UART bootstrap address %u: echo=%u%u%u%u%u read=%u "
+            "version=%u IOIN=0x%08lX\r\n",
+            address, zeroCurrentEcho, bridgeOffEcho, velocityZeroEcho,
+            uartModeEcho, replyDelayEcho, readValid, versionValid,
+            static_cast<unsigned long>(ioInput));
+    }
+    m_thetaDriverConnected.store(false);
+    m_rhoDriverConnected.store(false);
+    m_rhoCompanionDriverConnected.store(false);
+    m_planner.setAxisAvailability(false, false);
+    m_state.store(INITIALIZED);
+    LOG("TMC UART scan complete; all motion axes remain locked\r\n");
+    return true;
+#endif
+
     auto configureConnectedDriver = [&](TMC2209& driver,
                                         const DriverSettings& settings,
                                         uint8_t address,
@@ -424,13 +576,27 @@ bool PolarControl::setupDrivers() {
 #endif
     bool rhoReady = false;
     bool rhoCompanionReady = false;
+    bool rhoCompanionSafe = true;
 #ifdef SISYPHUS_THETA_COMMISSIONING
     LOG("THETA COMMISSIONING: rho drivers are not probed; rho STEP remains low\r\n");
 #else
     rhoReady = configureConnectedDriver(
         m_rDriver, m_rDriverSettings, R_ADDR, "rho");
-    rhoCompanionReady = configureConnectedDriver(
-        m_rCDriver, m_rDriverSettings, RC_ADDR, "rho-companion");
+    if (Config::kRhoCompanionMotorEnabled) {
+        rhoCompanionReady = configureConnectedDriver(
+            m_rCDriver, m_rDriverSettings, RC_ADDR, "rho-companion");
+    } else {
+        rhoCompanionSafe = disableDriverMotion(
+            m_rCDriver, RC_ADDR, m_rDriverSettings);
+        LOG("Rho companion driver address %u intentionally disabled%s\r\n",
+            RC_ADDR, rhoCompanionSafe ? " and verified" :
+            "; disable verification failed");
+        if (!rhoCompanionSafe) {
+            ErrorLog::instance().log(
+                "ERROR", "MOTOR", "RHO_COMPANION_DISABLE_FAILED",
+                "Could not verify intentionally disabled rho companion driver");
+        }
+    }
 #endif
 
     m_thetaDriverConnected.store(thetaReady);
@@ -444,13 +610,14 @@ bool PolarControl::setupDrivers() {
         rhoCompanionReady ? "connected" : "disconnected");
 
 #ifdef SISYPHUS_RHO_COMMISSIONING
-    if (!thetaSafe || !rhoReady || !rhoCompanionReady) {
+    if (!thetaSafe || !rhoReady || !rhoCompanionSafe ||
+        (Config::kRhoCompanionMotorEnabled && !rhoCompanionReady)) {
         setDriverEnabled(m_rDriver, R_ADDR, m_rDriverSettings, false);
         setDriverEnabled(m_rCDriver, RC_ADDR, m_rDriverSettings, false);
         m_state = INITIALIZED;
         ErrorLog::instance().log(
             "ERROR", "MOTOR", "RHO_COMMISSIONING_PREFLIGHT",
-            "Rho commissioning requires theta disabled and both rho drivers verified");
+            "Rho commissioning preflight could not verify the requested driver state");
         return false;
     }
 #endif
@@ -620,14 +787,29 @@ bool PolarControl::confirmHome(bool successful) {
     return true;
 }
 
-#if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
-void PolarControl::assumeBenchTestOrigin() {
+bool PolarControl::setCurrentPositionAsHome() {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
+    const State_t state = m_state.load();
+    if ((state != INITIALIZED && state != IDLE && state != HOMING_FAILED) ||
+        m_homingTaskHandle != NULL) {
+        xSemaphoreGive(m_mutex);
+        return false;
+    }
     m_planner.stop();
     m_planner.resetPosition(0.0f, 0.0f);
     m_homingFailure.store(0);
     m_state.store(IDLE);
     xSemaphoreGive(m_mutex);
+    LOG("Operator accepted current physical position as theta=0, rho=0\r\n");
+    return true;
+}
+
+#if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
+void PolarControl::assumeBenchTestOrigin() {
+    if (!setCurrentPositionAsHome()) {
+        LOG("Could not assign test origin while motion or homing is active\r\n");
+        return;
+    }
 #ifdef SISYPHUS_THETA_COMMISSIONING
     LOG("THETA COMMISSIONING: logical theta origin assumed; rho motion locked out\r\n");
 #elif defined(SISYPHUS_RHO_COMMISSIONING)
@@ -829,6 +1011,8 @@ static bool verifyDriverSettings(uint8_t driverAddress,
     const bool currentScaleOk = ((chopconf & (1UL << 17)) != 0) ==
         settings.highSensitivityCurrentScale;
     const bool modeOk = ((gconf & (1U << 2)) == 0) == settings.stealthChopEnabled;
+    const bool directionOk = ((gconf & (1U << 3)) != 0) ==
+        settings.inverseMotorDirection;
     const bool uartCurrentScaleOk = (gconf & (1U << 0)) == 0;
     const bool senseOk = (gconf & (1U << 1)) == 0;
     constexpr uint32_t kPwmSettingsMask = 0xFF3FFFFFU;
@@ -846,7 +1030,7 @@ static bool verifyDriverSettings(uint8_t driverAddress,
 
     const bool verified = writesOk && microstepsOk && chopperTimingOk &&
         (interpolationOk == expectedInterpolation) && currentScaleOk &&
-        modeOk && uartCurrentScaleOk && senseOk && pwmOk;
+        modeOk && directionOk && uartCurrentScaleOk && senseOk && pwmOk;
     if (!verified) {
         LOG("Driver %s readback mismatch: writes=%u/%u GCONF=%08lX "
             "CHOPCONF=%08lX PWMCONF=%08lX\r\n",
@@ -926,6 +1110,14 @@ bool PolarControl::applyDriverSettings(TMC2209 &driver,
     // Use external sense resistors
     driver.useExternalSenseResistors();
 
+    // Reapply GCONF.SHAFT on every profile transition. Direction must remain
+    // deterministic across reboot, homing, acoustic tuning, and recovery.
+    if (settings.inverseMotorDirection) {
+        driver.enableInverseMotorDirection();
+    } else {
+        driver.disableInverseMotorDirection();
+    }
+
     // StealthChop / SpreadCycle mode
     if (settings.stealthChopEnabled) {
         driver.enableStealthChop();
@@ -966,7 +1158,7 @@ bool PolarControl::applyDriverSettings(TMC2209 &driver,
     }
 
     const uint8_t expectedWrites = static_cast<uint8_t>(
-        8U + (settings.stealthChopEnabled ? 2U : 1U) +
+        9U + (settings.stealthChopEnabled ? 2U : 1U) +
         (settings.coolStepEnabled ? 4U : 1U));
     const bool verified = verifyDriverSettings(
         driverAddress, settings, driverName,
@@ -2104,16 +2296,7 @@ bool PolarControl::loadAndRunFile(String filePath, float maxRho) {
 bool PolarControl::pause() {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     if (m_state == RUNNING) {
-        float theta[SEGMENT_BUFFER_SIZE];
-        float rho[SEGMENT_BUFFER_SIZE];
-        const size_t pending = m_planner.copyPendingTargets(
-            theta, rho, SEGMENT_BUFFER_SIZE);
-        m_resumePoints.clear();
-        m_resumePoints.reserve(pending);
-        for (size_t i = 0; i < pending; ++i) {
-            m_resumePoints.push_back({theta[i], rho[i]});
-        }
-        m_resumePointIndex = 0;
+        capturePendingTargetsForResume();
         m_pauseAfterStop = true;
         m_planner.stopGracefully();
         m_state = STOPPING;
@@ -2146,6 +2329,7 @@ bool PolarControl::stop() {
         m_resumePoints.clear();
         m_resumePointIndex = 0;
         m_pauseAfterStop = false;
+        m_restartAfterSpeedChange = false;
 
         // Send stop command to file task
         FileCommand cmd;
@@ -2160,7 +2344,13 @@ bool PolarControl::stop() {
 
         if (m_state == CLEARING && m_clearingSpeedActive) {
             m_clearingSpeedActive = false;
-            updateSpeedSettings();
+            if (m_planner.isIdle()) {
+                updateSpeedSettings();
+            } else {
+                // Keep the full-speed limits used to construct the controlled
+                // clearing brake until it has finished.
+                m_speedUpdatePending = true;
+            }
         }
 
         m_state = m_planner.isIdle() ? IDLE : STOPPING;
@@ -2175,8 +2365,30 @@ bool PolarControl::stop() {
 
 void PolarControl::setSpeed(uint8_t speed) {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
-    m_speed.store(std::max<uint8_t>(1, std::min<uint8_t>(speed, 10)));
-    if (!m_clearingSpeedActive) {
+    const uint8_t newSpeed = std::max<uint8_t>(1, std::min<uint8_t>(speed, 10));
+    if (newSpeed == m_speed.load()) {
+        xSemaphoreGive(m_mutex);
+        return;
+    }
+    m_speed.store(newSpeed);
+
+    if (m_clearingSpeedActive) {
+        // Clearing deliberately runs at full speed. The selected value takes
+        // effect when clearing completes or is stopped.
+    } else if (m_state == RUNNING) {
+        // Generated events are immutable. Preserve their remaining targets,
+        // brake with the current limits, and apply the newest requested speed
+        // only after reaching zero velocity.
+        capturePendingTargetsForResume();
+        m_restartAfterSpeedChange = true;
+        m_speedUpdatePending = true;
+        m_planner.stopGracefully();
+        m_state = STOPPING;
+    } else if (m_state == STOPPING) {
+        // Do not re-plan a braking segment in flight. Multiple slider changes
+        // collapse to the last stored value and are applied once stationary.
+        m_speedUpdatePending = true;
+    } else {
         updateSpeedSettings();
     }
     xSemaphoreGive(m_mutex);
@@ -2300,7 +2512,6 @@ void PolarControl::emergencyStop() {
         if (m_thetaDriverConnected.load()) m_tDriver.moveAtVelocity(0);
         if (m_rhoDriverConnected.load()) {
             m_rDriver.moveAtVelocity(0);
-            m_rDriver.disableInverseMotorDirection();
         }
         if (m_rhoCompanionDriverConnected.load()) m_rCDriver.moveAtVelocity(0);
     }
@@ -2309,6 +2520,10 @@ void PolarControl::emergencyStop() {
     m_resumePoints.clear();
     m_resumePointIndex = 0;
     m_pauseAfterStop = false;
+    m_restartAfterSpeedChange = false;
+    m_speedUpdatePending = false;
+    m_clearingSpeedActive = false;
+    updateSpeedSettings();
     if (m_cmdQueue) {
         FileCommand cmd{};
         cmd.type = FileCommand::CMD_STOP;
@@ -2328,6 +2543,26 @@ uint32_t PolarControl::getFileTaskHighWater() const {
 // ============================================================================
 // Feed segments to planner
 // ============================================================================
+
+void PolarControl::capturePendingTargetsForResume() {
+    float theta[SEGMENT_BUFFER_SIZE];
+    float rho[SEGMENT_BUFFER_SIZE];
+    const size_t pending = m_planner.copyPendingTargets(
+        theta, rho, SEGMENT_BUFFER_SIZE);
+    const size_t savedRemaining = m_resumePoints.size() - m_resumePointIndex;
+    std::vector<PolarCord_t> targets;
+    targets.reserve(pending + savedRemaining);
+    for (size_t i = 0; i < pending; ++i) {
+        targets.push_back({theta[i], rho[i]});
+    }
+    // A second pause or speed change can arrive before a previous replay has
+    // drained. Those not-yet-requeued points follow the planner's targets.
+    for (size_t i = m_resumePointIndex; i < m_resumePoints.size(); ++i) {
+        targets.push_back(m_resumePoints[i]);
+    }
+    m_resumePoints = std::move(targets);
+    m_resumePointIndex = 0;
+}
 
 void PolarControl::feedPlanner() {
     bool replayAdded = false;
@@ -2447,7 +2682,23 @@ bool PolarControl::processNextMove() {
 
     if (m_state == STOPPING) {
         if (m_planner.isIdle()) {
-            if (m_pauseAfterStop) {
+            if (m_speedUpdatePending) {
+                m_speedUpdatePending = false;
+                updateSpeedSettings();
+            }
+            if (m_restartAfterSpeedChange) {
+                m_restartAfterSpeedChange = false;
+                m_state = RUNNING;
+                feedPlanner();
+                if (!m_planner.isIdle()) {
+                    m_planner.start();
+                    LOG("Motion resumed after speed change\r\n");
+                } else {
+                    m_posGen.reset();
+                    m_state = m_motionCompletionState.exchange(IDLE);
+                    LOG("Speed changed after motion completed\r\n");
+                }
+            } else if (m_pauseAfterStop) {
                 m_pauseAfterStop = false;
                 m_state = PAUSED;
                 LOG("Paused after controlled deceleration\r\n");
@@ -2579,7 +2830,8 @@ static bool validDriverSettings(const DriverSettings& settings,
 
 static bool sameDriverSettings(const DriverSettings& lhs,
                                const DriverSettings& rhs) {
-    return lhs.runCurrent == rhs.runCurrent &&
+    return lhs.inverseMotorDirection == rhs.inverseMotorDirection &&
+        lhs.runCurrent == rhs.runCurrent &&
         lhs.holdCurrent == rhs.holdCurrent &&
         lhs.holdDelay == rhs.holdDelay &&
         lhs.powerDownDelay == rhs.powerDownDelay &&
@@ -3352,6 +3604,27 @@ bool PolarControl::testThetaStress() {
     m_commissioningStartPermit.store(true);
 #endif
     return start(std_patch::make_unique<TestThetaStressGen>(currentRho));
+}
+
+bool PolarControl::testThetaSegment(float targetThetaRad) {
+#ifndef SISYPHUS_THETA_COMMISSIONING
+    (void)targetThetaRad;
+    return false;
+#else
+    if (m_state != IDLE || !m_thetaDriverConnected.load() ||
+        !std::isfinite(targetThetaRad) || targetThetaRad < 0.0f ||
+        targetThetaRad > 2.0f * PI) {
+        return false;
+    }
+    const PolarCord_t current = getCurrentPosition();
+    if (current.theta < -0.001f || current.theta > 2.0f * PI + 0.001f) {
+        return false;
+    }
+    LOG("Starting bounded theta segment to %.4frad...\r\n", targetThetaRad);
+    m_commissioningStartPermit.store(true);
+    return start(std_patch::make_unique<SingleTargetGen>(
+        targetThetaRad, current.rho));
+#endif
 }
 
 bool PolarControl::testRhoContinuous() {

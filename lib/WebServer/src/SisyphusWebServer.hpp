@@ -31,6 +31,7 @@ private:
         MANUAL_JOG,
         THETA_CONTINUOUS,
         THETA_STRESS,
+        THETA_SEGMENT,
         RHO_CONTINUOUS,
         RHO_STRESS,
         RHO_SEGMENT
@@ -41,6 +42,7 @@ private:
     float m_pendingManualRho = 0.0f;
     float m_pendingJogTheta = 0.0f;
     float m_pendingJogRho = 0.0f;
+    float m_pendingThetaSegmentTarget = 0.0f;
     float m_pendingRhoSegmentTarget = 0.0f;
 #ifdef SISYPHUS_RHO_COMMISSIONING
     // Fail-closed after every reboot: relative manual jogs only. Assigning a
@@ -79,6 +81,7 @@ private:
     void handlePatternResume(AsyncWebServerRequest *request);
     void handleManualMove(AsyncWebServerRequest *request);
     void handleManualJog(AsyncWebServerRequest *request);
+    void handleManualSetHome(AsyncWebServerRequest *request);
     void handlePlaybackStop(AsyncWebServerRequest *request);
     void handleMotionStop(AsyncWebServerRequest *request);
     void handleMotionTelemetry(AsyncWebServerRequest *request);
@@ -126,6 +129,7 @@ private:
     void handleTuningHomingSet(AsyncWebServerRequest *request);
     void handleTuningTestThetaContinuous(AsyncWebServerRequest *request);
     void handleTuningTestThetaStress(AsyncWebServerRequest *request);
+    void handleTuningTestThetaSegment(AsyncWebServerRequest *request);
     void handleTuningTestRhoContinuous(AsyncWebServerRequest *request);
     void handleTuningTestRhoStress(AsyncWebServerRequest *request);
     void handleTuningTestRhoSegment(AsyncWebServerRequest *request);

@@ -33,6 +33,8 @@ THETA_CURRENT_CEILING_MA = 1500
 RHO_CURRENT_CEILING_MA = 500
 RHO_TEST_MAX_EXCURSION_MM = 400.0
 RHO_POSITION_TOLERANCE_MM = 0.05
+THETA_TEST_MAX_EXCURSION_DEG = 360.0
+THETA_POSITION_TOLERANCE_RAD = 0.001
 RHO_PROFILE_DISTANCE_MM = {"continuous": 800.0, "stress": 5950.0}
 RHO_SCREEN_GATE_COUNT = 4
 RHO_QUALIFICATION_GATE_COUNT = 8
@@ -75,6 +77,35 @@ def rho_profile_distance_mm(profile: str, excursion_mm: float) -> float:
     if profile in ("verify", "screen", "gated"):
         return len(rho_segment_targets(profile, excursion_mm)) * excursion_mm
     return RHO_PROFILE_DISTANCE_MM[profile]
+
+
+def theta_segment_targets(profile: str, excursion_deg: float) -> tuple[float, ...]:
+    if profile == "ramp":
+        return tuple(
+            math.radians(target_deg)
+            for target_deg in (5.0, 0.0, 15.0, 0.0, 45.0, 0.0, 90.0, 0.0)
+        )
+    gate_count = {
+        "verify": RHO_PAIR_VERIFY_GATE_COUNT,
+        "screen": RHO_SCREEN_GATE_COUNT,
+        "gated": RHO_QUALIFICATION_GATE_COUNT,
+    }[profile]
+    excursion_rad = math.radians(excursion_deg)
+    return tuple(
+        excursion_rad if index % 2 == 0 else 0.0
+        for index in range(gate_count)
+    )
+
+
+def theta_profile_distance_rad(profile: str, excursion_deg: float) -> float:
+    """Return the complete angular path for a segmented theta profile."""
+    targets = theta_segment_targets(profile, excursion_deg)
+    previous = 0.0
+    distance = 0.0
+    for target in targets:
+        distance += abs(target - previous)
+        previous = target
+    return distance
 
 
 @dataclass(frozen=True)
@@ -165,6 +196,12 @@ class TimedAcousticMetrics:
     motion_a_weighted_dbfs: float
     motion_p95_a_weighted_dbfs: float
     idle_p95_a_weighted_dbfs: float
+    transient_p95_excess_a_weighted_dbfs: float | None
+    transient_p95_excess_upper_95_a_weighted_dbfs: float | None
+    transient_gate_p95_excess_a_weighted_dbfs: list[float]
+    loudest_transient_gate_p95_excess_a_weighted_dbfs: float | None
+    transient_gate_p95_excess_upper_95_a_weighted_dbfs: list[float | None]
+    loudest_transient_gate_p95_excess_upper_95_a_weighted_dbfs: float | None
     motion_gain_over_idle_db: float
     transient_gain_over_idle_p95_db: float
     motion_broadband_detected: bool
@@ -226,6 +263,33 @@ def median_excess_upper_95(
     after_medians = bootstrap_medians(after)
     conservative_idle = np.minimum(before_medians, after_medians)
     excess = np.maximum(motion_medians - conservative_idle, 0.0)
+    return float(np.percentile(excess, 95))
+
+
+def percentile_excess_upper_95(
+    motion_power: np.ndarray,
+    pre_idle_power: np.ndarray,
+    post_idle_power: np.ndarray,
+    percentile: float,
+    seed: int,
+) -> float | None:
+    """Bootstrap a conservative upper bound for a motion percentile excess."""
+    motion = np.asarray(motion_power, dtype=float)[::4]
+    before = np.asarray(pre_idle_power, dtype=float)[::4]
+    after = np.asarray(post_idle_power, dtype=float)[::4]
+    if min(len(motion), len(before), len(after)) < 5:
+        return None
+    rng = np.random.default_rng(seed)
+
+    def bootstrap_percentiles(values: np.ndarray) -> np.ndarray:
+        indexes = rng.integers(0, len(values), size=(800, len(values)))
+        return np.percentile(values[indexes], percentile, axis=1)
+
+    motion_percentiles = bootstrap_percentiles(motion)
+    before_percentiles = bootstrap_percentiles(before)
+    after_percentiles = bootstrap_percentiles(after)
+    conservative_idle = np.minimum(before_percentiles, after_percentiles)
+    excess = np.maximum(motion_percentiles - conservative_idle, 0.0)
     return float(np.percentile(excess, 95))
 
 
@@ -313,6 +377,7 @@ def analyze_timed(
     velocity_threshold: float = 0.002,
     audio_epoch_uncertainty_s: float = 0.0,
     expected_max_velocity: float | None = None,
+    exact_motion_envelope: bool = False,
 ) -> tuple[TimedAcousticMetrics, dict[str, np.ndarray]]:
     """Find audible tones whose presence is locked to measured motor motion.
 
@@ -349,7 +414,13 @@ def analyze_timed(
                     & (host_times <= float(interval["stopHostS"]))
                 )
             moving &= exact_motion
-        moving &= np.abs(velocities) >= velocity_threshold
+            if exact_motion_envelope:
+                moving = exact_motion & (
+                    (times > motion_start_s + guard_s)
+                    & (times < motion_end_s - guard_s)
+                )
+        if not exact_motion_envelope:
+            moving &= np.abs(velocities) >= velocity_threshold
         telemetry_velocities = np.asarray([
             float(item["velocity"][axis.name]) for item in telemetry
         ])
@@ -387,10 +458,15 @@ def analyze_timed(
                 )
         for index, gap in enumerate(np.diff(telemetry_times)):
             if gap > TELEMETRY_MAX_GAP_S:
-                sustained_telemetry_safe &= ~(
-                    (host_times + frame_half_width_s >= telemetry_times[index])
-                    & (host_times - frame_half_width_s <= telemetry_times[index + 1])
-                )
+                if not moving_gap_interpolation_safe(
+                    telemetry[index], telemetry[index + 1], axis,
+                    velocity_threshold,
+                ):
+                    sustained_telemetry_safe &= ~(
+                        (host_times + frame_half_width_s >= telemetry_times[index])
+                        & (host_times - frame_half_width_s
+                           <= telemetry_times[index + 1])
+                    )
         moving &= transition_safe
         nearest = np.searchsorted(telemetry_times, host_times, side="left")
         nearest = np.clip(nearest, 0, len(telemetry_times) - 1)
@@ -400,20 +476,29 @@ def analyze_timed(
             < np.abs(host_times - telemetry_times[nearest])
         )
         nearest[choose_previous] = previous[choose_previous]
-        confirmed_idle = (
-            np.abs(velocities) < velocity_threshold
-        ) & np.asarray([
-            telemetry[int(index)].get("state") == "IDLE" for index in nearest
-        ]) & transition_safe
+        if exact_intervals:
+            # Firmware STEP epochs define the motor-active windows more
+            # precisely than a nearest sparse Wi-Fi sample. An unobserved
+            # epoch still fails the required gate-count check later, so using
+            # the known complement here cannot turn missing motion into a
+            # qualifying idle interval.
+            confirmed_idle = ~exact_motion & transition_safe
+        else:
+            confirmed_idle = np.asarray([
+                telemetry[int(index)].get("state") == "IDLE"
+                for index in nearest
+            ]) & transition_safe
+            confirmed_idle &= np.abs(velocities) < velocity_threshold
         idle_indexes = np.flatnonzero(confirmed_idle)
         if len(idle_indexes) >= 10:
             split_time = float(np.median(times[idle_indexes]))
             pre = confirmed_idle & (times <= split_time)
             post = confirmed_idle & (times > split_time)
-        direction_windows = [
-            ("outbound", moving & (velocities >= velocity_threshold)),
-            ("inbound", moving & (velocities <= -velocity_threshold)),
-        ]
+        if not exact_motion_envelope:
+            direction_windows = [
+                ("outbound", moving & (velocities >= velocity_threshold)),
+                ("inbound", moving & (velocities <= -velocity_threshold)),
+            ]
     if min(int(np.sum(pre)), int(np.sum(moving)), int(np.sum(post))) < 5:
         raise ValueError(
             "Timed recording needs at least five spectrogram frames in each idle/motion window"
@@ -630,11 +715,20 @@ def analyze_timed(
     pre_a_dbfs = db(float(np.median(frame_a_power[pre])), power=True)
     post_a_dbfs = db(float(np.median(frame_a_power[post])), power=True)
     motion_a_dbfs = db(float(np.median(frame_a_power[moving])), power=True)
-    motion_p95_a_dbfs = db(float(np.percentile(frame_a_power[moving], 95)), power=True)
-    idle_p95_a_dbfs = db(float(max(
+    motion_p95_a_power = float(np.percentile(frame_a_power[moving], 95))
+    idle_p95_a_power = float(max(
         np.percentile(frame_a_power[pre], 95),
         np.percentile(frame_a_power[post], 95),
-    )), power=True)
+    ))
+    motion_p95_a_dbfs = db(motion_p95_a_power, power=True)
+    idle_p95_a_dbfs = db(idle_p95_a_power, power=True)
+    transient_p95_excess_power = max(
+        motion_p95_a_power - idle_p95_a_power, 0.0,
+    )
+    transient_p95_excess_upper_95_power = percentile_excess_upper_95(
+        frame_a_power[moving], frame_a_power[pre], frame_a_power[post],
+        percentile=95.0, seed=0x220A,
+    )
     idle_median_a_dbfs = max(pre_a_dbfs, post_a_dbfs)
     motion_gain_over_idle_db = motion_a_dbfs - idle_median_a_dbfs
     transient_gain_over_idle_p95_db = motion_p95_a_dbfs - idle_p95_a_dbfs
@@ -654,6 +748,8 @@ def analyze_timed(
     on_off_consistent_count = 0
     local_excess_powers: list[float] = []
     local_excess_upper_95_powers: list[float | None] = []
+    local_transient_p95_excess_powers: list[float] = []
+    local_transient_p95_excess_upper_95_powers: list[float | None] = []
     local_background_drift_db: list[float] = []
     outbound_excess_powers: list[float] = []
     inbound_excess_powers: list[float] = []
@@ -701,6 +797,25 @@ def analyze_timed(
             frame_a_power[after],
             seed=0x2209 + gate_index,
         ))
+        local_idle_p95 = max(
+            float(np.percentile(frame_a_power[before], 95)),
+            float(np.percentile(frame_a_power[after], 95)),
+        )
+        local_motion_p95 = (
+            float(np.percentile(local_frames, 95)) if len(local_frames) else 0.0
+        )
+        local_transient_p95_excess_powers.append(max(
+            local_motion_p95 - local_idle_p95, 0.0,
+        ))
+        local_transient_p95_excess_upper_95_powers.append(
+            percentile_excess_upper_95(
+                local_frames,
+                frame_a_power[before],
+                frame_a_power[after],
+                percentile=95.0,
+                seed=0x2210 + gate_index,
+            )
+        )
         if gate["direction"] == "outbound":
             outbound_excess_powers.append(local_excess_power)
         else:
@@ -758,6 +873,37 @@ def analyze_timed(
         motion_a_weighted_dbfs=round(motion_a_dbfs, 2),
         motion_p95_a_weighted_dbfs=round(motion_p95_a_dbfs, 2),
         idle_p95_a_weighted_dbfs=round(idle_p95_a_dbfs, 2),
+        transient_p95_excess_a_weighted_dbfs=(
+            round(db(transient_p95_excess_power, power=True), 2)
+            if transient_p95_excess_power > 0.0 else None
+        ),
+        transient_p95_excess_upper_95_a_weighted_dbfs=(
+            round(db(transient_p95_excess_upper_95_power, power=True), 2)
+            if transient_p95_excess_upper_95_power is not None else None
+        ),
+        transient_gate_p95_excess_a_weighted_dbfs=[
+            round(db(value, power=True), 2)
+            for value in local_transient_p95_excess_powers
+        ],
+        loudest_transient_gate_p95_excess_a_weighted_dbfs=(
+            round(db(max(local_transient_p95_excess_powers), power=True), 2)
+            if local_transient_p95_excess_powers else None
+        ),
+        transient_gate_p95_excess_upper_95_a_weighted_dbfs=[
+            round(db(value, power=True), 2) if value is not None else None
+            for value in local_transient_p95_excess_upper_95_powers
+        ],
+        loudest_transient_gate_p95_excess_upper_95_a_weighted_dbfs=(
+            round(db(max(
+                value for value in local_transient_p95_excess_upper_95_powers
+                if value is not None
+            ), power=True), 2)
+            if local_transient_p95_excess_upper_95_powers
+            and all(
+                value is not None
+                for value in local_transient_p95_excess_upper_95_powers
+            ) else None
+        ),
         motion_gain_over_idle_db=round(motion_gain_over_idle_db, 2),
         transient_gain_over_idle_p95_db=round(transient_gain_over_idle_p95_db, 2),
         motion_broadband_detected=motion_gain_over_idle_db >= 3.0,
@@ -1105,12 +1251,24 @@ class Board:
         self.session = requests.Session()
 
     def get(self, path: str, timeout_s: float = 3.0) -> dict[str, Any]:
-        response = self.session.get(self.base_url + path, timeout=timeout_s)
-        response.raise_for_status()
-        return response.json()
+        attempts = 2 if timeout_s >= 1.0 else 1
+        last_error: requests.RequestException | None = None
+        for attempt in range(attempts):
+            try:
+                response = self.session.get(
+                    self.base_url + path, timeout=timeout_s,
+                )
+                response.raise_for_status()
+                return response.json()
+            except requests.RequestException as error:
+                last_error = error
+                if attempt + 1 < attempts:
+                    time.sleep(0.1)
+        assert last_error is not None
+        raise last_error
 
     def post(self, path: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
-        response = self.session.post(self.base_url + path, data=data, timeout=3)
+        response = self.session.post(self.base_url + path, data=data, timeout=5)
         if not response.ok:
             try:
                 message = response.json().get("message", response.text)
@@ -1250,6 +1408,51 @@ def preflight_rho_commissioning(
             raise RuntimeError(
                 f"{driver_role} OTP selects internal sensing; expected FYSETC V3.0 external shunts"
             )
+    return telemetry
+
+
+def preflight_theta_commissioning(
+    board: Board, expected_interpolation: bool | None = None
+) -> dict[str, Any]:
+    """Require theta-only commissioning, logical zero, and a healthy driver."""
+    status = board.get("/api/status")
+    if status.get("state") != "IDLE":
+        raise RuntimeError(
+            f"Board must be IDLE for a theta trial; state is {status.get('state')}"
+        )
+    drivers = status.get("drivers", {})
+    if not drivers.get("thetaAxis", False) or drivers.get("rhoAxis", True):
+        raise RuntimeError(
+            "Theta commissioning requires one healthy theta axis and no enabled RHO axis"
+        )
+    telemetry = board.get("/api/motion/telemetry")
+    if telemetry.get("commissioningAxis") != "theta":
+        raise RuntimeError(
+            "Theta trials require the theta-commissioning firmware"
+        )
+    theta = float(telemetry["position"]["theta"])
+    if abs(theta) > THETA_POSITION_TOLERANCE_RAD:
+        raise RuntimeError(
+            f"Theta must be at its test origin, got {theta:.6f} rad"
+        )
+    if abs(float(telemetry["velocity"]["theta"])) > 0.002:
+        raise RuntimeError("Theta must be stationary before a trial")
+    diagnostic = board.get("/api/tuning/dump/theta")
+    if not driver_is_healthy(diagnostic):
+        raise RuntimeError("Theta driver failed commissioning preflight")
+    settings = diagnostic.get("settings", {})
+    if not settings.get("chopconfReadValid"):
+        raise RuntimeError("Theta driver CHOPCONF could not be verified")
+    if (
+        expected_interpolation is not None
+        and bool(settings.get("interpolationTo256")) != expected_interpolation
+    ):
+        raise RuntimeError(
+            "Theta driver did not confirm requested interpolation state "
+            f"({'on' if expected_interpolation else 'off'})"
+        )
+    if settings.get("analogCurrentScaling") is not False:
+        raise RuntimeError("Theta driver did not confirm UART digital current scaling")
     return telemetry
 
 
@@ -1544,13 +1747,15 @@ def microphone_metadata(source: str) -> dict[str, str]:
 
 
 def _telemetry_sample(
-    board: Board, recording_zero: float, timeout_s: float = 0.15
+    board: Board, recording_zero: float, timeout_s: float = 0.75
 ) -> dict[str, Any] | None:
     try:
         request_start = time.monotonic()
-        # A late response has an ambiguous midpoint and can span a meaningful
-        # part of a short gate. Drop it quickly and let timing validation judge
-        # the resulting bracket instead of recording a misleading timestamp.
+        # Allow the ESP32 to finish one request instead of abandoning and
+        # immediately replacing it. This board commonly takes slightly more
+        # than 150 ms to answer; timing validation still rejects an imprecise
+        # sample or cadence, while the longer transport timeout avoids filling
+        # the server with abandoned HTTP connections.
         sample = board.get("/api/motion/telemetry", timeout_s=timeout_s)
         request_end = time.monotonic()
         sample["hostOffsetS"] = round(
@@ -1618,8 +1823,46 @@ def step_motion_intervals(
     return intervals
 
 
+def moving_gap_interpolation_safe(
+    before: dict[str, Any], after: dict[str, Any], axis: AxisConfig,
+    velocity_threshold: float,
+) -> bool:
+    """Return true only when a sparse gap is provably steady motion.
+
+    Board position and time must agree with same-direction RUNNING velocity on
+    both sides. This permits conservative interpolation across Wi-Fi stalls,
+    while transition and direction-change gaps remain unusable.
+    """
+    before_velocity = float(before["velocity"][axis.name])
+    after_velocity = float(after["velocity"][axis.name])
+    before_position = before.get("position", {}).get(axis.name)
+    after_position = after.get("position", {}).get(axis.name)
+    before_millis = before.get("millis")
+    after_millis = after.get("millis")
+    if (before.get("state") != "RUNNING" or after.get("state") != "RUNNING"
+            or abs(before_velocity) < velocity_threshold
+            or abs(after_velocity) < velocity_threshold
+            or before_velocity * after_velocity <= 0.0
+            or before_position is None or after_position is None
+            or before_millis is None or after_millis is None):
+        return False
+    board_gap_s = (
+        (int(after_millis) - int(before_millis)) & 0xFFFFFFFF
+    ) / 1000.0
+    if board_gap_s <= 0.0:
+        return False
+    observed_velocity = (
+        float(after_position) - float(before_position)
+    ) / board_gap_s
+    return (
+        observed_velocity * before_velocity > 0.0
+        and abs(observed_velocity) >= velocity_threshold
+    )
+
+
 def telemetry_timing_quality(
     telemetry: list[dict[str, Any]], axis: AxisConfig, velocity_threshold: float,
+    exact_motion_envelope: bool = False,
 ) -> dict[str, Any]:
     times = np.asarray([float(sample["hostOffsetS"]) for sample in telemetry])
     moving = np.asarray([
@@ -1638,9 +1881,10 @@ def telemetry_timing_quality(
         p95_gap = float(np.percentile(gaps, 95))
         maximum_gap = float(np.max(gaps))
         critical_gaps: list[float] = []
+        classified_gap_indexes: set[int] = set()
         interpolated_steady_gaps = 0
         for index, gap in enumerate(gaps):
-            if gap <= TELEMETRY_MAX_GAP_S:
+            if gap <= TELEMETRY_MAX_P95_GAP_S:
                 continue
             before = telemetry[index]
             after = telemetry[index + 1]
@@ -1648,28 +1892,8 @@ def telemetry_timing_quality(
             after_velocity = float(after["velocity"][axis.name])
             before_position = before.get("position", {}).get(axis.name)
             after_position = after.get("position", {}).get(axis.name)
-            observed_motion_gap = gap
-            before_millis = before.get("millis")
-            after_millis = after.get("millis")
-            if before_millis is not None and after_millis is not None:
-                board_gap = (
-                    (int(after_millis) - int(before_millis)) & 0xFFFFFFFF
-                ) / 1000.0
-                if board_gap > 0.0:
-                    observed_motion_gap = board_gap
-            observed_velocity = (
-                (float(after_position) - float(before_position))
-                / observed_motion_gap
-                if before_position is not None and after_position is not None
-                else float("inf")
-            )
-            moving_interpolation_safe = (
-                before.get("state") == "RUNNING"
-                and after.get("state") == "RUNNING"
-                and abs(before_velocity) >= velocity_threshold
-                and before_velocity * after_velocity > 0.0
-                and observed_velocity * before_velocity > 0.0
-                and abs(observed_velocity) >= velocity_threshold
+            moving_interpolation_safe = moving_gap_interpolation_safe(
+                before, after, axis, velocity_threshold,
             )
             position_tolerance = (
                 RHO_POSITION_TOLERANCE_MM if axis.name == "rho" else 0.001
@@ -1684,17 +1908,45 @@ def telemetry_timing_quality(
                 and abs(float(after_position) - float(before_position))
                 <= position_tolerance
             )
+            before_step = before.get("stepMotion", {})
+            after_step = after.get("stepMotion", {})
+            step_epoch_stationary_safe = (
+                before_position is not None
+                and after_position is not None
+                and abs(float(after_position) - float(before_position))
+                <= position_tolerance
+                and int(before_step.get("epoch", 0))
+                == int(after_step.get("epoch", -1))
+                and not bool(before_step.get("active", False))
+                and not bool(after_step.get("active", False))
+            )
             event_bridged = any(
-                float(before["hostOffsetS"]) <= float(event_time)
-                <= float(after["hostOffsetS"])
+                float(before["hostOffsetS"])
+                <= float(event_time) + float(event_uncertainty)
+                and float(after["hostOffsetS"])
+                >= float(event_time) - float(event_uncertainty)
                 for interval in exact_intervals
-                for event_time in (
-                    interval["startHostS"], interval["stopHostS"]
+                for event_time, event_uncertainty in (
+                    (
+                        interval["startHostS"],
+                        interval["startUncertaintyS"],
+                    ),
+                    (
+                        interval["stopHostS"],
+                        interval["stopUncertaintyS"],
+                    ),
                 )
             )
+            aggregate_motion_gap_safe = any(
+                    float(before["hostOffsetS"]) >= float(interval["startHostS"])
+                    and float(after["hostOffsetS"]) <= float(interval["stopHostS"])
+                    for interval in exact_intervals
+            )
             if (moving_interpolation_safe or stationary_interpolation_safe
-                    or event_bridged):
+                    or step_epoch_stationary_safe or event_bridged
+                    or aggregate_motion_gap_safe):
                 interpolated_steady_gaps += 1
+                classified_gap_indexes.add(index)
             else:
                 critical_gaps.append(float(gap))
         maximum_critical_gap = max(critical_gaps, default=0.0)
@@ -1718,10 +1970,16 @@ def telemetry_timing_quality(
             for interval in exact_intervals
         ), default=float("inf"))
         exact_events_valid = (
-            len(exact_intervals) == len(start_indexes) == len(stop_indexes)
-            and exact_event_uncertainty <= TELEMETRY_MAX_TRANSITION_BRACKET_S / 2.0
+            exact_event_uncertainty <= TELEMETRY_MAX_TRANSITION_BRACKET_S / 2.0
+            and (
+                len(exact_intervals) == len(start_indexes) == len(stop_indexes)
+                or (exact_motion_envelope and len(exact_intervals) == 1)
+            )
         )
-        cadence_gaps = gaps
+        cadence_gaps = np.asarray([
+            gap for index, gap in enumerate(gaps)
+            if index not in classified_gap_indexes
+        ])
         if exact_events_valid:
             exact_event_times = [
                 float(event_time)
@@ -1732,6 +1990,7 @@ def telemetry_timing_quality(
             ]
             cadence_gaps = np.asarray([
                 gap for index, gap in enumerate(gaps)
+                if index not in classified_gap_indexes
                 if not any(
                     times[index] <= event_time <= times[index + 1]
                     for event_time in exact_event_times
@@ -1869,6 +2128,14 @@ def run_timed_repeat(
         if profile in ("verify", "screen", "gated")
         else RHO_TEST_MAX_EXCURSION_MM
     )
+    segmented_targets = (
+        rho_segment_targets(profile, args.rho_excursion_mm)
+        if axis.name == "rho" and profile in ("verify", "screen", "gated")
+        else theta_segment_targets(profile, args.theta_excursion_deg)
+        if axis.name == "theta"
+        and profile in ("verify", "screen", "gated", "ramp")
+        else ()
+    )
     board.recovering_stop()
     time.sleep(args.settle)
     recording_zero = time.monotonic()
@@ -1972,7 +2239,11 @@ def run_timed_repeat(
                         next_driver_poll = time.monotonic() + 1.0
             time.sleep(0.005)
 
-    def wait_for_motion_completion(motion_deadline: float) -> None:
+    def wait_for_motion_completion(
+        motion_deadline: float,
+        expected_target: float | None = None,
+        prior_step_epoch: int | None = None,
+    ) -> None:
         motion_seen = False
         consecutive_idle = 0
         evaluated_sample_count = len(telemetry)
@@ -1987,6 +2258,30 @@ def run_timed_repeat(
                 )
                 if moving or last.get("state") in ("RUNNING", "STOPPING"):
                     motion_seen = True
+                step_motion = last.get("stepMotion", {})
+                exact_segment_completed = (
+                    expected_target is not None
+                    and prior_step_epoch is not None
+                    and int(step_motion.get("epoch", prior_step_epoch))
+                    != prior_step_epoch
+                    and int(step_motion.get("startMicros", 0)) != 0
+                    and int(step_motion.get("stopMicros", 0)) != 0
+                    and not bool(step_motion.get("active", False))
+                    and last.get("state") == "IDLE"
+                    and not moving
+                    and abs(
+                        float(last["position"][axis.name]) - expected_target
+                    ) <= (
+                        RHO_POSITION_TOLERANCE_MM
+                        if axis.name == "rho"
+                        else THETA_POSITION_TOLERANCE_RAD
+                    )
+                )
+                # A short segment can start and stop entirely between sparse
+                # Wi-Fi samples. Its new firmware STEP epoch plus an IDLE
+                # sample at the exact target is stronger evidence than an
+                # interpolated host-side RUNNING observation.
+                motion_seen = motion_seen or exact_segment_completed
                 is_idle = motion_seen and last.get("state") == "IDLE" and not moving
                 consecutive_idle = consecutive_idle + 1 if is_idle else 0
         if not motion_seen:
@@ -1994,25 +2289,84 @@ def run_timed_repeat(
         if consecutive_idle < 3:
             raise TimeoutError
 
+    def queue_segment(target: float) -> None:
+        parameter = (
+            {"targetMm": target}
+            if axis.name == "rho"
+            else {"targetRadians": target}
+        )
+        last_error: Exception | None = None
+        for _ in range(3):
+            try:
+                board.post(f"{axis.test_path_prefix}/segment", parameter)
+                return
+            except (requests.RequestException, RuntimeError) as error:
+                last_error = error
+                # A lost HTTP response is ambiguous: the ESP32 may already be
+                # executing the idempotent target. Observe motion before retrying
+                # so a slow network cannot queue an unintended extra segment.
+                sample = _telemetry_sample(board, recording_zero, timeout_s=1.0)
+                if sample and sample.get("state") in ("RUNNING", "STOPPING"):
+                    return
+                time.sleep(0.25)
+        raise RuntimeError(f"Could not queue {axis.name} segment: {last_error}")
+
+    def recover_theta_origin() -> None:
+        """Return an interrupted bounded theta screen to its recorded start."""
+        if axis.name != "theta" or not segmented_targets:
+            return
+        recovery_deadline = time.monotonic() + 30.0
+        last_error: Exception | None = None
+        while time.monotonic() < recovery_deadline:
+            try:
+                telemetry_sample = board.get(
+                    "/api/motion/telemetry", timeout_s=1.0
+                )
+                position = float(telemetry_sample["position"]["theta"])
+                velocity = abs(float(telemetry_sample["velocity"]["theta"]))
+                if (
+                    telemetry_sample.get("state") == "IDLE"
+                    and velocity < 0.002
+                    and abs(position - start_position)
+                    <= THETA_POSITION_TOLERANCE_RAD
+                ):
+                    return
+                if telemetry_sample.get("state") in ("RUNNING", "STOPPING"):
+                    time.sleep(0.1)
+                    continue
+                board.post(
+                    f"{axis.test_path_prefix}/segment",
+                    {"targetRadians": start_position},
+                )
+            except (requests.RequestException, RuntimeError, ValueError) as error:
+                last_error = error
+            time.sleep(0.25)
+        raise RuntimeError(
+            f"Interrupted theta screen did not recover its start: {last_error}"
+        )
+
+    completed_sequence = False
     try:
         sample_drivers("before-motion")
         collect_for(args.pre_idle)
         motion_deadline = time.monotonic() + args.duration
         try:
-            if profile in ("verify", "screen", "gated"):
-                if axis.name != "rho":
-                    raise RuntimeError("The screen and gated profiles are rho-only")
-                for target_mm in rho_segment_targets(
-                    profile, args.rho_excursion_mm
-                ):
-                    board.post(
-                        f"{axis.test_path_prefix}/segment",
-                        {"targetMm": target_mm},
+            if segmented_targets:
+                for target in segmented_targets:
+                    prior_step_epoch = (
+                        int(telemetry[-1].get("stepMotion", {}).get("epoch", 0))
+                        if telemetry else None
                     )
+                    queue_segment(target)
                     if command_offset == 0.0:
                         command_offset = time.monotonic() - recording_zero
-                    wait_for_motion_completion(motion_deadline)
-                    sample_drivers(f"after-segment-{target_mm:g}mm")
+                    wait_for_motion_completion(
+                        motion_deadline,
+                        expected_target=target,
+                        prior_step_epoch=prior_step_epoch,
+                    )
+                    unit = "mm" if axis.name == "rho" else "rad"
+                    sample_drivers(f"after-segment-{target:g}{unit}")
                     collect_for(args.gated_idle)
             else:
                 board.post(f"{axis.test_path_prefix}/{profile}")
@@ -2028,11 +2382,14 @@ def run_timed_repeat(
             )
         collect_for(args.post_idle)
         sample_drivers("after-post-idle")
+        completed_sequence = True
     finally:
         try:
             board.recovering_stop()
         finally:
             recorder.stop()
+        if not completed_sequence:
+            recover_theta_origin()
 
     audio, captured_rate = read_wav(audio_path)
     gain_after = microphone_metadata(args.source)
@@ -2070,6 +2427,7 @@ def run_timed_repeat(
     motion_end = float(moving_samples[-1]["hostOffsetS"])
     timing_quality = telemetry_timing_quality(
         telemetry, axis, args.motion_velocity_threshold,
+        exact_motion_envelope=profile in ("stress", "ramp"),
     )
     timing_quality["audioEpochUncertaintyS"] = recorder.timestamp_uncertainty_s
     timing_quality["audioPrimingBlocksDiscarded"] = (
@@ -2111,6 +2469,7 @@ def run_timed_repeat(
             expected_max_velocity
             if profile in ("verify", "screen", "gated") else None
         ),
+        exact_motion_envelope=profile in ("stress", "ramp"),
     )
     near_high_speed = high_speed_acoustic_level(
         audio_path, recorder_launch_offset, telemetry, axis,
@@ -2143,6 +2502,10 @@ def run_timed_repeat(
         "finalPosition": round(final_position, 6),
         "returnError": round(return_error, 6),
         "rhoExcursionMm": rho_envelope_mm if axis.name == "rho" else None,
+        "thetaExcursionDeg": (
+            args.theta_excursion_deg if axis.name == "theta" and segmented_targets
+            else None
+        ),
         "actualMotionStartS": round(motion_start, 6),
         "actualMotionEndS": round(motion_end, 6),
         "timingQuality": timing_quality,
@@ -2196,6 +2559,7 @@ def confirmed_tones(repeats: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "direction": seed.get("direction", "both"),
             "frequencyHz": round(float(np.median([tone["frequency_hz"] for tone in matches])), 2),
             "medianMotionLevelDbfs": round(float(np.median(levels)), 2),
+            "loudestRepeatMotionLevelDbfs": round(max(levels), 2),
             "repeatLevelSpreadDb": round(max(levels) - min(levels), 2),
             "minimumPersistence": min(float(tone["motion_persistence"]) for tone in matches),
             "minimumIdleSeparationDb": min(
@@ -2265,11 +2629,18 @@ def cmd_trial(args: argparse.Namespace) -> int:
             f"--rho-excursion-mm must be between 1 and "
             f"{RHO_TEST_MAX_EXCURSION_MM:.0f}"
         )
+    if not 1.0 <= args.theta_excursion_deg <= THETA_TEST_MAX_EXCURSION_DEG:
+        raise ValueError(
+            f"--theta-excursion-deg must be between 1 and "
+            f"{THETA_TEST_MAX_EXCURSION_DEG:.0f}"
+        )
     board = Board(args.board)
     board.recovering_stop()
     if axis.name == "rho":
         # Check the firmware boundary before changing speed or tuning values.
         preflight_rho_commissioning(board)
+    else:
+        preflight_theta_commissioning(board)
     board.post("/api/speed", {"speed": 10})
     tuning = apply_requested_settings(board, args)
     driver_settings = tuning[axis.driver_key]
@@ -2293,7 +2664,7 @@ def cmd_trial(args: argparse.Namespace) -> int:
         minimum_timeout_s = minimum_motion_s * 1.25 + 10.0
         gated_profiles = [
             profile for profile in requested_profiles
-            if profile in ("verify", "screen", "gated")
+            if profile in ("verify", "screen", "gated", "ramp")
         ]
         if gated_profiles:
             minimum_timeout_s += max(
@@ -2321,6 +2692,38 @@ def cmd_trial(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
     else:
+        preflight_theta_commissioning(
+            board, bool(driver_settings["interpolationEnabled"])
+        )
+        requested_profiles = (
+            ("continuous", "stress") if args.profile == "both" else (args.profile,)
+        )
+        gated_profiles = [
+            profile for profile in requested_profiles
+            if profile in ("verify", "screen", "gated", "ramp")
+        ]
+        if gated_profiles:
+            maximum_gate_count = max(
+                len(theta_segment_targets(profile, args.theta_excursion_deg))
+                for profile in gated_profiles
+            )
+            maximum_angular_distance_rad = max(
+                theta_profile_distance_rad(profile, args.theta_excursion_deg)
+                for profile in gated_profiles
+            )
+            minimum_timeout_s = (
+                maximum_angular_distance_rad
+                / float(tuning["motion"][axis.motion_velocity_key])
+                * 1.25
+                + maximum_gate_count * args.gated_idle
+                + 10.0
+            )
+            if args.duration < minimum_timeout_s:
+                raise ValueError(
+                    f"--duration {args.duration:.1f}s is too short for the requested "
+                    f"theta profile; use at least {minimum_timeout_s:.0f}s "
+                    "(includes 25% ramp margin)"
+                )
         preconditioning = []
 
     output_dir = Path(args.output_dir)
@@ -2352,8 +2755,12 @@ def cmd_trial(args: argparse.Namespace) -> int:
             item["timingQuality"]["valid"] for item in profile_repeats
         )
         required_pair_count = (
-            len(rho_segment_targets(profile, args.rho_excursion_mm))
-            if profile in ("verify", "screen", "gated") else 1
+            len(
+                rho_segment_targets(profile, args.rho_excursion_mm)
+                if axis.name == "rho"
+                else theta_segment_targets(profile, args.theta_excursion_deg)
+            )
+            if profile in ("verify", "screen", "gated", "ramp") else 1
         )
         # Qualification is fail-closed on the loudest telemetry-confirmed
         # cruise gate in every repeat. The across-gate median remains a useful
@@ -2400,6 +2807,42 @@ def cmd_trial(args: argparse.Namespace) -> int:
         valid_quiet_bound = (
             len(conservative_upper_levels) == len(profile_repeats)
         )
+        transient_p95_levels = [
+            float(item["metrics"][
+                "transient_p95_excess_upper_95_a_weighted_dbfs"
+            ])
+            for item in profile_repeats
+            if item["metrics"][
+                "transient_p95_excess_upper_95_a_weighted_dbfs"
+            ] is not None
+            and item["metrics"]["background_stable"]
+            and not item["metrics"]["clipping_detected"]
+            and item["timingQuality"]["valid"]
+            and item["gainFingerprintStable"]
+        ]
+        valid_transient_bound = (
+            profile == "stress"
+            and len(transient_p95_levels) == len(profile_repeats)
+        )
+        ramp_transient_upper_levels = [
+            float(item["metrics"][
+                "loudest_transient_gate_p95_excess_upper_95_a_weighted_dbfs"
+            ])
+            for item in profile_repeats
+            if item["metrics"][
+                "loudest_transient_gate_p95_excess_upper_95_a_weighted_dbfs"
+            ] is not None
+            and item["metrics"]["background_stable"]
+            and item["metrics"]["all_local_background_stable"]
+            and item["metrics"]["on_off_pair_count"] == required_pair_count
+            and not item["metrics"]["clipping_detected"]
+            and item["timingQuality"]["valid"]
+            and item["gainFingerprintStable"]
+        ]
+        valid_ramp_bound = (
+            profile == "ramp"
+            and len(ramp_transient_upper_levels) == len(profile_repeats)
+        )
         all_background_stable = all(
             item["metrics"]["background_stable"] for item in profile_repeats
         )
@@ -2414,13 +2857,32 @@ def cmd_trial(args: argparse.Namespace) -> int:
             item["metrics"]["all_gates_sustain_commanded_velocity"] is True
             for item in profile_repeats
         )
-        valid_tones = (
-            bool(tones) and all_gain_stable and all_timing_valid
+        segmented_profile = profile in ("verify", "screen", "gated", "ramp")
+        tone_measurement_valid = (
+            all_gain_stable and all_timing_valid
             and all_background_stable and all_unclipped
-            and complete_pair_sets and all_gates_sustain_velocity
+            and (
+                not segmented_profile
+                or (
+                    complete_pair_sets
+                    and (profile == "ramp" or all_gates_sustain_velocity)
+                )
+            )
         )
-        valid_detection = valid_broadband or valid_tones
-        level_valid = valid_broadband or valid_quiet_bound
+        valid_tones = bool(tones) and tone_measurement_valid
+        valid_detection = (
+            valid_broadband or valid_tones or valid_transient_bound
+            or valid_ramp_bound
+        )
+        level_valid = (
+            valid_broadband or valid_quiet_bound or valid_transient_bound
+            or valid_ramp_bound
+        )
+        acceptance_levels = (
+            transient_p95_levels if profile == "stress"
+            else ramp_transient_upper_levels if profile == "ramp"
+            else conservative_upper_levels
+        )
         near_high_speed_levels = [
             float(item["nearHighSpeed"]["medianAWeightedDbfs"])
             for item in profile_repeats
@@ -2435,6 +2897,18 @@ def cmd_trial(args: argparse.Namespace) -> int:
             float(tone["medianMotionLevelDbfs"])
             for tone in tones
         ]
+        confirmed_tone_peak_levels = [
+            float(tone["loudestRepeatMotionLevelDbfs"])
+            for tone in tones
+        ]
+        tone_levels_within_ceiling = (
+            args.reference_only
+            or args.tone_ceiling_dbfs is None
+            or all(
+                level <= args.tone_ceiling_dbfs
+                for level in confirmed_tone_peak_levels
+            )
+        )
         profile_summaries[profile] = {
             "provisionalScreen": profile == "screen",
             "qualificationEligible": profile not in ("screen", "verify"),
@@ -2462,9 +2936,16 @@ def cmd_trial(args: argparse.Namespace) -> int:
                 ),
                 "allDetectedTimingLockedTonesWithinCeiling": (
                     None if args.reference_only or args.tone_ceiling_dbfs is None else (
-                    bool(repeat_tone_levels)
-                    and all(level <= args.tone_ceiling_dbfs for level in repeat_tone_levels)
+                        tone_measurement_valid
+                        and all(
+                            level <= args.tone_ceiling_dbfs
+                            for level in repeat_tone_levels
+                        )
                     )
+                ),
+                "allConfirmedTimingLockedTonesWithinCeiling": (
+                    None if args.reference_only or args.tone_ceiling_dbfs is None
+                    else tone_measurement_valid and tone_levels_within_ceiling
                 ),
                 "loudestSustainedCruiseMotorExcessAWeightedDbfs": (
                     round(max(raw_gate_levels), 2) if raw_gate_levels else None
@@ -2473,7 +2954,38 @@ def cmd_trial(args: argparse.Namespace) -> int:
                     round(max(conservative_upper_levels), 2)
                     if valid_quiet_bound else None
                 ),
+                "loudestTransientP95MotorExcessAWeightedDbfs": (
+                    round(max(
+                        float(item["metrics"][
+                            "transient_p95_excess_a_weighted_dbfs"
+                        ])
+                        for item in profile_repeats
+                        if item["metrics"][
+                            "transient_p95_excess_a_weighted_dbfs"
+                        ] is not None
+                    ), 2)
+                    if any(
+                        item["metrics"][
+                            "transient_p95_excess_a_weighted_dbfs"
+                        ] is not None
+                        for item in profile_repeats
+                    ) else None
+                ),
+                "loudestTransientP95MotorExcessUpperBoundAWeightedDbfs": (
+                    round(max(transient_p95_levels), 2)
+                    if valid_transient_bound else None
+                ),
+                "loudestRampGateP95MotorExcessUpperBoundAWeightedDbfs": (
+                    round(max(ramp_transient_upper_levels), 2)
+                    if valid_ramp_bound else None
+                ),
                 "motorNoiseMetric": (
+                    "motion-window A-weighted p95 power minus idle-window p95 "
+                    "power; qualification uses the conservative 95% bootstrap "
+                    "upper bound" if profile == "stress" else
+                    "loudest per-leg A-weighted p95 power minus adjacent-idle "
+                    "p95 power; qualification uses the conservative 95% "
+                    "bootstrap upper bound" if profile == "ramp" else
                     "loudest telemetry-confirmed >=90% commanded-velocity gate, "
                     "minus adjacent-idle A-weighted power; qualification uses "
                     "the conservative 95% bootstrap upper bound"
@@ -2521,19 +3033,27 @@ def cmd_trial(args: argparse.Namespace) -> int:
                 ),
                 "everyRepeatWithinAcceptableReference": (
                     None if args.reference_only else (
-                    valid_quiet_bound
+                    level_valid
                     and all(
                         level <= args.acceptable_ceiling_dbfs
-                        for level in conservative_upper_levels
+                        for level in acceptance_levels
                     )
+                    and tone_measurement_valid
+                    and tone_levels_within_ceiling
                     )
                 ),
             },
             "humanAudibilityDecisionRequired": True,
             "levelUnit": "dBFS (relative; not dB SPL)",
             "acceptance": (
-                "broadband: conservative 95% upper bound from every sustained "
-                "gate with stable adjacent idle; tonal: "
+                (
+                    "transient: conservative p95 upper bound from every ramp "
+                    "gate with stable adjacent idle; tonal: "
+                    if profile == "ramp" else
+                    "broadband: conservative 95% upper bound from every "
+                    "sustained gate with stable adjacent idle; tonal: "
+                )
+                +
                 f">= {args.minimum_gain_db:.1f} dB above both idle windows and "
                 f"repeated within {TONE_MATCH_TOLERANCE_HZ:.1f} Hz"
             ),
@@ -2655,6 +3175,19 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 
 def cmd_self_test(_: argparse.Namespace) -> int:
+    expected_theta_screen = (
+        math.pi / 2.0, 0.0, math.pi / 2.0, 0.0,
+    )
+    theta_screen = theta_segment_targets("screen", 90.0)
+    if len(theta_screen) != len(expected_theta_screen) or any(
+        abs(actual - expected) > 1e-9
+        for actual, expected in zip(theta_screen, expected_theta_screen, strict=True)
+    ):
+        raise RuntimeError(f"Theta screen does not return to zero: {theta_screen}")
+    theta_gated = theta_segment_targets("gated", 90.0)
+    if len(theta_gated) != 8 or theta_gated[-1] != 0.0:
+        raise RuntimeError(f"Theta gated profile is incomplete: {theta_gated}")
+
     expected_rho_currents = {8: 275, 10: 337, 12: 398, 13: 428, 14: 459}
     for expected_code, request_ma in expected_rho_currents.items():
         code, nominal_ma = driver_current_quantization(request_ma, True, 0.11)
@@ -2735,6 +3268,13 @@ def cmd_self_test(_: argparse.Namespace) -> int:
         wav.writeframes(pcm.tobytes())
     metrics, analysis = analyze_timed(path, motion_start, motion_end)
     tones = [tone.frequency_hz for tone in metrics.timing_locked_tones]
+    if (metrics.transient_p95_excess_a_weighted_dbfs is None
+            or metrics.transient_p95_excess_upper_95_a_weighted_dbfs is None
+            or metrics.transient_p95_excess_upper_95_a_weighted_dbfs
+            < metrics.transient_p95_excess_a_weighted_dbfs):
+        raise RuntimeError(
+            "Transient p95 bootstrap bound is missing or below its estimate"
+        )
     if not tones or min(abs(tone - 1250.0) for tone in tones) > 8.0:
         raise RuntimeError(f"Timed self-test did not recover the 1250 Hz motor tone: {tones}")
     if any(abs(tone - 700.0) <= 12.5 or abs(tone - 2100.0) <= 12.5 for tone in tones):
@@ -2943,6 +3483,10 @@ def cmd_self_test(_: argparse.Namespace) -> int:
         )
     if rho_segment_targets("verify", 50.0) != (50.0, 0.0):
         raise RuntimeError("RHO verify profile is not exactly one out/back pair")
+    theta_ramp = theta_segment_targets("ramp", 999.0)
+    if (len(theta_ramp) != 8 or theta_ramp[-1] != 0.0
+            or max(theta_ramp) != math.pi / 2.0):
+        raise RuntimeError("Theta ramp profile is not a bounded 5/15/45/90 ladder")
 
     drift_audio = audio.copy()
     drift_audio[samples > motion_end] *= 12.0
@@ -3020,7 +3564,9 @@ def build_parser() -> argparse.ArgumentParser:
     trial.add_argument("--rated-current-ma", type=int, required=True)
     trial.add_argument(
         "--profile",
-        choices=["continuous", "verify", "screen", "gated", "stress", "both"],
+        choices=[
+            "continuous", "verify", "screen", "gated", "ramp", "stress", "both",
+        ],
         default="both",
     )
     trial.add_argument(
@@ -3030,12 +3576,20 @@ def build_parser() -> argparse.ArgumentParser:
             "out/back pair, screens use two, and qualification uses four"
         ),
     )
+    trial.add_argument(
+        "--theta-excursion-deg", type=float, default=90.0,
+        help=(
+            "angular excursion for theta segmented tests; verify uses one "
+            "out/back pair, screens use two, qualification uses four, and "
+            "ramp uses a fixed 5/15/45/90 degree ladder"
+        ),
+    )
     trial.add_argument("--repeats", type=int, default=3)
     trial.add_argument("--pre-idle", type=float, default=5.0)
     trial.add_argument("--post-idle", type=float, default=5.0)
     trial.add_argument(
         "--gated-idle", type=float, default=2.0,
-        help="confirmed idle interval after every segment in the gated rho profile",
+        help="confirmed idle interval after every segment in a segmented profile",
     )
     trial.add_argument("--stop-timeout", type=float, default=15.0)
     trial.add_argument("--telemetry-interval", type=float, default=0.05)
