@@ -334,6 +334,7 @@
             cursor: pointer;
             padding: 0;
         }
+        .playlist-action-btn svg { width: 10px; height: 10px; fill: currentColor; display: block; margin: auto; }
         .playlist-action-btn:hover { border-color: var(--ink); color: var(--ink); }
         .playlist-action-btn:disabled { opacity: .3; cursor: not-allowed; }
         .playlist-action-btn.delete:hover { border-color: var(--danger); color: var(--danger); }
@@ -1455,9 +1456,9 @@
                             <div class="playlist-num">${isCurrent ? '▸' : index + 1}</div>
                             <div class="playlist-name">${this.escapeHtml(item.filename.replace('.thr', ''))}</div>
                             <div class="playlist-actions" onclick="event.stopPropagation()">
-                                <button class="playlist-action-btn" onclick="controller.playlistMoveUp(${index})" ${index === 0 ? 'disabled' : ''}>▲</button>
-                                <button class="playlist-action-btn" onclick="controller.playlistMoveDown(${index})" ${index === data.items.length - 1 ? 'disabled' : ''}>▼</button>
-                                <button class="playlist-action-btn delete" onclick="controller.removeFromPlaylist(${index})">✕</button>
+                                <button class="playlist-action-btn" onclick="controller.playlistMoveUp(${index})" ${index === 0 ? 'disabled' : ''} aria-label="Move up"><svg viewBox="0 0 16 16"><path d="M8 4.2l5 6.3H3z"/></svg></button>
+                                <button class="playlist-action-btn" onclick="controller.playlistMoveDown(${index})" ${index === data.items.length - 1 ? 'disabled' : ''} aria-label="Move down"><svg viewBox="0 0 16 16"><path d="M8 11.8L3 5.5h10z"/></svg></button>
+                                <button class="playlist-action-btn delete" onclick="controller.removeFromPlaylist(${index})" aria-label="Remove"><svg viewBox="0 0 16 16"><path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6" stroke="currentColor" stroke-width="1.6" fill="none"/></svg></button>
                             </div>
                         </div>`;
                     }).join('');
