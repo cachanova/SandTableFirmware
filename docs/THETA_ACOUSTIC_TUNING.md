@@ -141,6 +141,12 @@ more conservative strict profile when repeatability matters more than the
 2.8% speed increase; its full-run upper bound was -65.59 dBFS. Conversely,
 0.548125 rad/s has 0.90 dB of margin at -62. Every listed pass still requires
 the operator's listening approval before it may be described as inaudible.
+The 0.548125 run also contained a 70.31 Hz, -58.11 dBFS line in only its second
+repeat. It disappeared from both adjacent idle gates but was absent from the
+first independent repeat, so the harness records it as a diagnostic rather
+than a confirmed rejection. Listen especially carefully to that candidate
+before accepting the -59 through -62 tiers; an intermittent human-audible line
+overrides the repeat-based numeric pass.
 
 These tier measurements cover sustained constant-velocity gates. They do not
 claim that ramp/reversal transients meet the same numerical ceilings: the ramp
