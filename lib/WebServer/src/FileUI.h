@@ -18,9 +18,6 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
             --wash: #f2f1ea;
             --ok: #3d6b3d;
             --danger: #9e3a2e;
-            /* aliases used by the upload drag handlers */
-            --accent: #1a1917;
-            --accent-dim: #f2f1ea;
             --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
             --serif: Georgia, "Times New Roman", serif;
         }
@@ -231,10 +228,15 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
             if (confirm('Do you want to add a preview image for this pattern?')) {
                 const imageInput = document.getElementById('image-input');
                 imageInput.value = '';
-                imageInput.onchange = async () => {
-                    const imageFile = imageInput.files[0];
+                // Runs on selection or on picker cancel (uploads without image)
+                const handleImage = async () => {
+                    imageInput.onchange = null;
+                    imageInput.oncancel = null;
+                    const imageFile = imageInput.files[0] || null;
                     await performUpload(file, imageFile);
                 };
+                imageInput.onchange = handleImage;
+                imageInput.oncancel = handleImage;
                 imageInput.click();
             } else {
                 await performUpload(file, null);
@@ -281,8 +283,8 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
 
         uploadArea.addEventListener('dragover', (e) => {
             e.preventDefault();
-            uploadArea.style.borderColor = 'var(--accent)';
-            uploadArea.style.background = 'var(--accent-dim)';
+            uploadArea.style.borderColor = 'var(--ink)';
+            uploadArea.style.background = 'var(--wash)';
         });
 
         uploadArea.addEventListener('dragleave', () => {

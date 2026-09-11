@@ -19,10 +19,6 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             --ok: #3d6b3d;
             --warn: #8a6d1a;
             --danger: #9e3a2e;
-            /* legacy aliases used by inline styles in scripts */
-            --warning: #8a6d1a;
-            --text-muted: #97938a;
-            --text-secondary: #57544e;
             --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
             --serif: Georgia, "Times New Roman", serif;
         }
@@ -54,8 +50,6 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
         .topnav a { color: var(--ink-faint); text-decoration: none; font-size: 12px; letter-spacing: 2.5px; text-transform: uppercase; padding-bottom: 3px; }
         .topnav a:hover { color: var(--ink-soft); }
         .topnav a.active { color: var(--ink); border-bottom: 1px solid var(--ink); }
-        .conn { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); }
-        .conn b { color: var(--ok); font-weight: 400; margin-right: 6px; }
 
         /* ── Layout ─────────────────────── */
         .layout {
@@ -140,7 +134,6 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
         .t-btn.t-main { background: var(--ink); color: var(--paper); }
         .t-btn.t-main:hover { background: #34322c; }
         .t-btn:disabled { opacity: .35; cursor: not-allowed; }
-        .t-btn.t-main:disabled:hover { background: var(--ink); }
         .t-btn:disabled:hover { background: none; }
         .t-btn.t-main:disabled:hover { background: var(--ink); }
 
@@ -396,7 +389,6 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             .layout { grid-template-columns: 1fr; gap: 40px; padding: 28px 20px 70px; }
             .topbar { padding: 16px 20px; }
             .topnav { gap: 18px; }
-            .conn { display: none; }
         }
     </style>
 </head>
@@ -409,7 +401,6 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             <a href="/files">Files</a>
             <a href="/tuning">Tuning</a>
         </nav>
-        <div class="conn"><b>●</b><span id="wifi-ip">—</span></div>
     </header>
 
     <main class="layout">
@@ -483,7 +474,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
 
                 <div id="tab-single">
                     <div id="pattern-list-container" class="pattern-list">
-                        <div style="padding: 20px 2px; color: var(--text-muted); font-style: italic;">Loading patterns...</div>
+                        <div style="padding: 20px 2px; color: var(--ink-faint); font-style: italic;">Loading patterns...</div>
                     </div>
                     <select id="clearing-select">
                         <option value="0">No Clearing</option>
@@ -565,6 +556,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 <div class="facts">
                     <div class="fact"><span class="k">Free Memory</span><span class="v" id="heap">—</span></div>
                     <div class="fact"><span class="k">Wi-Fi</span><span class="v" id="wifi-ssid">—</span></div>
+                    <div class="fact"><span class="k">IP Address</span><span class="v" id="wifi-ip">—</span></div>
                     <div class="fact"><span class="k">Signal</span><span class="v" id="wifi-rssi">—</span></div>
                     <div class="fact"><span class="k">Light</span><span class="v"><span id="status-brightness">50</span>%</span></div>
                 </div>
@@ -637,15 +629,16 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     
                     if (confirm('Do you want to add a preview image for this pattern?')) {
                         fileImage.value = ''; // Reset
-                        fileImage.click();
-                        
-                        // Wait for image selection
+                        // Runs on selection or on picker cancel (uploads without image)
                         const handleImage = async () => {
+                            fileImage.removeEventListener('change', handleImage);
+                            fileImage.removeEventListener('cancel', handleImage);
                             const imageFile = fileImage.files.length > 0 ? fileImage.files[0] : null;
                             await this.performUpload(patternFile, imageFile);
-                            fileImage.removeEventListener('change', handleImage); // Cleanup
                         };
                         fileImage.addEventListener('change', handleImage);
+                        fileImage.addEventListener('cancel', handleImage);
+                        fileImage.click();
                     } else {
                         await this.performUpload(patternFile, null);
                     }
@@ -751,7 +744,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 // Draw path line
                 if (this.lastX !== undefined) {
                     const ctx = this.ctxPath;
-                    ctx.strokeStyle = 'rgba(42, 37, 32, 0.8)';
+                    ctx.strokeStyle = 'rgba(26, 25, 23, 0.8)';
                     ctx.lineWidth = 3;
                     ctx.lineCap = 'round';
                     ctx.beginPath();
@@ -950,11 +943,11 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             renderPatternList() {
                 const container = document.getElementById('pattern-list-container');
                 if (!this.storageAvailable) {
-                    container.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--warning);">SD card not detected — patterns are unavailable</div>';
+                    container.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--warn);">SD card not detected — patterns are unavailable</div>';
                     return;
                 }
                 if (this.files.length === 0) {
-                    container.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--text-muted);">No patterns found</div>';
+                    container.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--ink-faint);">No patterns found</div>';
                     return;
                 }
 
@@ -1342,6 +1335,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     document.getElementById('btn-upload-new').disabled = false;
                     document.getElementById('btn-add-to-playlist').disabled = false;
                     document.getElementById('btn-add-all-to-playlist').disabled = false;
+                    document.getElementById('btn-playlist-start').disabled = false;
                     document.getElementById('btn-save-playlist').disabled = false;
                     document.getElementById('btn-load-playlist').disabled = false;
                 }
