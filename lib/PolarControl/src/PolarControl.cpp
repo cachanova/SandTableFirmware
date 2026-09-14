@@ -2077,6 +2077,34 @@ bool PolarControl::homeDrivers() {
     m_homingStepsPerMm.store(static_cast<uint16_t>(
         50U * homingSettings.microsteps));
 
+    // A single lost UART write can leave a write-only register (for example
+    // IHOLD_IRUN) unknown even when readable profile fields match. Reapply
+    // the whole profile, but only while the bridge is verified off. Never
+    // proceed to STEP pulses until one complete application verifies.
+    auto applyDisabledSettingsWithRetry = [&](TMC2209& driver,
+                                               const DriverSettings& settings,
+                                               uint8_t address,
+                                               const char* name) {
+        for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+            uint32_t chopconf = 0;
+            if (!readTmcRegisterChecked(address, 0x6C, chopconf) ||
+                (chopconf & 0x0FU) != 0) {
+                LOG("Driver %s bridge not verified off before profile retry\r\n",
+                    name);
+                return false;
+            }
+            if (applyDriverSettings(driver, settings, address, name)) {
+                return true;
+            }
+            if (attempt < 2) {
+                LOG("Driver %s profile verification retry %u/2\r\n",
+                    name, static_cast<unsigned>(attempt + 1));
+                delayMicroseconds(250);
+            }
+        }
+        return false;
+    };
+
     auto restoreNormalSettings = [&](bool enableDrivers) {
         xSemaphoreTake(m_mutex, portMAX_DELAY);
         m_planner.stopRhoHoming();
@@ -2091,11 +2119,11 @@ bool PolarControl::homeDrivers() {
         if (Config::kRhoCompanionMotorEnabled) {
             m_rCDriver.moveUsingStepDirInterface();
         }
-        const bool primaryApplied = applyDriverSettings(
+        const bool primaryApplied = applyDisabledSettingsWithRetry(
             m_rDriver, normalSettings, R_ADDR, "rho");
         const bool companionApplied = !Config::kRhoCompanionMotorEnabled ||
-            applyDriverSettings(m_rCDriver, normalSettings, RC_ADDR,
-                                "rho-companion");
+            applyDisabledSettingsWithRetry(
+                m_rCDriver, normalSettings, RC_ADDR, "rho-companion");
         bool stateVerified = primaryApplied && companionApplied;
         if (stateVerified && enableDrivers) {
             const bool primaryEnabled = setDriverEnabled(
@@ -2124,10 +2152,11 @@ bool PolarControl::homeDrivers() {
 
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     const bool homingConfigApplied = disableRhoDriversLocked() &&
-        applyDriverSettings(m_rDriver, homingSettings, R_ADDR, "rho") &&
+        applyDisabledSettingsWithRetry(
+            m_rDriver, homingSettings, R_ADDR, "rho") &&
         (Config::kRhoCompanionMotorEnabled
-            ? applyDriverSettings(m_rCDriver, homingSettings, RC_ADDR,
-                                  "rho-companion")
+            ? applyDisabledSettingsWithRetry(
+                  m_rCDriver, homingSettings, RC_ADDR, "rho-companion")
             : disableDriverMotion(m_rCDriver, RC_ADDR, normalSettings)) &&
         setDriverEnabled(m_rDriver, R_ADDR, homingSettings, false) &&
         setDriverEnabled(m_rCDriver, RC_ADDR,
