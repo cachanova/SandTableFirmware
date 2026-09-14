@@ -150,54 +150,6 @@ def move_to_known_start(
     raise RuntimeError("Timed out while preparing known full-travel start")
 
 
-def ledger_phase_report(
-    terminal_status: dict[str, Any], axis: int, phase: int,
-    expected_steps: float, steps_per_mm: float,
-) -> dict[str, Any]:
-    """Report long-travel results retained by firmware after trace saturation."""
-    homing = terminal_status.get("homing", {})
-    companion = axis == 2
-    coarse = phase == 2
-    if companion:
-        steps_key = (
-            "companionFastApproachSteps" if coarse
-            else "companionSlowApproachSteps"
-        )
-        baseline_key = "companionFastBaseline" if coarse else "companionBaseline"
-        trigger_key = "companionFastTrigger" if coarse else "companionTrigger"
-    else:
-        steps_key = "fastApproachSteps" if coarse else "slowApproachSteps"
-        baseline_key = "fastBaseline" if coarse else "baseline"
-        trigger_key = "fastTrigger" if coarse else "trigger"
-    steps = int(homing.get(steps_key, 0))
-    baseline = int(homing.get(baseline_key, 0))
-    trigger = int(homing.get(trigger_key, 0))
-    total_uart = int(homing.get("uartSamples", 0))
-    valid_uart = int(homing.get("validUartSamples", 0))
-    signed_error_mm = (steps - expected_steps) / steps_per_mm
-    return {
-        "valid": steps > 0 and baseline > 0 and total_uart > 0,
-        "sampleCount": total_uart,
-        "validSampleCount": valid_uart,
-        "uartValidFraction": round(valid_uart / total_uart, 4) if total_uart else 0.0,
-        "baselineMedianSg": baseline,
-        "minimumSg": trigger,
-        "terminalSg": trigger,
-        "terminalSteps": steps,
-        "expectedContactSteps": int(round(expected_steps)),
-        "signedContactErrorMm": round(signed_error_mm, 4),
-        "overrunMm": round(max(0.0, signed_error_mm), 4),
-        "terminalToBaselineRatio": (
-            round(trigger / baseline, 4) if baseline > 0 else None
-        ),
-        "audioEventAWeightedDbfs": None,
-        "audioPriorAWeightedDbfs": None,
-        "audioRiseDb": None,
-        "audioCorroborated": False,
-        "audioNote": "Microphone recorded for offline review; firmware ledger validates long travel",
-    }
-
-
 def frame_a_levels(path: Path) -> tuple[np.ndarray, np.ndarray]:
     audio, rate = read_wav(path)
     centers, frequencies, spectra = short_window_spectrogram(audio, rate)
@@ -495,19 +447,12 @@ def run(args: argparse.Namespace) -> int:
             (2, axis_start_mm + runway_mm), (4, backoff_mm)
         ):
             key = f"{TRACE_AXES[axis]}-{TRACE_PHASES[phase]}"
-            if known_position_trial:
-                reports[key] = ledger_phase_report(
-                    terminal_status, axis, phase,
-                    expected_mm * homing_steps_per_mm,
-                    homing_steps_per_mm,
-                )
-            else:
-                reports[key] = phase_report(
-                    trace.get("samples", []), axis, phase,
-                    expected_mm * homing_steps_per_mm,
-                    audio_times, audio_levels, audio_home_start_s,
-                    homing_steps_per_mm,
-                )
+            reports[key] = phase_report(
+                trace.get("samples", []), axis, phase,
+                expected_mm * homing_steps_per_mm,
+                audio_times, audio_levels, audio_home_start_s,
+                homing_steps_per_mm,
+            )
 
     failures = validate_trial(reports, homing_steps_per_mm)
     if not companion_enabled and any(

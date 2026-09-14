@@ -4,12 +4,15 @@ import sys
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from rho_homing_tuner import (  # noqa: E402
     HomingTraceCollector,
     configured_motor_axes,
     disabled_companion_verified,
+    phase_report,
     require_expected_motors,
     validate_trial,
 )
@@ -112,6 +115,23 @@ class HomingTraceCollectorTest(unittest.TestCase):
         require_expected_motors((1,), "main")
         with self.assertRaisesRegex(RuntimeError, "do not match"):
             require_expected_motors((1, 2), "main")
+
+    def test_phase_report_uses_only_its_trace_and_correlated_audio(self) -> None:
+        samples = [
+            {"a": 1, "p": 2, "t": 1000, "s": 3000, "g": 200, "v": True},
+            {"a": 1, "p": 2, "t": 1100, "s": 3200, "g": 100, "v": True},
+            {"a": 1, "p": 4, "t": 1300, "s": 1600, "g": 50, "v": True},
+        ]
+        report = phase_report(
+            samples, 1, 2, 3200,
+            np.array([0.5, 0.8, 1.0, 1.1, 1.2, 1.3]),
+            np.array([-60.0, -60.0, -60.0, -45.0, -60.0, -50.0]),
+            0.0, 400.0,
+        )
+        self.assertEqual(report["sampleCount"], 2)
+        self.assertEqual(report["terminalSteps"], 3200)
+        self.assertEqual(report["audioRiseDb"], 15.0)
+        self.assertTrue(report["audioCorroborated"])
 
     def test_detector_replay_rejects_phase_ripple_then_accepts_collapse(self) -> None:
         values = [200] * 48 + [125, 200] * 4 + [125]

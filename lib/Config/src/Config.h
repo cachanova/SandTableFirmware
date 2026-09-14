@@ -77,9 +77,9 @@ static constexpr uint16_t kRhoMaxRunCurrentMa = 500;
 static constexpr uint8_t kRhoMaxUnmeasuredCurrentRegister = 14;
 
 // Dedicated sensorless-homing profile. This is deliberately independent of
-// the quiet normal-motion profile. Commissioning brackets the lowest current
-// that crosses the loaded mechanism without losing runway steps; 150 mA is
-// the current midpoint under qualification.
+// the quiet normal-motion profile. Three physically confirmed 150 mA passes
+// reached zero; the 200 mA comparison false-triggered far from contact.
+// Keep 150 mA while refining the detector and qualifying repeatability.
 static constexpr uint16_t kRhoHomingRunCurrentMa = 150;
 static constexpr uint16_t kRhoHomingHoldCurrentMa = 150;
 static constexpr uint16_t kRhoHomingMicrosteps = 8;
