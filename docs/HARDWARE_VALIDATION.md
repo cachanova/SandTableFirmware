@@ -63,29 +63,27 @@ pio run -e esp32dev -t upload --upload-port /dev/ttyUSB0
 
 1. Boot with `kAutoHomeOnBoot = false`. The dashboard should show
    `INITIALIZED`, and pattern start requests should be rejected.
-2. Use short motor tests to verify theta and rho direction with the mechanism
-   able to move safely. Stop immediately if either axis binds.
-3. Start homing from the dashboard and watch both sequential motor passes.
-   For each motor, verify a short outward runway, a constant-speed inward
-   approach, a 4 mm verification backoff, and a slow inward return. The other
-   rho motor must remain mechanically stationary while its driver holds its
-   saved phase at 256 microsteps using `VACTUAL=+/-1`. If that shaft moves,
-   drifts, or jumps when STEP/DIR control is restored, cut power and reject the
-   sequential homing method for this hardware.
-4. If motion stops in a stiff section, choose **No, It Stopped Early**. On the
-   Tuning page, first lower the trigger percentage, then increase consecutive
-   samples or ignored initial travel. Change one value at a time.
-5. If the hard stop is reached but never detected, raise the trigger percentage
-   or reduce consecutive samples. Do not compensate by raising motor current
-   until the mechanical path and driver temperature have been checked.
-6. Confirm home only when both mechanisms are visibly at their physical center
-   stops. Record both precision-pass times and StallGuard trigger/baseline pairs
-   shown on the dashboard; large changes on later runs are a useful warning
-   sign.
-7. On the first powered run, be ready to cut power when either driver's phase
-   is restored or the pair is re-enabled. A phase-restore failure must leave
-   both rho power stages disabled and report failure 9; do not proceed to
-   pattern motion if either motor jumps on re-enable.
+2. For the current main-only assembly, use the RHO service image and confirm
+   `homing.companionMotorEnabled=false`. Read both driver dumps: main RHO must
+   answer at address 0, and the empty address-1 bridge must report `TOFF=0`.
+   The service image locks out theta and pattern motion.
+3. Confirm main RHO moves outward for positive RHO jogs without binding. Stop
+   if it slips or stalls. Manually establish physical zero, then select **Set
+   current position as home** before any known-origin trial.
+4. Run the bounded trial in the [RHO homing playbook](RHO_HOMING_TUNING.md).
+   Expect an 8 mm outward runway, an inward approach at 6 mm/s, a 4 mm
+   backoff, and a second inward approach at 6 mm/s. Keep hands clear and a
+   physical power cutoff within reach.
+5. Compare the final mechanism position with the confirmed zero reference.
+   Reject any early stop, missed contact, driver fault, or mismatch. A rejected
+   result disables both RHO bridges; re-establish zero before another trial.
+6. Preserve the SG trace and both driver dumps for each attempt. The STEP
+   ledger and `MSCNT` show commanded or electrical motion, not shaft position.
+   Do not adjust the trigger threshold from one run without replaying the
+   change against recorded false-trigger and true-stop traces.
+7. Requalify the counterweight motor and the paired phase-hold path before
+   connecting its load or enabling paired homing. Main-only results do not
+   establish paired behavior.
 
 ## Motion checks
 
@@ -99,5 +97,5 @@ pio run -e esp32dev -t upload --upload-port /dev/ttyUSB0
 5. Only after repeatable homing and clean representative runs should higher
    tuning limits be considered.
 
-Do not enable automatic boot homing until multiple cold-start and warm-start
-runs have reached the real hard stop reliably across the stiffest theta regions.
+Keep automatic boot homing off until cold-start and unknown-origin trials reach
+the real stop across the stiffest theta regions and reject fixed constrictions.

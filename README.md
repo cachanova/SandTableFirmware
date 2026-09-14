@@ -108,32 +108,21 @@ documented in the [rho acoustic tuning playbook](docs/RHO_ACOUSTIC_TUNING.md).
 
 ## Sensorless Homing
 
-The two rho motors home sequentially over their normal shared STEP/DIR signal.
-For each pass, the other driver's power stage is disabled, the active motor
-makes a bounded 4 mm outward runway move, and then approaches the center stop
-at constant speed while StallGuard is sampled over its addressed UART. The
-motor backs out 4 mm and repeats the inward approach slowly; homing succeeds
-only when StallGuard recovers during the backoff and the second trigger occurs
-within the expected return window. Both drivers remain disabled after any
-failure.
+The current assembly has a main RHO motor on UART address 0 and an empty
+counterweight motor socket on address 1. Firmware keeps the empty driver's
+bridge off. Main RHO uses STEP/DIR for an 8 mm outward runway, a constant-speed
+inward StallGuard approach, a 4 mm backoff, and a second inward approach. UART
+configures the drivers and supplies `SG_RESULT`; it does not command homing
+velocity. The two inward triggers must agree within 0.5 mm.
 
-Initial samples are ignored, low readings must persist for a configured number
-of samples, and every move has a step and time bound. Because disabled TMC2209
-indexers still see the shared STEP signal, firmware restores each inactive
-driver's recorded electrical phase while its power stage remains off before it
-can be re-enabled. A visually rejected result also leaves both rho power stages
-disabled. The automatic result is still not treated as proof: the dashboard
-requires visual confirmation before entering `IDLE`.
-
-Sequential homing assumes the de-energized motor is not mechanically
-back-driven by the active motor. That must be confirmed during the first guarded
-powered run; this method is not suitable for a mechanism that moves both motor
-shafts when only one is driven.
-
-The Tuning page exposes the three values useful for rejecting stiff-path false
-positives: trigger percentage, consecutive low samples, and ignored initial
-travel. See [hardware validation](docs/HARDWARE_VALIDATION.md) before connecting
-the mechanism.
+Ten warm, known-zero trials ended at the operator-confirmed camera reference.
+That result does not qualify homing from an unknown position or after a cold
+power start. A fixed tight spot could produce two matching false triggers.
+Automatic boot homing remains off, and the dashboard requires visual
+confirmation before it accepts a sensorless result. The 2 mm commanded-overrun
+limit applies to known-origin commissioning trials, not an unknown-origin boot.
+See the [RHO homing playbook](docs/RHO_HOMING_TUNING.md) before powered tests.
+The counterweight motor needs its own qualification when reconnected.
 
 ## Logging and Diagnostics
 - Serial logs include queue depth, underruns, timing stats, and state changes.
