@@ -78,6 +78,27 @@ runway therefore says nothing about main-RHO load sensing. The main-only image
 must verify address 1 stays disabled before sending main RHO STEP pulses. No
 camera was used for this trial. Keep automatic boot homing off.
 
+### First main-only trial (2026-09-14 04:44 UTC)
+
+The main-only image kept address 1 at `TOFF=0` and sent every homing STEP to
+main RHO. All 334 SG reads passed UART validation. With 153 mA actual current
+at 6 mm/s, the coarse pass stopped at 3,268 steps against a 3,200-step
+expected contact. Its moving SG median was 175 and terminal value 114. After
+the 4 mm backoff, the precision pass stopped at 1,786 steps against 1,600
+expected; its moving median was 184 and terminal value 66. The two passes
+spent 0.635 mm of the shared 1 mm commanded overrun allowance.
+
+Antlion audio rose 8.96 dB and 14.47 dB around the two terminal SG events
+relative to their adjacent motion windows. These aligned events support
+hard-stop contact, but no independent sensor proves final carriage position.
+The controller returned `HOMING_FAILED` (failure 7, axis 1) because one
+CHOPCONF write lost its local UART echo during restoration. It disabled both
+bridges. Main RHO retained the dedicated homing driver settings, so the host
+also rejected exact setting restoration. The local artifact is
+`tuning-recordings/rho-main-only-20260914/20260914T044428Z-rho-home-p75-n5-result.json`.
+The source now checks CHOPCONF readback and retries a transient echo failure;
+this fix needs a new hardware trial before the profile can pass.
+
 ## Decision
 
 Use polled `SG_RESULT` as the primary RHO contact signal. The TMC2209 does not

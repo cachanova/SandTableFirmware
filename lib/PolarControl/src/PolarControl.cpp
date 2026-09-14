@@ -230,32 +230,48 @@ static bool setDriverEnabled(TMC2209& driver, uint8_t driverAddress,
     // Never call the library's enable()/disable(): its cached CHOPCONF has
     // VSENSE=0, which would create an over-current transient before a second
     // corrective write. Change TOFF, VSENSE, and interpolation atomically.
-    uint32_t chopconf = 0;
-    if (!readTmcRegisterChecked(driverAddress, 0x6C, chopconf)) {
-        LOG("Driver address %u CHOPCONF enable read failed\r\n",
-            driverAddress);
-        return false;
+    // A lost local UART echo does not tell us whether the driver accepted the
+    // write. Read back the target bits before retrying this idempotent update.
+    // Three bounded attempts cover a transient without accepting an unknown
+    // bridge state.
+    for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+        uint32_t chopconf = 0;
+        if (!readTmcRegisterChecked(driverAddress, 0x6C, chopconf)) {
+            delayMicroseconds(250);
+            continue;
+        }
+        chopconf = (chopconf & ~0x0FUL) |
+            (enabled ? static_cast<uint32_t>(settings.chopperOffTime) : 0UL);
+        chopconf = settings.highSensitivityCurrentScale
+            ? (chopconf | (1UL << 17))
+            : (chopconf & ~(1UL << 17));
+        chopconf = settings.interpolationEnabled
+            ? (chopconf | (1UL << 28))
+            : (chopconf & ~(1UL << 28));
+        const bool echoValid = writeTmcRegister(
+            driverAddress, 0x6C, chopconf);
+        uint32_t verified = 0;
+        const bool readbackValid = readTmcRegisterChecked(
+            driverAddress, 0x6C, verified);
+        const bool stateVerified = readbackValid &&
+            (verified & 0x0FU) ==
+                (enabled ? settings.chopperOffTime : 0U) &&
+            (((verified & (1UL << 17)) != 0) ==
+             settings.highSensitivityCurrentScale) &&
+            (((verified & (1UL << 28)) != 0) ==
+             settings.interpolationEnabled);
+        if (stateVerified) {
+            if (!echoValid) {
+                LOG("Driver address %u CHOPCONF echo lost; readback verified\r\n",
+                    driverAddress);
+            }
+            return true;
+        }
+        delayMicroseconds(250);
     }
-    chopconf = (chopconf & ~0x0FUL) |
-        (enabled ? static_cast<uint32_t>(settings.chopperOffTime) : 0UL);
-    chopconf = settings.highSensitivityCurrentScale
-        ? (chopconf | (1UL << 17))
-        : (chopconf & ~(1UL << 17));
-    chopconf = settings.interpolationEnabled
-        ? (chopconf | (1UL << 28))
-        : (chopconf & ~(1UL << 28));
-    if (!writeTmcRegister(driverAddress, 0x6C, chopconf)) {
-        LOG("Driver address %u CHOPCONF enable write echo failed\r\n",
-            driverAddress);
-        return false;
-    }
-    uint32_t verified = 0;
-    return readTmcRegisterChecked(driverAddress, 0x6C, verified) &&
-        (verified & 0x0FU) ==
-            (enabled ? settings.chopperOffTime : 0U) &&
-        (((verified & (1UL << 17)) != 0) ==
-         settings.highSensitivityCurrentScale) &&
-        (((verified & (1UL << 28)) != 0) == settings.interpolationEnabled);
+    LOG("Driver address %u CHOPCONF state verification failed\r\n",
+        driverAddress);
+    return false;
 }
 
 static bool disableDriverMotion(TMC2209& driver, uint8_t driverAddress,
