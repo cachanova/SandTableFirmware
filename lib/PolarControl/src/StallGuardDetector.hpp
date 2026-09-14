@@ -85,7 +85,10 @@ public:
             minimum <= m_baseline * kClusteredCollapseRatio;
         const bool deepCollapse =
             confirmedLowCount >= m_requiredSamples && minimum <= hardThreshold;
-        return softLowCount >= m_requiredSamples &&
+        // The votes may include an older low cluster even when SG_RESULT has
+        // recovered by the final sample. Stop only on a current low reading.
+        return sample <= softThreshold &&
+               softLowCount >= m_requiredSamples &&
                (clusteredCollapse || deepCollapse);
     }
 

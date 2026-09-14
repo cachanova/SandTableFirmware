@@ -150,6 +150,17 @@ class HomingTraceCollectorTest(unittest.TestCase):
             steps_per_second=800,
         ))
 
+    def test_detector_replay_arms_by_steps_not_only_elapsed_time(self) -> None:
+        samples = [
+            {"t": index * 100, "s": index * 8,
+             "g": 200 if index < 48 else 0, "v": True}
+            for index in range(57)
+        ]
+        self.assertIsNone(replay_phase(
+            samples, ratio=0.75, votes=5, minimum_steps=500,
+            steps_per_second=100000,
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()

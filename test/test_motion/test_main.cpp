@@ -235,6 +235,27 @@ bool testStallGuardFiltering() {
         elapsedMs += 7;
     }
 
+    // Main-RHO precision false stop: five soft lows accumulated in a moving
+    // nine-sample window, but the terminal 160 was back near baseline 177.
+    // This is a complete fresh-full-step detector history from that trial.
+    StallGuardDetector recoveredPrecisionDetector(0, 5, 0.75f);
+    const uint16_t recoveredPrecisionTrace[] = {
+        130, 250, 128, 224, 110, 152, 196, 172, 190, 180, 208, 174,
+        142, 170, 210, 188, 132, 248, 140, 242, 134, 250, 128, 246,
+        134, 240, 170, 198, 166, 206, 180, 200, 176, 206, 202, 194,
+        170, 144, 160, 200, 168, 142, 178, 122, 252, 128, 168, 190,
+        218, 120, 112, 96, 196, 96, 236, 128, 160,
+    };
+    elapsedMs = 0;
+    for (uint16_t sample : recoveredPrecisionTrace) {
+        if (recoveredPrecisionDetector.update(sample, elapsedMs)) {
+            std::cout << "FAIL: recovered precision ripple triggered homing"
+                      << std::endl;
+            return false;
+        }
+        elapsedMs += 7;
+    }
+
     // The recorded main hard-stop tail contains both the normal phase ripple
     // and a multi-sample collapse. Replay it against its own approach history;
     // the real axes have independent detector instances.

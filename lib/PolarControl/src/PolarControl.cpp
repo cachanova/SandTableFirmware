@@ -280,14 +280,22 @@ static bool disableDriverMotion(TMC2209& driver, uint8_t driverAddress,
     // velocity command as well as turning off the power stage, then verify the
     // bridge is disabled. This keeps a deliberately unavailable motor from
     // reacting to the shared RHO STEP/DIR signals.
-    const bool velocityStopped = writeTmcRegisterAcknowledged(
-        driverAddress, 0x22, 0);
+    bool velocityStopped = false;
+    for (uint8_t attempt = 0; attempt < 3 && !velocityStopped; ++attempt) {
+        velocityStopped = writeTmcRegisterAcknowledged(
+            driverAddress, 0x22, 0);
+        if (!velocityStopped) delayMicroseconds(250);
+    }
     const bool bridgeCommanded = setDriverEnabled(
         driver, driverAddress, settings, false);
     uint32_t chopconf = 0;
-    const bool bridgeDisabled =
-        readTmcRegisterChecked(driverAddress, 0x6C, chopconf) &&
-        (chopconf & 0x0FU) == 0;
+    bool bridgeDisabled = false;
+    for (uint8_t attempt = 0; attempt < 3 && !bridgeDisabled; ++attempt) {
+        bridgeDisabled =
+            readTmcRegisterChecked(driverAddress, 0x6C, chopconf) &&
+            (chopconf & 0x0FU) == 0;
+        if (!bridgeDisabled) delayMicroseconds(250);
+    }
     return velocityStopped && bridgeCommanded && bridgeDisabled;
 }
 
@@ -1518,7 +1526,11 @@ PolarControl::HomingAttempt PolarControl::approachHome(
         }
         lastDetectorSampleSteps = sampleSteps;
         haveDetectorSample = true;
-        if (detector.update(sample, detectorElapsed)) {
+        // Elapsed-time arming alone is insufficient during the acceleration
+        // ramp: 600 ms can pass before 600 ms worth of full-rate STEP pulses.
+        // Keep the detector history warm, but require actual travel too.
+        if (detector.update(sample, detectorElapsed) &&
+            sampleSteps >= minimumTravelSteps) {
             result.steps = m_planner.getRhoHomingStepCount();
             m_planner.stopRhoHoming();
             xSemaphoreGive(m_mutex);
@@ -1798,17 +1810,35 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
     }
     uint32_t activeChopconf = 0;
     uint32_t inactiveChopconf = 0;
-    const bool enablesVerified = inactiveReady && holdStarted && motorsEnabled &&
-        readTmcRegisterChecked(activeAddress, 0x6C, activeChopconf) &&
-        readTmcRegisterChecked(inactiveAddress, 0x6C, inactiveChopconf) &&
-        (activeChopconf & 0x0FU) != 0 &&
-        ((inactiveChopconf & 0x0FU) != 0) == holdInactiveMotor &&
-        (activeChopconf & 0x0F000000UL) ==
-            (static_cast<uint32_t>(
-                microstepsToMres(homingSettings.microsteps)) << 24) &&
-        (!holdInactiveMotor ||
-         (inactiveChopconf & 0x0F000000UL) == 0);
+    bool enablesVerified = false;
+    bool activeRead = false;
+    bool inactiveRead = false;
+    for (uint8_t attempt = 0;
+         attempt < 3 && inactiveReady && holdStarted && motorsEnabled;
+         ++attempt) {
+        activeRead = readTmcRegisterChecked(
+            activeAddress, 0x6C, activeChopconf);
+        inactiveRead = readTmcRegisterChecked(
+            inactiveAddress, 0x6C, inactiveChopconf);
+        enablesVerified = activeRead && inactiveRead &&
+            (activeChopconf & 0x0FU) != 0 &&
+            (((inactiveChopconf & 0x0FU) != 0) == holdInactiveMotor) &&
+            (activeChopconf & 0x0F000000UL) ==
+                (static_cast<uint32_t>(
+                    microstepsToMres(homingSettings.microsteps)) << 24) &&
+            (!holdInactiveMotor ||
+             (inactiveChopconf & 0x0F000000UL) == 0);
+        if (enablesVerified) break;
+        delayMicroseconds(250);
+    }
     if (!enablesVerified) {
+        LOG("Homing %s select failed: inactiveReady=%u holdStarted=%u "
+            "motorsEnabled=%u activeRead=%u inactiveRead=%u "
+            "activeCHOPCONF=%08lX inactiveCHOPCONF=%08lX\r\n",
+            activeName, inactiveReady, holdStarted, motorsEnabled,
+            activeRead, inactiveRead,
+            static_cast<unsigned long>(activeChopconf),
+            static_cast<unsigned long>(inactiveChopconf));
         clearInactiveRhoHoldLocked();
         writeTmcRegisterAcknowledged(inactiveAddress, 0x22, 0U);
         setDriverEnabled(activeDriver, activeAddress, homingSettings, false);

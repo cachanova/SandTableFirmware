@@ -49,7 +49,8 @@ def replay_phase(
             baseline_values[BASELINE_SAMPLES // 2 - 1]
             + baseline_values[BASELINE_SAMPLES // 2]
         ) / 2
-        if int(sample["t"]) - first_time_ms < ignore_ms or baseline < 4:
+        if (int(sample["t"]) - first_time_ms < ignore_ms
+                or steps < minimum_steps or baseline < 4):
             continue
 
         decision = history[-decision_size:]
@@ -69,7 +70,8 @@ def replay_phase(
             confirmed_count >= votes
             and min(decision) <= baseline * HARD_COLLAPSE_RATIO
         )
-        if soft_count >= votes and (clustered or deep):
+        if int(sample["g"]) <= soft_threshold and soft_count >= votes and (
+                clustered or deep):
             return {"steps": steps, "sg": int(sample["g"]),
                     "baseline": baseline}
     return None
@@ -77,11 +79,13 @@ def replay_phase(
 
 def replay_artifact(
     artifact: dict[str, Any], ratio: float, votes: int,
+    minimum_travel_ms: int | None = None,
 ) -> dict[str, Any]:
     settings = artifact["settings"]
     steps_per_mm = int(settings["homingStepsPerMm"])
     rate = round(settings["coarseVelocityMmS"] * steps_per_mm)
-    minimum_travel_ms = int(settings["minimumTravelMs"])
+    if minimum_travel_ms is None:
+        minimum_travel_ms = int(settings["minimumTravelMs"])
     reports = {}
     for phase, minimum_steps, required_votes, label in (
         (2, 3 * steps_per_mm, max(5, votes // 3), "coarse"),
@@ -102,13 +106,16 @@ def main() -> None:
     parser.add_argument("--percent", type=int, nargs="+",
                         default=[55, 60, 65, 70, 75, 80, 85])
     parser.add_argument("--votes", type=int, nargs="+", default=[5, 9, 13])
+    parser.add_argument("--minimum-travel-ms", type=int,
+                        help="override precision minimum travel for replay")
     args = parser.parse_args()
     for path in args.artifacts:
         artifact = json.loads(path.read_text(encoding="utf-8"))
         print(path)
         for percent in args.percent:
             for votes in args.votes:
-                result = replay_artifact(artifact, percent / 100, votes)
+                result = replay_artifact(
+                    artifact, percent / 100, votes, args.minimum_travel_ms)
                 print(json.dumps({"percent": percent, "votes": votes,
                                   "coarse": result["coarse"],
                                   "precision": result["precision"]}))
