@@ -31,6 +31,7 @@ DEFAULT_HOMING_STEPS_PER_MM = 400.0
 RUNWAY_MM = 8.0
 BACKOFF_MM = 4.0
 MAX_OVERRUN_MM = 1.0
+MAX_AGREEMENT_MM = 0.5
 MIN_CONTACT_AUDIO_RISE_DB = 6.0
 TRACE_PHASES = {1: "runway", 2: "coarse", 3: "backoff", 4: "precision"}
 TRACE_AXES = {1: "rho", 2: "rho-companion"}
@@ -228,6 +229,8 @@ def phase_report(
 
 def validate_trial(
     reports: dict[str, dict[str, Any]], steps_per_mm: float,
+    max_overrun_mm: float = MAX_OVERRUN_MM,
+    agreement_mm: float = MAX_AGREEMENT_MM,
 ) -> list[str]:
     failures: list[str] = []
     for name, report in reports.items():
@@ -236,34 +239,46 @@ def validate_trial(
             continue
         if float(report["uartValidFraction"]) < 0.95:
             failures.append(f"{name}: UART validity below 95%")
-        if float(report["overrunMm"]) > MAX_OVERRUN_MM + 0.05:
-            failures.append(f"{name}: overrun exceeds 1 mm")
+        if float(report["overrunMm"]) > max_overrun_mm + 0.05:
+            failures.append(f"{name}: overrun exceeds {max_overrun_mm:g} mm")
         ratio = report.get("terminalToBaselineRatio")
         if ratio is None or float(ratio) > 0.85:
             failures.append(f"{name}: terminal SG_RESULT did not drop at least 15%")
         step_error_mm = abs(
             int(report["terminalSteps"]) - int(report["expectedContactSteps"])
         ) / steps_per_mm
-        if step_error_mm > MAX_OVERRUN_MM + 0.05:
-            failures.append(f"{name}: trigger was more than 1 mm from expected contact")
+        if step_error_mm > max_overrun_mm + 0.05:
+            failures.append(
+                f"{name}: trigger was more than {max_overrun_mm:g} mm "
+                "from expected contact"
+            )
     for axis in TRACE_AXES.values():
         coarse = reports.get(f"{axis}-coarse", {})
         precision = reports.get(f"{axis}-precision", {})
         if coarse.get("valid") and precision.get("valid"):
+            separation_mm = abs(
+                int(precision["terminalSteps"]) -
+                int(precision["expectedContactSteps"])
+            ) / steps_per_mm
+            if separation_mm > agreement_mm:
+                failures.append(
+                    f"{axis}: two triggers disagree by {separation_mm:.3f} mm "
+                    f"(limit {agreement_mm:g} mm)"
+                )
             combined_overrun = (
                 float(coarse["overrunMm"]) + float(precision["overrunMm"])
             )
-            if combined_overrun > MAX_OVERRUN_MM + 0.05:
+            if combined_overrun > max_overrun_mm + 0.05:
                 failures.append(
                     f"{axis}: two approaches consumed {combined_overrun:.3f} mm "
-                    "beyond the shared 1 mm allowance"
+                    f"beyond the shared {max_overrun_mm:g} mm allowance"
                 )
             combined_error_mm = (
                 int(coarse["terminalSteps"]) - int(coarse["expectedContactSteps"])
                 + int(precision["terminalSteps"])
                 - int(precision["expectedContactSteps"])
             ) / steps_per_mm
-            if abs(combined_error_mm) > MAX_OVERRUN_MM + 0.05:
+            if abs(combined_error_mm) > max_overrun_mm + 0.05:
                 failures.append(
                     f"{axis}: combined return ended {combined_error_mm:+.3f} mm "
                     "from the confirmed zero"
@@ -315,6 +330,12 @@ def run(args: argparse.Namespace) -> int:
     })
     tuning = board.get("/api/tuning")
     homing_profile = tuning.get("homing", {})
+    max_overrun_mm = float(homing_profile.get("maximumOverrunMm", MAX_OVERRUN_MM))
+    if not 0.0 < max_overrun_mm <= 5.0:
+        raise RuntimeError("Firmware overrun cap is outside the approved 0..5 mm range")
+    agreement_mm = float(homing_profile.get("approachAgreementMm", MAX_AGREEMENT_MM))
+    if not 0.0 < agreement_mm <= max_overrun_mm:
+        raise RuntimeError("Firmware approach agreement is outside the overrun cap")
     active_axes = configured_motor_axes(homing_profile)
     require_expected_motors(active_axes, args.expected_motors)
     companion_enabled = 2 in active_axes
@@ -454,7 +475,8 @@ def run(args: argparse.Namespace) -> int:
                 homing_steps_per_mm,
             )
 
-    failures = validate_trial(reports, homing_steps_per_mm)
+    failures = validate_trial(
+        reports, homing_steps_per_mm, max_overrun_mm, agreement_mm)
     if not companion_enabled and any(
         int(sample["a"]) == 2 for sample in trace.get("samples", [])
     ):
@@ -545,7 +567,10 @@ def run(args: argparse.Namespace) -> int:
             "activeMotors": [TRACE_AXES[axis] for axis in active_axes],
             "knownRhoStartMm": rho_start_mm,
             "knownCompanionStartMm": companion_start_mm,
-            "maximumCommissioningOverrunMm": MAX_OVERRUN_MM,
+            "maximumCommissioningOverrunMm": max_overrun_mm,
+            "coarseMinimumTravelMm": float(homing_profile.get(
+                "coarseMinimumTravelMm", 3.0)),
+            "approachAgreementMm": agreement_mm,
             "advisoryAudioCorroborationRiseDb": MIN_CONTACT_AUDIO_RISE_DB,
         },
         "audio": str(audio_path),

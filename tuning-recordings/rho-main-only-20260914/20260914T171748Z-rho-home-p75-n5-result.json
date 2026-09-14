@@ -1,0 +1,1839 @@
+{
+  "kind": "rho-homing-trial",
+  "accepted": false,
+  "instrumentedPass": false,
+  "awaitingPhysicalReview": false,
+  "failures": [
+    "rho-coarse: trigger was more than 1 mm from expected contact",
+    "rho-precision: no validated SG_RESULT samples",
+    "firmware ended in HOMING_FAILED with failure=4"
+  ],
+  "settings": {
+    "triggerPercent": 75,
+    "consecutiveSamples": 5,
+    "detectorWindowFreshFullSteps": 9,
+    "homingMicrosteps": 8,
+    "homingStepsPerMm": 400.0,
+    "minimumTravelMs": 650,
+    "dedicatedRunCurrentMa": 150,
+    "dedicatedHoldCurrentMa": 150,
+    "coarseVelocityMmS": 6.0,
+    "precisionVelocityMmS": 6.0,
+    "runwayMm": 8.0,
+    "backoffMm": 4.0,
+    "inactiveHoldStrategy": "disabled-bridge",
+    "companionMotorEnabled": false,
+    "activeMotors": [
+      "rho"
+    ],
+    "knownRhoStartMm": 0.0,
+    "knownCompanionStartMm": 0.0,
+    "maximumCommissioningOverrunMm": 1.0,
+    "advisoryAudioCorroborationRiseDb": 6.0
+  },
+  "audio": "tuning-recordings/rho-main-only-20260914/20260914T171748Z-rho-home-p75-n5.wav",
+  "microphoneBefore": {
+    "source": "alsa_input.usb-Antlion_Audio_Antlion_USB_Microphone-00.mono-fallback",
+    "description": "Antlion USB Microphone Mono",
+    "sampleSpecification": "s16le 1ch 48000Hz",
+    "captureVolume": "mono: 65536 / 100% / 0.00 dB",
+    "baseVolume": "36854 /  56% / -15.00 dB",
+    "mute": "no"
+  },
+  "microphoneAfter": {
+    "source": "alsa_input.usb-Antlion_Audio_Antlion_USB_Microphone-00.mono-fallback",
+    "description": "Antlion USB Microphone Mono",
+    "sampleSpecification": "s16le 1ch 48000Hz",
+    "captureVolume": "mono: 65536 / 100% / 0.00 dB",
+    "baseVolume": "36854 /  56% / -15.00 dB",
+    "mute": "no"
+  },
+  "audioAlignmentUncertaintyS": 0.07255,
+  "terminalStatus": {
+    "state": "HOMING_FAILED",
+    "currentPattern": "",
+    "clearingPattern": "",
+    "progress": -1,
+    "clearingProgress": -1,
+    "ledBrightness": 50,
+    "speed": 5,
+    "heap": 131712,
+    "uptime": 108,
+    "storageAvailable": false,
+    "drivers": {
+      "theta": false,
+      "rho": true,
+      "rhoCompanion": false,
+      "thetaAxis": false,
+      "rhoAxis": true
+    },
+    "homing": {
+      "cycle": 2,
+      "stepsPerMm": 400,
+      "fastApproachMs": 1288,
+      "slowApproachMs": 0,
+      "fastApproachSteps": 2288,
+      "slowApproachSteps": 0,
+      "fastBaseline": 180,
+      "fastTrigger": 96,
+      "baseline": 0,
+      "trigger": 0,
+      "companionFastApproachMs": 0,
+      "companionSlowApproachMs": 0,
+      "companionFastApproachSteps": 0,
+      "companionSlowApproachSteps": 0,
+      "companionFastBaseline": 0,
+      "companionFastTrigger": 0,
+      "companionBaseline": 0,
+      "companionTrigger": 0,
+      "uartSamples": 167,
+      "validUartSamples": 167,
+      "failure": 4,
+      "failedAxis": 1
+    }
+  },
+  "confirmedStatus": null,
+  "traceCycle": 2,
+  "traceCount": 167,
+  "trace": [
+    {
+      "a": 1,
+      "p": 1,
+      "t": 725,
+      "s": 565,
+      "g": 232,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 747,
+      "s": 618,
+      "g": 134,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 769,
+      "s": 670,
+      "g": 168,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 791,
+      "s": 723,
+      "g": 194,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 813,
+      "s": 764,
+      "g": 158,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 837,
+      "s": 810,
+      "g": 126,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 859,
+      "s": 851,
+      "g": 238,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 881,
+      "s": 900,
+      "g": 124,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 903,
+      "s": 941,
+      "g": 158,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 925,
+      "s": 980,
+      "g": 172,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 947,
+      "s": 1027,
+      "g": 140,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 969,
+      "s": 1080,
+      "g": 236,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 991,
+      "s": 1129,
+      "g": 128,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1013,
+      "s": 1175,
+      "g": 158,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1035,
+      "s": 1228,
+      "g": 140,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1057,
+      "s": 1280,
+      "g": 166,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1079,
+      "s": 1333,
+      "g": 240,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1101,
+      "s": 1386,
+      "g": 126,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1123,
+      "s": 1439,
+      "g": 174,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1145,
+      "s": 1491,
+      "g": 198,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1167,
+      "s": 1544,
+      "g": 134,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1189,
+      "s": 1597,
+      "g": 168,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1211,
+      "s": 1647,
+      "g": 166,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1233,
+      "s": 1686,
+      "g": 246,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1255,
+      "s": 1730,
+      "g": 38,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1277,
+      "s": 1778,
+      "g": 214,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1298,
+      "s": 1812,
+      "g": 94,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1320,
+      "s": 1860,
+      "g": 76,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1342,
+      "s": 1913,
+      "g": 242,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1364,
+      "s": 1963,
+      "g": 130,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1386,
+      "s": 2015,
+      "g": 180,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1408,
+      "s": 2067,
+      "g": 202,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1430,
+      "s": 2118,
+      "g": 136,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1452,
+      "s": 2171,
+      "g": 248,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1474,
+      "s": 2223,
+      "g": 200,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1496,
+      "s": 2276,
+      "g": 134,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1518,
+      "s": 2329,
+      "g": 236,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1540,
+      "s": 2377,
+      "g": 138,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1562,
+      "s": 2430,
+      "g": 174,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1584,
+      "s": 2482,
+      "g": 198,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1606,
+      "s": 2535,
+      "g": 136,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1628,
+      "s": 2580,
+      "g": 158,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1650,
+      "s": 2622,
+      "g": 174,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1672,
+      "s": 2667,
+      "g": 104,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1694,
+      "s": 2705,
+      "g": 218,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1716,
+      "s": 2747,
+      "g": 190,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1738,
+      "s": 2786,
+      "g": 94,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1761,
+      "s": 2825,
+      "g": 114,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1782,
+      "s": 2867,
+      "g": 194,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1804,
+      "s": 2917,
+      "g": 150,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1826,
+      "s": 2970,
+      "g": 244,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1848,
+      "s": 3018,
+      "g": 132,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1870,
+      "s": 3070,
+      "g": 172,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1892,
+      "s": 3123,
+      "g": 194,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1914,
+      "s": 3176,
+      "g": 132,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2566,
+      "s": 541,
+      "g": 142,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2573,
+      "s": 558,
+      "g": 244,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2580,
+      "s": 572,
+      "g": 134,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2587,
+      "s": 589,
+      "g": 246,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2594,
+      "s": 606,
+      "g": 130,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2601,
+      "s": 623,
+      "g": 246,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2608,
+      "s": 640,
+      "g": 124,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2615,
+      "s": 656,
+      "g": 240,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2622,
+      "s": 673,
+      "g": 172,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2629,
+      "s": 690,
+      "g": 200,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2636,
+      "s": 707,
+      "g": 166,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2644,
+      "s": 723,
+      "g": 160,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2651,
+      "s": 736,
+      "g": 102,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2658,
+      "s": 753,
+      "g": 248,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2665,
+      "s": 770,
+      "g": 178,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2672,
+      "s": 786,
+      "g": 208,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2679,
+      "s": 803,
+      "g": 186,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2686,
+      "s": 820,
+      "g": 202,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2693,
+      "s": 837,
+      "g": 182,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2700,
+      "s": 854,
+      "g": 198,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2707,
+      "s": 870,
+      "g": 176,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2714,
+      "s": 887,
+      "g": 204,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2721,
+      "s": 904,
+      "g": 172,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2728,
+      "s": 921,
+      "g": 126,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2735,
+      "s": 938,
+      "g": 168,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2742,
+      "s": 954,
+      "g": 144,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2749,
+      "s": 971,
+      "g": 238,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2756,
+      "s": 988,
+      "g": 138,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2763,
+      "s": 1005,
+      "g": 242,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2770,
+      "s": 1021,
+      "g": 134,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2777,
+      "s": 1038,
+      "g": 250,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2784,
+      "s": 1055,
+      "g": 142,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2791,
+      "s": 1072,
+      "g": 246,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2798,
+      "s": 1089,
+      "g": 138,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2805,
+      "s": 1105,
+      "g": 194,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2812,
+      "s": 1122,
+      "g": 184,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2819,
+      "s": 1139,
+      "g": 202,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2826,
+      "s": 1156,
+      "g": 178,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2833,
+      "s": 1172,
+      "g": 208,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2840,
+      "s": 1189,
+      "g": 174,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2847,
+      "s": 1204,
+      "g": 202,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2854,
+      "s": 1215,
+      "g": 184,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2861,
+      "s": 1228,
+      "g": 236,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2868,
+      "s": 1240,
+      "g": 130,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2875,
+      "s": 1253,
+      "g": 162,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2882,
+      "s": 1266,
+      "g": 188,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2894,
+      "s": 1291,
+      "g": 142,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2901,
+      "s": 1305,
+      "g": 134,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2910,
+      "s": 1321,
+      "g": 224,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2917,
+      "s": 1335,
+      "g": 190,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2924,
+      "s": 1346,
+      "g": 150,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2931,
+      "s": 1355,
+      "g": 170,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2938,
+      "s": 1369,
+      "g": 134,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2945,
+      "s": 1380,
+      "g": 160,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2952,
+      "s": 1396,
+      "g": 216,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2967,
+      "s": 1417,
+      "g": 146,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2973,
+      "s": 1427,
+      "g": 160,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2980,
+      "s": 1438,
+      "g": 96,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2987,
+      "s": 1453,
+      "g": 208,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2994,
+      "s": 1462,
+      "g": 130,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3001,
+      "s": 1476,
+      "g": 160,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3008,
+      "s": 1493,
+      "g": 200,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3015,
+      "s": 1510,
+      "g": 180,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3022,
+      "s": 1526,
+      "g": 208,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3029,
+      "s": 1543,
+      "g": 182,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3036,
+      "s": 1560,
+      "g": 204,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3043,
+      "s": 1577,
+      "g": 178,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3050,
+      "s": 1591,
+      "g": 196,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3057,
+      "s": 1607,
+      "g": 186,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3064,
+      "s": 1620,
+      "g": 170,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3071,
+      "s": 1637,
+      "g": 172,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3078,
+      "s": 1654,
+      "g": 212,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3085,
+      "s": 1671,
+      "g": 178,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3092,
+      "s": 1688,
+      "g": 194,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3099,
+      "s": 1705,
+      "g": 174,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3106,
+      "s": 1721,
+      "g": 128,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3113,
+      "s": 1738,
+      "g": 234,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3120,
+      "s": 1755,
+      "g": 132,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3127,
+      "s": 1772,
+      "g": 230,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3134,
+      "s": 1788,
+      "g": 128,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3141,
+      "s": 1805,
+      "g": 244,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3148,
+      "s": 1822,
+      "g": 136,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3155,
+      "s": 1839,
+      "g": 238,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3162,
+      "s": 1855,
+      "g": 144,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3169,
+      "s": 1872,
+      "g": 246,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3176,
+      "s": 1889,
+      "g": 176,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3183,
+      "s": 1906,
+      "g": 204,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3190,
+      "s": 1923,
+      "g": 184,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3197,
+      "s": 1939,
+      "g": 200,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3204,
+      "s": 1956,
+      "g": 180,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3211,
+      "s": 1973,
+      "g": 208,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3218,
+      "s": 1990,
+      "g": 174,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3225,
+      "s": 2007,
+      "g": 202,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3232,
+      "s": 2023,
+      "g": 170,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3239,
+      "s": 2040,
+      "g": 198,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3246,
+      "s": 2057,
+      "g": 172,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3253,
+      "s": 2074,
+      "g": 142,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3260,
+      "s": 2088,
+      "g": 180,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3267,
+      "s": 2099,
+      "g": 138,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3274,
+      "s": 2112,
+      "g": 130,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3284,
+      "s": 2129,
+      "g": 212,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3291,
+      "s": 2143,
+      "g": 160,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3298,
+      "s": 2157,
+      "g": 224,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3305,
+      "s": 2167,
+      "g": 108,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3323,
+      "s": 2204,
+      "g": 110,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3330,
+      "s": 2216,
+      "g": 162,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3337,
+      "s": 2227,
+      "g": 102,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3344,
+      "s": 2239,
+      "g": 96,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3351,
+      "s": 2253,
+      "g": 216,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3358,
+      "s": 2268,
+      "g": 96,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3365,
+      "s": 2277,
+      "g": 112,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3372,
+      "s": 2288,
+      "g": 96,
+      "v": true
+    }
+  ],
+  "driversBefore": {
+    "rho": {
+      "name": "rho",
+      "connected": true,
+      "uartResponseValid": true,
+      "communicating": true,
+      "setupOk": true,
+      "inputs": {
+        "enableN": false,
+        "ms1": false,
+        "ms2": false,
+        "diag": false,
+        "pdnUart": true,
+        "step": false,
+        "spreadEnable": false,
+        "direction": false,
+        "raw": 553648192
+      },
+      "settings": {
+        "softwareEnabled": true,
+        "microstepsPerStep": 8,
+        "inverseMotorDirection": false,
+        "stealthChopEnabled": true,
+        "standstillMode": 0,
+        "irunPercent": 19,
+        "irunRegister": 6,
+        "iholdPercent": 19,
+        "iholdRegister": 6,
+        "iholdDelayPercent": 53,
+        "iholdDelayRegister": 8,
+        "coolStepEnabled": false,
+        "analogCurrentScaling": false,
+        "internalSenseResistors": false,
+        "otpReadValid": true,
+        "otpInternalSenseResistors": false,
+        "otpReadRaw": 14,
+        "chopconfReadValid": true,
+        "interpolationTo256": true,
+        "highSensitivityCurrentScale": true,
+        "chopperOffTime": 3,
+        "hysteresisStart": 5,
+        "hysteresisEnd": 0,
+        "blankTime": 2,
+        "chopconfRaw": 352518227,
+        "pwmconfReadValid": true,
+        "pwmOffset": 128,
+        "pwmGradient": 2,
+        "pwmFrequency": 0,
+        "automaticCurrentScaling": false,
+        "automaticGradientAdaptation": false,
+        "pwmRegulation": 15,
+        "pwmLimit": 8,
+        "pwmconfRaw": 2399142528
+      },
+      "status": {
+        "overTempWarning": false,
+        "overTempShutdown": false,
+        "shortToGroundA": false,
+        "shortToGroundB": false,
+        "lowSideShortA": false,
+        "lowSideShortB": false,
+        "openLoadA": false,
+        "openLoadB": false,
+        "overTemp120c": false,
+        "overTemp143c": false,
+        "overTemp150c": false,
+        "overTemp157c": false,
+        "currentScaling": 6,
+        "stealthChopMode": true,
+        "standstill": true
+      },
+      "globalStatus": {
+        "reset": true,
+        "drvErr": false,
+        "uvCp": false
+      },
+      "dynamic": {
+        "tstepValid": true,
+        "tstep": 1048575,
+        "stallGuardValid": true,
+        "stallGuardResult": 122,
+        "pwmScaleValid": true,
+        "pwmScaleSum": 28,
+        "pwmScaleAuto": 0,
+        "pwmScaleRaw": 28,
+        "pwmAutoValid": true,
+        "pwmOffsetAuto": 128,
+        "pwmGradientAuto": 2,
+        "pwmAutoRaw": 131200,
+        "microstepCounter": 688,
+        "microstepCounterCheckedValid": true,
+        "microstepCounterChecked": 688
+      }
+    },
+    "rho-companion": {
+      "name": "rhoCompanion",
+      "connected": true,
+      "uartResponseValid": true,
+      "communicating": true,
+      "setupOk": true,
+      "inputs": {
+        "enableN": false,
+        "ms1": true,
+        "ms2": false,
+        "diag": false,
+        "pdnUart": true,
+        "step": false,
+        "spreadEnable": false,
+        "direction": false,
+        "raw": 553648196
+      },
+      "settings": {
+        "softwareEnabled": false,
+        "microstepsPerStep": 256,
+        "inverseMotorDirection": false,
+        "stealthChopEnabled": true,
+        "standstillMode": 0,
+        "irunPercent": 0,
+        "irunRegister": 0,
+        "iholdPercent": 0,
+        "iholdRegister": 0,
+        "iholdDelayPercent": 6,
+        "iholdDelayRegister": 1,
+        "coolStepEnabled": false,
+        "analogCurrentScaling": false,
+        "internalSenseResistors": false,
+        "otpReadValid": true,
+        "otpInternalSenseResistors": false,
+        "otpReadRaw": 14,
+        "chopconfReadValid": true,
+        "interpolationTo256": true,
+        "highSensitivityCurrentScale": true,
+        "chopperOffTime": 0,
+        "hysteresisStart": 5,
+        "hysteresisEnd": 0,
+        "blankTime": 2,
+        "chopconfRaw": 268632144,
+        "pwmconfReadValid": true,
+        "pwmOffset": 36,
+        "pwmGradient": 0,
+        "pwmFrequency": 1,
+        "automaticCurrentScaling": false,
+        "automaticGradientAdaptation": false,
+        "pwmRegulation": 1,
+        "pwmLimit": 12,
+        "pwmconfRaw": 3238068260
+      },
+      "status": {
+        "overTempWarning": false,
+        "overTempShutdown": false,
+        "shortToGroundA": false,
+        "shortToGroundB": false,
+        "lowSideShortA": false,
+        "lowSideShortB": false,
+        "openLoadA": false,
+        "openLoadB": false,
+        "overTemp120c": false,
+        "overTemp143c": false,
+        "overTemp150c": false,
+        "overTemp157c": false,
+        "currentScaling": 0,
+        "stealthChopMode": true,
+        "standstill": true
+      },
+      "globalStatus": {
+        "reset": true,
+        "drvErr": false,
+        "uvCp": false
+      },
+      "dynamic": {
+        "tstepValid": true,
+        "tstep": 1048575,
+        "stallGuardValid": true,
+        "stallGuardResult": 2,
+        "pwmScaleValid": true,
+        "pwmScaleSum": 1,
+        "pwmScaleAuto": 0,
+        "pwmScaleRaw": 1,
+        "pwmAutoValid": true,
+        "pwmOffsetAuto": 36,
+        "pwmGradientAuto": 0,
+        "pwmAutoRaw": 36,
+        "microstepCounter": 515,
+        "microstepCounterCheckedValid": true,
+        "microstepCounterChecked": 515
+      },
+      "motorConfigured": false
+    }
+  },
+  "driversAfter": {
+    "rho": {
+      "name": "rho",
+      "connected": true,
+      "uartResponseValid": true,
+      "communicating": true,
+      "setupOk": true,
+      "inputs": {
+        "enableN": false,
+        "ms1": false,
+        "ms2": false,
+        "diag": false,
+        "pdnUart": true,
+        "step": false,
+        "spreadEnable": false,
+        "direction": false,
+        "raw": 553648192
+      },
+      "settings": {
+        "softwareEnabled": false,
+        "microstepsPerStep": 8,
+        "inverseMotorDirection": false,
+        "stealthChopEnabled": true,
+        "standstillMode": 0,
+        "irunPercent": 19,
+        "irunRegister": 6,
+        "iholdPercent": 19,
+        "iholdRegister": 6,
+        "iholdDelayPercent": 53,
+        "iholdDelayRegister": 8,
+        "coolStepEnabled": false,
+        "analogCurrentScaling": false,
+        "internalSenseResistors": false,
+        "otpReadValid": true,
+        "otpInternalSenseResistors": false,
+        "otpReadRaw": 14,
+        "chopconfReadValid": true,
+        "interpolationTo256": true,
+        "highSensitivityCurrentScale": true,
+        "chopperOffTime": 0,
+        "hysteresisStart": 5,
+        "hysteresisEnd": 0,
+        "blankTime": 2,
+        "chopconfRaw": 352518224,
+        "pwmconfReadValid": true,
+        "pwmOffset": 128,
+        "pwmGradient": 2,
+        "pwmFrequency": 0,
+        "automaticCurrentScaling": false,
+        "automaticGradientAdaptation": false,
+        "pwmRegulation": 15,
+        "pwmLimit": 8,
+        "pwmconfRaw": 2399142528
+      },
+      "status": {
+        "overTempWarning": false,
+        "overTempShutdown": false,
+        "shortToGroundA": false,
+        "shortToGroundB": false,
+        "lowSideShortA": false,
+        "lowSideShortB": false,
+        "openLoadA": false,
+        "openLoadB": false,
+        "overTemp120c": false,
+        "overTemp143c": false,
+        "overTemp150c": false,
+        "overTemp157c": false,
+        "currentScaling": 6,
+        "stealthChopMode": true,
+        "standstill": true
+      },
+      "globalStatus": {
+        "reset": true,
+        "drvErr": false,
+        "uvCp": false
+      },
+      "dynamic": {
+        "tstepValid": true,
+        "tstep": 1048575,
+        "stallGuardValid": true,
+        "stallGuardResult": 96,
+        "pwmScaleValid": true,
+        "pwmScaleSum": 28,
+        "pwmScaleAuto": 0,
+        "pwmScaleRaw": 28,
+        "pwmAutoValid": true,
+        "pwmOffsetAuto": 128,
+        "pwmGradientAuto": 2,
+        "pwmAutoRaw": 131200,
+        "microstepCounter": 176,
+        "microstepCounterCheckedValid": true,
+        "microstepCounterChecked": 176
+      }
+    },
+    "rho-companion": {
+      "name": "rhoCompanion",
+      "connected": true,
+      "uartResponseValid": true,
+      "communicating": true,
+      "setupOk": true,
+      "inputs": {
+        "enableN": false,
+        "ms1": true,
+        "ms2": false,
+        "diag": false,
+        "pdnUart": true,
+        "step": false,
+        "spreadEnable": false,
+        "direction": false,
+        "raw": 553648196
+      },
+      "settings": {
+        "softwareEnabled": false,
+        "microstepsPerStep": 256,
+        "inverseMotorDirection": false,
+        "stealthChopEnabled": true,
+        "standstillMode": 0,
+        "irunPercent": 0,
+        "irunRegister": 0,
+        "iholdPercent": 0,
+        "iholdRegister": 0,
+        "iholdDelayPercent": 6,
+        "iholdDelayRegister": 1,
+        "coolStepEnabled": false,
+        "analogCurrentScaling": false,
+        "internalSenseResistors": false,
+        "otpReadValid": true,
+        "otpInternalSenseResistors": false,
+        "otpReadRaw": 14,
+        "chopconfReadValid": true,
+        "interpolationTo256": true,
+        "highSensitivityCurrentScale": true,
+        "chopperOffTime": 0,
+        "hysteresisStart": 5,
+        "hysteresisEnd": 0,
+        "blankTime": 2,
+        "chopconfRaw": 268632144,
+        "pwmconfReadValid": true,
+        "pwmOffset": 36,
+        "pwmGradient": 0,
+        "pwmFrequency": 1,
+        "automaticCurrentScaling": false,
+        "automaticGradientAdaptation": false,
+        "pwmRegulation": 1,
+        "pwmLimit": 12,
+        "pwmconfRaw": 3238068260
+      },
+      "status": {
+        "overTempWarning": false,
+        "overTempShutdown": false,
+        "shortToGroundA": false,
+        "shortToGroundB": false,
+        "lowSideShortA": false,
+        "lowSideShortB": false,
+        "openLoadA": false,
+        "openLoadB": false,
+        "overTemp120c": false,
+        "overTemp143c": false,
+        "overTemp150c": false,
+        "overTemp157c": false,
+        "currentScaling": 0,
+        "stealthChopMode": true,
+        "standstill": true
+      },
+      "globalStatus": {
+        "reset": true,
+        "drvErr": false,
+        "uvCp": false
+      },
+      "dynamic": {
+        "tstepValid": true,
+        "tstep": 1048575,
+        "stallGuardValid": true,
+        "stallGuardResult": 2,
+        "pwmScaleValid": true,
+        "pwmScaleSum": 1,
+        "pwmScaleAuto": 0,
+        "pwmScaleRaw": 1,
+        "pwmAutoValid": true,
+        "pwmOffsetAuto": 36,
+        "pwmGradientAuto": 0,
+        "pwmAutoRaw": 36,
+        "microstepCounter": 627,
+        "microstepCounterCheckedValid": true,
+        "microstepCounterChecked": 627
+      },
+      "motorConfigured": false
+    }
+  },
+  "reports": {
+    "rho-coarse": {
+      "valid": true,
+      "sampleCount": 112,
+      "validSampleCount": 112,
+      "uartValidFraction": 1.0,
+      "baselineMedianSg": 178.0,
+      "minimumSg": 96,
+      "terminalSg": 96,
+      "terminalSteps": 2288,
+      "expectedContactSteps": 3200,
+      "overrunMm": 0.0,
+      "contactAudioOffsetS": 5.4774,
+      "terminalAudioOffsetS": 5.4774,
+      "terminalToBaselineRatio": 0.5393,
+      "audioEventAWeightedDbfs": -54.15,
+      "audioPriorAWeightedDbfs": -48.07,
+      "audioRiseDb": -6.08,
+      "audioCorroborated": false
+    },
+    "rho-precision": {
+      "valid": false,
+      "reason": "no validated SG_RESULT samples"
+    }
+  }
+}

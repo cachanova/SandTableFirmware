@@ -282,6 +282,49 @@ bool testStallGuardFiltering() {
         return false;
     }
 
+    // The assembled main motor's full-step precision trace alternated zero
+    // SG readings with normal phases after it reached the stop. The ordinary
+    // five-vote collapse missed contact before the shared travel cap.
+    StallGuardDetector alternatingStopDetector(0, 5, 0.75f);
+    elapsedMs = 0;
+    for (uint32_t index = 0; index < 60; ++index, elapsedMs += 7) {
+        if (alternatingStopDetector.update(normalRipple[index % 8], elapsedMs)) {
+            std::cout << "FAIL: alternating-stop prelude triggered homing"
+                      << std::endl;
+            return false;
+        }
+    }
+    const uint16_t alternatingStop[] = {
+        150, 160, 146, 160, 0, 160, 0, 154
+    };
+    triggered = false;
+    for (uint16_t sample : alternatingStop) {
+        triggered |= alternatingStopDetector.update(sample, elapsedMs);
+        elapsedMs += 7;
+    }
+    if (!triggered) {
+        std::cout << "FAIL: repeated deep hard-stop pulses were missed"
+                  << std::endl;
+        return false;
+    }
+
+    StallGuardDetector isolatedSpikeDetector(0, 5, 0.75f);
+    elapsedMs = 0;
+    for (uint32_t index = 0; index < 60; ++index, elapsedMs += 7) {
+        isolatedSpikeDetector.update(normalRipple[index % 8], elapsedMs);
+    }
+    const uint16_t isolatedSpike[] = {
+        160, 180, 0, 170, 150, 190, 160, 180, 150
+    };
+    for (uint16_t sample : isolatedSpike) {
+        if (isolatedSpikeDetector.update(sample, elapsedMs)) {
+            std::cout << "FAIL: one deep SG spike triggered homing"
+                      << std::endl;
+            return false;
+        }
+        elapsedMs += 7;
+    }
+
     // A sustained but finite load change must become the lagged rolling
     // baseline. It cannot trigger without the independent deep-collapse test.
     StallGuardDetector loadTrackingDetector(0, 5, 0.75f);
@@ -607,7 +650,26 @@ bool testRhoSharedOverrunBudget() {
         std::cout << "FAIL: combined return window" << std::endl;
         return false;
     }
-    std::cout << "PASS: both approaches share one 1 mm contact budget"
+    constexpr uint32_t twoMmTolerance = 800;
+    const RhoBoundedReturn wider = rhoBoundedReturn(
+        expected, 3600, backoff, twoMmTolerance);
+    if (!wider.contactWithinWindow ||
+        wider.precisionCapSteps != backoff + 400 ||
+        rhoReturnWithinWindow(expected, 3600, backoff, 2200,
+                              twoMmTolerance)) {
+        std::cout << "FAIL: two-millimetre shared budget" << std::endl;
+        return false;
+    }
+    if (!rhoApproachesAgree(200, 200, 25) ||
+        !rhoApproachesAgree(200, 175, 25) ||
+        !rhoApproachesAgree(200, 225, 25) ||
+        rhoApproachesAgree(200, 174, 25) ||
+        rhoApproachesAgree(200, 226, 25)) {
+        std::cout << "FAIL: independent half-millimetre agreement window"
+                  << std::endl;
+        return false;
+    }
+    std::cout << "PASS: shared contact cap and separate agreement window"
               << std::endl;
     return true;
 }

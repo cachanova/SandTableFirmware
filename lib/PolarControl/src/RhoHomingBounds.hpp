@@ -8,6 +8,18 @@ struct RhoBoundedReturn {
     uint32_t precisionCapSteps;
 };
 
+// After backing off from the first candidate, the second inward trigger
+// must reproduce that command coordinate within the selected agreement
+// window. This does not prove that either trigger was the physical end stop.
+inline bool rhoApproachesAgree(uint32_t backoffSteps,
+                               uint32_t returnSteps,
+                               uint32_t agreementSteps) {
+    const uint32_t separation = returnSteps > backoffSteps
+        ? returnSteps - backoffSteps
+        : backoffSteps - returnSteps;
+    return separation <= agreementSteps;
+}
+
 // Keep the total commanded travel beyond the operator-confirmed zero within
 // one shared tolerance across both inward approaches. The second approach
 // starts after backing off from the first trigger, so it must spend any

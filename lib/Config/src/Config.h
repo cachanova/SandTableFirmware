@@ -76,17 +76,21 @@ static constexpr uint16_t kRhoMaxRunCurrentMa = 500;
 // about 459 mA nominal and remains below 500 mA with the 6% firmware margin.
 static constexpr uint8_t kRhoMaxUnmeasuredCurrentRegister = 14;
 
-// Dedicated sensorless-homing profile. This is deliberately independent of
-// the quiet normal-motion profile. Three physically confirmed 150 mA passes
-// reached zero; the 200 mA comparison false-triggered far from contact.
-// Keep 150 mA while refining the detector and qualifying repeatability.
-static constexpr uint16_t kRhoHomingRunCurrentMa = 150;
-static constexpr uint16_t kRhoHomingHoldCurrentMa = 150;
-static constexpr uint16_t kRhoHomingMicrosteps = 8;
+// Dedicated sensorless-homing profile, independent of quiet normal motion.
+// The 150 and 200 mA eight-microstep profiles produced mid-travel SG false
+// triggers. At 350 mA with full steps, SG sometimes missed the physical stop.
+// Test 250 mA at 6 mm/s with faster SG sampling and the same known-origin cap.
+static constexpr uint16_t kRhoHomingRunCurrentMa = 250;
+static constexpr uint16_t kRhoHomingHoldCurrentMa = 250;
+// Full external steps make each polled SG_RESULT correspond to one complete
+// commanded electrical step. Compare against the previous 8-microstep trace.
+static constexpr uint16_t kRhoHomingMicrosteps = 1;
 static constexpr float kRhoHomingVelocityMmPerSecond = 6.0f;
 static constexpr float kRhoHomingRunwayMm = 8.0f;
 static constexpr float kRhoHomingVerificationBackoffMm = 4.0f;
-static constexpr float kRhoHomingMaximumOverrunMm = 1.0f;
+static constexpr float kRhoHomingMaximumOverrunMm = 2.0f;
+static constexpr float kRhoHomingCoarseRunwayMarginMm = 1.0f;
+static constexpr float kRhoHomingApproachAgreementMm = 0.5f;
 
 // Theta-only commissioning always boots at a conservative current and motion
 // envelope, regardless of settings saved by a previous production run.

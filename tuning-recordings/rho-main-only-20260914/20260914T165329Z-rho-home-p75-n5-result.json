@@ -1,0 +1,1663 @@
+{
+  "kind": "rho-homing-trial",
+  "accepted": false,
+  "instrumentedPass": false,
+  "awaitingPhysicalReview": false,
+  "failures": [
+    "rho-coarse: trigger was more than 1 mm from expected contact",
+    "rho-precision: no validated SG_RESULT samples",
+    "firmware ended in HOMING_FAILED with failure=4"
+  ],
+  "settings": {
+    "triggerPercent": 75,
+    "consecutiveSamples": 5,
+    "detectorWindowFreshFullSteps": 9,
+    "homingMicrosteps": 8,
+    "homingStepsPerMm": 400.0,
+    "minimumTravelMs": 600,
+    "dedicatedRunCurrentMa": 200,
+    "dedicatedHoldCurrentMa": 200,
+    "coarseVelocityMmS": 6.0,
+    "precisionVelocityMmS": 6.0,
+    "runwayMm": 8.0,
+    "backoffMm": 4.0,
+    "inactiveHoldStrategy": "disabled-bridge",
+    "companionMotorEnabled": false,
+    "activeMotors": [
+      "rho"
+    ],
+    "knownRhoStartMm": 0.0,
+    "knownCompanionStartMm": 0.0,
+    "maximumCommissioningOverrunMm": 1.0,
+    "advisoryAudioCorroborationRiseDb": 6.0
+  },
+  "audio": "tuning-recordings/rho-main-only-20260914/20260914T165329Z-rho-home-p75-n5.wav",
+  "microphoneBefore": {
+    "source": "alsa_input.usb-Antlion_Audio_Antlion_USB_Microphone-00.mono-fallback",
+    "description": "Antlion USB Microphone Mono",
+    "sampleSpecification": "s16le 1ch 48000Hz",
+    "captureVolume": "mono: 65536 / 100% / 0.00 dB",
+    "baseVolume": "36854 /  56% / -15.00 dB",
+    "mute": "no"
+  },
+  "microphoneAfter": {
+    "source": "alsa_input.usb-Antlion_Audio_Antlion_USB_Microphone-00.mono-fallback",
+    "description": "Antlion USB Microphone Mono",
+    "sampleSpecification": "s16le 1ch 48000Hz",
+    "captureVolume": "mono: 65536 / 100% / 0.00 dB",
+    "baseVolume": "36854 /  56% / -15.00 dB",
+    "mute": "no"
+  },
+  "audioAlignmentUncertaintyS": 0.076914,
+  "terminalStatus": {
+    "state": "HOMING_FAILED",
+    "currentPattern": "",
+    "clearingPattern": "",
+    "progress": -1,
+    "clearingProgress": -1,
+    "ledBrightness": 50,
+    "speed": 5,
+    "heap": 132172,
+    "uptime": 42,
+    "storageAvailable": false,
+    "drivers": {
+      "theta": false,
+      "rho": true,
+      "rhoCompanion": false,
+      "thetaAxis": false,
+      "rhoAxis": true
+    },
+    "homing": {
+      "cycle": 1,
+      "stepsPerMm": 400,
+      "fastApproachMs": 1112,
+      "slowApproachMs": 0,
+      "fastApproachSteps": 1910,
+      "slowApproachSteps": 0,
+      "fastBaseline": 175,
+      "fastTrigger": 126,
+      "baseline": 0,
+      "trigger": 0,
+      "companionFastApproachMs": 0,
+      "companionSlowApproachMs": 0,
+      "companionFastApproachSteps": 0,
+      "companionSlowApproachSteps": 0,
+      "companionFastBaseline": 0,
+      "companionFastTrigger": 0,
+      "companionBaseline": 0,
+      "companionTrigger": 0,
+      "uartSamples": 145,
+      "validUartSamples": 145,
+      "failure": 4,
+      "failedAxis": 1
+    }
+  },
+  "confirmedStatus": null,
+  "traceCycle": 1,
+  "traceCount": 145,
+  "trace": [
+    {
+      "a": 1,
+      "p": 1,
+      "t": 735,
+      "s": 561,
+      "g": 186,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 757,
+      "s": 613,
+      "g": 172,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 779,
+      "s": 666,
+      "g": 238,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 801,
+      "s": 710,
+      "g": 130,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 823,
+      "s": 762,
+      "g": 232,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 845,
+      "s": 815,
+      "g": 140,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 867,
+      "s": 868,
+      "g": 166,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 889,
+      "s": 920,
+      "g": 240,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 911,
+      "s": 973,
+      "g": 124,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 933,
+      "s": 1026,
+      "g": 174,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 955,
+      "s": 1079,
+      "g": 196,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 977,
+      "s": 1131,
+      "g": 134,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 999,
+      "s": 1180,
+      "g": 208,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1021,
+      "s": 1213,
+      "g": 128,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1043,
+      "s": 1253,
+      "g": 94,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1065,
+      "s": 1295,
+      "g": 118,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1087,
+      "s": 1333,
+      "g": 222,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1109,
+      "s": 1368,
+      "g": 222,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1130,
+      "s": 1416,
+      "g": 134,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1152,
+      "s": 1469,
+      "g": 240,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1174,
+      "s": 1522,
+      "g": 192,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1196,
+      "s": 1572,
+      "g": 174,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1218,
+      "s": 1618,
+      "g": 196,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1240,
+      "s": 1671,
+      "g": 132,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1262,
+      "s": 1724,
+      "g": 242,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1284,
+      "s": 1776,
+      "g": 194,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1306,
+      "s": 1829,
+      "g": 176,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1328,
+      "s": 1882,
+      "g": 242,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1350,
+      "s": 1935,
+      "g": 138,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1372,
+      "s": 1987,
+      "g": 176,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1394,
+      "s": 2040,
+      "g": 238,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1416,
+      "s": 2083,
+      "g": 30,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1438,
+      "s": 2124,
+      "g": 126,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1459,
+      "s": 2163,
+      "g": 204,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1481,
+      "s": 2205,
+      "g": 158,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1503,
+      "s": 2254,
+      "g": 140,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1525,
+      "s": 2304,
+      "g": 176,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1547,
+      "s": 2354,
+      "g": 118,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1569,
+      "s": 2407,
+      "g": 136,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1591,
+      "s": 2460,
+      "g": 234,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1613,
+      "s": 2510,
+      "g": 48,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1635,
+      "s": 2558,
+      "g": 238,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1657,
+      "s": 2611,
+      "g": 202,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1679,
+      "s": 2664,
+      "g": 138,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1701,
+      "s": 2717,
+      "g": 238,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1723,
+      "s": 2769,
+      "g": 196,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1745,
+      "s": 2822,
+      "g": 172,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1767,
+      "s": 2875,
+      "g": 244,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1789,
+      "s": 2928,
+      "g": 194,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1811,
+      "s": 2980,
+      "g": 166,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1833,
+      "s": 3019,
+      "g": 52,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1855,
+      "s": 3062,
+      "g": 118,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1877,
+      "s": 3103,
+      "g": 166,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1899,
+      "s": 3149,
+      "g": 124,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 1,
+      "t": 1921,
+      "s": 3200,
+      "g": 172,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2573,
+      "s": 570,
+      "g": 130,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2580,
+      "s": 586,
+      "g": 234,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2587,
+      "s": 603,
+      "g": 134,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2594,
+      "s": 620,
+      "g": 236,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2601,
+      "s": 637,
+      "g": 130,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2608,
+      "s": 653,
+      "g": 244,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2615,
+      "s": 670,
+      "g": 174,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2622,
+      "s": 687,
+      "g": 192,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2629,
+      "s": 704,
+      "g": 168,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2636,
+      "s": 718,
+      "g": 224,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2643,
+      "s": 730,
+      "g": 96,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2650,
+      "s": 742,
+      "g": 166,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2657,
+      "s": 760,
+      "g": 130,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2666,
+      "s": 778,
+      "g": 166,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2673,
+      "s": 792,
+      "g": 126,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2680,
+      "s": 804,
+      "g": 168,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2687,
+      "s": 818,
+      "g": 194,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2693,
+      "s": 832,
+      "g": 100,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2700,
+      "s": 849,
+      "g": 202,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2707,
+      "s": 857,
+      "g": 126,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2714,
+      "s": 867,
+      "g": 70,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2721,
+      "s": 879,
+      "g": 160,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2728,
+      "s": 894,
+      "g": 174,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2735,
+      "s": 911,
+      "g": 202,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2742,
+      "s": 924,
+      "g": 160,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2749,
+      "s": 941,
+      "g": 250,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2756,
+      "s": 958,
+      "g": 178,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2763,
+      "s": 975,
+      "g": 196,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2770,
+      "s": 992,
+      "g": 174,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2777,
+      "s": 1006,
+      "g": 176,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2784,
+      "s": 1022,
+      "g": 160,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2791,
+      "s": 1039,
+      "g": 196,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2798,
+      "s": 1055,
+      "g": 164,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2805,
+      "s": 1072,
+      "g": 204,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2812,
+      "s": 1089,
+      "g": 178,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2819,
+      "s": 1106,
+      "g": 198,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2826,
+      "s": 1123,
+      "g": 174,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2833,
+      "s": 1139,
+      "g": 192,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2840,
+      "s": 1153,
+      "g": 96,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2847,
+      "s": 1166,
+      "g": 150,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2854,
+      "s": 1183,
+      "g": 172,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2861,
+      "s": 1199,
+      "g": 198,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2868,
+      "s": 1216,
+      "g": 168,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2875,
+      "s": 1233,
+      "g": 206,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2882,
+      "s": 1250,
+      "g": 174,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2889,
+      "s": 1267,
+      "g": 202,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2896,
+      "s": 1284,
+      "g": 176,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2903,
+      "s": 1300,
+      "g": 194,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2910,
+      "s": 1317,
+      "g": 172,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2917,
+      "s": 1334,
+      "g": 130,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2924,
+      "s": 1351,
+      "g": 178,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2931,
+      "s": 1367,
+      "g": 136,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2938,
+      "s": 1384,
+      "g": 238,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2945,
+      "s": 1401,
+      "g": 130,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2952,
+      "s": 1418,
+      "g": 234,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2959,
+      "s": 1435,
+      "g": 124,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2966,
+      "s": 1451,
+      "g": 242,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2973,
+      "s": 1468,
+      "g": 130,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2980,
+      "s": 1485,
+      "g": 236,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2987,
+      "s": 1502,
+      "g": 136,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 2994,
+      "s": 1519,
+      "g": 208,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3001,
+      "s": 1535,
+      "g": 182,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3008,
+      "s": 1552,
+      "g": 202,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3015,
+      "s": 1569,
+      "g": 176,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3022,
+      "s": 1586,
+      "g": 194,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3029,
+      "s": 1602,
+      "g": 172,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3036,
+      "s": 1619,
+      "g": 202,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3043,
+      "s": 1634,
+      "g": 180,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3050,
+      "s": 1643,
+      "g": 160,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3057,
+      "s": 1656,
+      "g": 138,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3064,
+      "s": 1664,
+      "g": 42,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3071,
+      "s": 1677,
+      "g": 138,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3079,
+      "s": 1691,
+      "g": 122,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3087,
+      "s": 1708,
+      "g": 256,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3096,
+      "s": 1722,
+      "g": 130,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3103,
+      "s": 1734,
+      "g": 204,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3110,
+      "s": 1745,
+      "g": 130,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3117,
+      "s": 1754,
+      "g": 128,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3124,
+      "s": 1768,
+      "g": 224,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3131,
+      "s": 1778,
+      "g": 102,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3138,
+      "s": 1790,
+      "g": 106,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3147,
+      "s": 1811,
+      "g": 202,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3154,
+      "s": 1818,
+      "g": 128,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3161,
+      "s": 1831,
+      "g": 240,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3168,
+      "s": 1844,
+      "g": 106,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3175,
+      "s": 1856,
+      "g": 96,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3182,
+      "s": 1868,
+      "g": 160,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3189,
+      "s": 1878,
+      "g": 106,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3196,
+      "s": 1893,
+      "g": 100,
+      "v": true
+    },
+    {
+      "a": 1,
+      "p": 2,
+      "t": 3203,
+      "s": 1910,
+      "g": 126,
+      "v": true
+    }
+  ],
+  "driversBefore": {
+    "rho": {
+      "name": "rho",
+      "connected": true,
+      "uartResponseValid": true,
+      "communicating": true,
+      "setupOk": true,
+      "inputs": {
+        "enableN": false,
+        "ms1": false,
+        "ms2": false,
+        "diag": false,
+        "pdnUart": true,
+        "step": false,
+        "spreadEnable": false,
+        "direction": false,
+        "raw": 553648192
+      },
+      "settings": {
+        "softwareEnabled": true,
+        "microstepsPerStep": 8,
+        "inverseMotorDirection": false,
+        "stealthChopEnabled": true,
+        "standstillMode": 0,
+        "irunPercent": 19,
+        "irunRegister": 6,
+        "iholdPercent": 19,
+        "iholdRegister": 6,
+        "iholdDelayPercent": 53,
+        "iholdDelayRegister": 8,
+        "coolStepEnabled": false,
+        "analogCurrentScaling": false,
+        "internalSenseResistors": false,
+        "otpReadValid": true,
+        "otpInternalSenseResistors": false,
+        "otpReadRaw": 14,
+        "chopconfReadValid": true,
+        "interpolationTo256": true,
+        "highSensitivityCurrentScale": true,
+        "chopperOffTime": 3,
+        "hysteresisStart": 5,
+        "hysteresisEnd": 0,
+        "blankTime": 2,
+        "chopconfRaw": 352518227,
+        "pwmconfReadValid": true,
+        "pwmOffset": 128,
+        "pwmGradient": 2,
+        "pwmFrequency": 0,
+        "automaticCurrentScaling": false,
+        "automaticGradientAdaptation": false,
+        "pwmRegulation": 15,
+        "pwmLimit": 8,
+        "pwmconfRaw": 2399142528
+      },
+      "status": {
+        "overTempWarning": false,
+        "overTempShutdown": false,
+        "shortToGroundA": false,
+        "shortToGroundB": false,
+        "lowSideShortA": false,
+        "lowSideShortB": false,
+        "openLoadA": false,
+        "openLoadB": false,
+        "overTemp120c": false,
+        "overTemp143c": false,
+        "overTemp150c": false,
+        "overTemp157c": false,
+        "currentScaling": 6,
+        "stealthChopMode": true,
+        "standstill": true
+      },
+      "globalStatus": {
+        "reset": true,
+        "drvErr": false,
+        "uvCp": false
+      },
+      "dynamic": {
+        "tstepValid": true,
+        "tstep": 1048575,
+        "stallGuardValid": true,
+        "stallGuardResult": 100,
+        "pwmScaleValid": true,
+        "pwmScaleSum": 28,
+        "pwmScaleAuto": 0,
+        "pwmScaleRaw": 28,
+        "pwmAutoValid": true,
+        "pwmOffsetAuto": 128,
+        "pwmGradientAuto": 2,
+        "pwmAutoRaw": 131200,
+        "microstepCounter": 784,
+        "microstepCounterCheckedValid": true,
+        "microstepCounterChecked": 784
+      }
+    },
+    "rho-companion": {
+      "name": "rhoCompanion",
+      "connected": true,
+      "uartResponseValid": true,
+      "communicating": true,
+      "setupOk": true,
+      "inputs": {
+        "enableN": false,
+        "ms1": true,
+        "ms2": false,
+        "diag": false,
+        "pdnUart": true,
+        "step": false,
+        "spreadEnable": false,
+        "direction": false,
+        "raw": 553648196
+      },
+      "settings": {
+        "softwareEnabled": false,
+        "microstepsPerStep": 256,
+        "inverseMotorDirection": false,
+        "stealthChopEnabled": true,
+        "standstillMode": 0,
+        "irunPercent": 0,
+        "irunRegister": 0,
+        "iholdPercent": 0,
+        "iholdRegister": 0,
+        "iholdDelayPercent": 6,
+        "iholdDelayRegister": 1,
+        "coolStepEnabled": false,
+        "analogCurrentScaling": false,
+        "internalSenseResistors": false,
+        "otpReadValid": true,
+        "otpInternalSenseResistors": false,
+        "otpReadRaw": 14,
+        "chopconfReadValid": true,
+        "interpolationTo256": true,
+        "highSensitivityCurrentScale": true,
+        "chopperOffTime": 0,
+        "hysteresisStart": 5,
+        "hysteresisEnd": 0,
+        "blankTime": 2,
+        "chopconfRaw": 268632144,
+        "pwmconfReadValid": true,
+        "pwmOffset": 36,
+        "pwmGradient": 0,
+        "pwmFrequency": 1,
+        "automaticCurrentScaling": false,
+        "automaticGradientAdaptation": false,
+        "pwmRegulation": 1,
+        "pwmLimit": 12,
+        "pwmconfRaw": 3238068260
+      },
+      "status": {
+        "overTempWarning": false,
+        "overTempShutdown": false,
+        "shortToGroundA": false,
+        "shortToGroundB": false,
+        "lowSideShortA": false,
+        "lowSideShortB": false,
+        "openLoadA": false,
+        "openLoadB": false,
+        "overTemp120c": false,
+        "overTemp143c": false,
+        "overTemp150c": false,
+        "overTemp157c": false,
+        "currentScaling": 0,
+        "stealthChopMode": true,
+        "standstill": true
+      },
+      "globalStatus": {
+        "reset": true,
+        "drvErr": false,
+        "uvCp": false
+      },
+      "dynamic": {
+        "tstepValid": true,
+        "tstep": 1048575,
+        "stallGuardValid": true,
+        "stallGuardResult": 2,
+        "pwmScaleValid": true,
+        "pwmScaleSum": 1,
+        "pwmScaleAuto": 0,
+        "pwmScaleRaw": 1,
+        "pwmAutoValid": true,
+        "pwmOffsetAuto": 36,
+        "pwmGradientAuto": 0,
+        "pwmAutoRaw": 36,
+        "microstepCounter": 38,
+        "microstepCounterCheckedValid": true,
+        "microstepCounterChecked": 38
+      },
+      "motorConfigured": false
+    }
+  },
+  "driversAfter": {
+    "rho": {
+      "name": "rho",
+      "connected": true,
+      "uartResponseValid": true,
+      "communicating": true,
+      "setupOk": true,
+      "inputs": {
+        "enableN": false,
+        "ms1": false,
+        "ms2": false,
+        "diag": false,
+        "pdnUart": true,
+        "step": false,
+        "spreadEnable": false,
+        "direction": false,
+        "raw": 553648192
+      },
+      "settings": {
+        "softwareEnabled": false,
+        "microstepsPerStep": 8,
+        "inverseMotorDirection": false,
+        "stealthChopEnabled": true,
+        "standstillMode": 0,
+        "irunPercent": 19,
+        "irunRegister": 6,
+        "iholdPercent": 19,
+        "iholdRegister": 6,
+        "iholdDelayPercent": 53,
+        "iholdDelayRegister": 8,
+        "coolStepEnabled": false,
+        "analogCurrentScaling": false,
+        "internalSenseResistors": false,
+        "otpReadValid": true,
+        "otpInternalSenseResistors": false,
+        "otpReadRaw": 14,
+        "chopconfReadValid": true,
+        "interpolationTo256": true,
+        "highSensitivityCurrentScale": true,
+        "chopperOffTime": 0,
+        "hysteresisStart": 5,
+        "hysteresisEnd": 0,
+        "blankTime": 2,
+        "chopconfRaw": 352518224,
+        "pwmconfReadValid": true,
+        "pwmOffset": 128,
+        "pwmGradient": 2,
+        "pwmFrequency": 0,
+        "automaticCurrentScaling": false,
+        "automaticGradientAdaptation": false,
+        "pwmRegulation": 15,
+        "pwmLimit": 8,
+        "pwmconfRaw": 2399142528
+      },
+      "status": {
+        "overTempWarning": false,
+        "overTempShutdown": false,
+        "shortToGroundA": false,
+        "shortToGroundB": false,
+        "lowSideShortA": false,
+        "lowSideShortB": false,
+        "openLoadA": false,
+        "openLoadB": false,
+        "overTemp120c": false,
+        "overTemp143c": false,
+        "overTemp150c": false,
+        "overTemp157c": false,
+        "currentScaling": 6,
+        "stealthChopMode": true,
+        "standstill": true
+      },
+      "globalStatus": {
+        "reset": true,
+        "drvErr": false,
+        "uvCp": false
+      },
+      "dynamic": {
+        "tstepValid": true,
+        "tstep": 1048575,
+        "stallGuardValid": true,
+        "stallGuardResult": 126,
+        "pwmScaleValid": true,
+        "pwmScaleSum": 28,
+        "pwmScaleAuto": 0,
+        "pwmScaleRaw": 28,
+        "pwmAutoValid": true,
+        "pwmOffsetAuto": 128,
+        "pwmGradientAuto": 2,
+        "pwmAutoRaw": 131200,
+        "microstepCounter": 464,
+        "microstepCounterCheckedValid": true,
+        "microstepCounterChecked": 464
+      }
+    },
+    "rho-companion": {
+      "name": "rhoCompanion",
+      "connected": true,
+      "uartResponseValid": true,
+      "communicating": true,
+      "setupOk": true,
+      "inputs": {
+        "enableN": false,
+        "ms1": true,
+        "ms2": false,
+        "diag": false,
+        "pdnUart": true,
+        "step": false,
+        "spreadEnable": false,
+        "direction": false,
+        "raw": 553648196
+      },
+      "settings": {
+        "softwareEnabled": false,
+        "microstepsPerStep": 256,
+        "inverseMotorDirection": false,
+        "stealthChopEnabled": true,
+        "standstillMode": 0,
+        "irunPercent": 0,
+        "irunRegister": 0,
+        "iholdPercent": 0,
+        "iholdRegister": 0,
+        "iholdDelayPercent": 6,
+        "iholdDelayRegister": 1,
+        "coolStepEnabled": false,
+        "analogCurrentScaling": false,
+        "internalSenseResistors": false,
+        "otpReadValid": true,
+        "otpInternalSenseResistors": false,
+        "otpReadRaw": 14,
+        "chopconfReadValid": true,
+        "interpolationTo256": true,
+        "highSensitivityCurrentScale": true,
+        "chopperOffTime": 0,
+        "hysteresisStart": 5,
+        "hysteresisEnd": 0,
+        "blankTime": 2,
+        "chopconfRaw": 268632144,
+        "pwmconfReadValid": true,
+        "pwmOffset": 36,
+        "pwmGradient": 0,
+        "pwmFrequency": 1,
+        "automaticCurrentScaling": false,
+        "automaticGradientAdaptation": false,
+        "pwmRegulation": 1,
+        "pwmLimit": 12,
+        "pwmconfRaw": 3238068260
+      },
+      "status": {
+        "overTempWarning": false,
+        "overTempShutdown": false,
+        "shortToGroundA": false,
+        "shortToGroundB": false,
+        "lowSideShortA": false,
+        "lowSideShortB": false,
+        "openLoadA": false,
+        "openLoadB": false,
+        "overTemp120c": false,
+        "overTemp143c": false,
+        "overTemp150c": false,
+        "overTemp157c": false,
+        "currentScaling": 0,
+        "stealthChopMode": true,
+        "standstill": true
+      },
+      "globalStatus": {
+        "reset": true,
+        "drvErr": false,
+        "uvCp": false
+      },
+      "dynamic": {
+        "tstepValid": true,
+        "tstep": 1048575,
+        "stallGuardValid": true,
+        "stallGuardResult": 2,
+        "pwmScaleValid": true,
+        "pwmScaleSum": 1,
+        "pwmScaleAuto": 0,
+        "pwmScaleRaw": 1,
+        "pwmAutoValid": true,
+        "pwmOffsetAuto": 36,
+        "pwmGradientAuto": 0,
+        "pwmAutoRaw": 36,
+        "microstepCounter": 796,
+        "microstepCounterCheckedValid": true,
+        "microstepCounterChecked": 796
+      },
+      "motorConfigured": false
+    }
+  },
+  "reports": {
+    "rho-coarse": {
+      "valid": true,
+      "sampleCount": 90,
+      "validSampleCount": 90,
+      "uartValidFraction": 1.0,
+      "baselineMedianSg": 174.0,
+      "minimumSg": 42,
+      "terminalSg": 126,
+      "terminalSteps": 1910,
+      "expectedContactSteps": 3200,
+      "overrunMm": 0.0,
+      "contactAudioOffsetS": 5.3129,
+      "terminalAudioOffsetS": 5.3129,
+      "terminalToBaselineRatio": 0.7241,
+      "audioEventAWeightedDbfs": -50.24,
+      "audioPriorAWeightedDbfs": -62.48,
+      "audioRiseDb": 12.24,
+      "audioCorroborated": true
+    },
+    "rho-precision": {
+      "valid": false,
+      "reason": "no validated SG_RESULT samples"
+    }
+  }
+}

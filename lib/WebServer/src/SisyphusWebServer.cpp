@@ -971,7 +971,17 @@ void SisyphusWebServer::processPatternQueue() {
     }
 
 
-    if (state != PolarControl::IDLE) return;
+    if (state != PolarControl::IDLE) {
+        // An unhomed manual jog returns to its entry state when the planner
+        // finishes. Clear its owner there too; otherwise Set Home remains
+        // blocked even though the jog is complete and motion is stopped.
+        if ((state == PolarControl::INITIALIZED ||
+             state == PolarControl::HOMING_FAILED) &&
+            m_activeMotion == MotionOwner::MANUAL) {
+            m_activeMotion = MotionOwner::NONE;
+        }
+        return;
+    }
 
     // Handle clearing completion for single pattern mode (not playlist)
     if (!m_playlistMode && m_runningClearing && m_pendingPattern.length() > 0) {
@@ -2659,6 +2669,10 @@ void SisyphusWebServer::handleTuningGet(AsyncWebServerRequest *request) {
     homingObj["verificationBackoffMm"] =
         Config::kRhoHomingVerificationBackoffMm;
     homingObj["maximumOverrunMm"] = Config::kRhoHomingMaximumOverrunMm;
+    homingObj["coarseMinimumTravelMm"] =
+        Config::kRhoHomingRunwayMm - Config::kRhoHomingCoarseRunwayMarginMm;
+    homingObj["approachAgreementMm"] =
+        Config::kRhoHomingApproachAgreementMm;
     homingObj["companionMotorEnabled"] = Config::kRhoCompanionMotorEnabled;
     homingObj["inactiveHoldStrategy"] = Config::kRhoCompanionMotorEnabled
         ? "vactual-u256" : "disabled-bridge";

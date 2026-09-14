@@ -55,8 +55,10 @@ public:
         const float confirmedThreshold = m_baseline *
             std::min(m_triggerRatio, kConfirmedCollapseRatio);
         const float hardThreshold = m_baseline * kHardCollapseRatio;
+        const float deepPulseThreshold = m_baseline * kDeepPulseRatio;
         uint8_t softLowCount = 0;
         uint8_t confirmedLowCount = 0;
+        uint8_t deepPulseCount = 0;
         uint8_t consecutiveSoftLow = 0;
         uint8_t maximumConsecutiveSoftLow = 0;
         uint16_t minimum = UINT16_MAX;
@@ -73,6 +75,7 @@ public:
                 consecutiveSoftLow = 0;
             }
             if (value <= confirmedThreshold) ++confirmedLowCount;
+            if (value <= deepPulseThreshold) ++deepPulseCount;
         }
 
         // A relative majority alone is insufficient: the normal trace can
@@ -85,11 +88,18 @@ public:
             minimum <= m_baseline * kClusteredCollapseRatio;
         const bool deepCollapse =
             confirmedLowCount >= m_requiredSamples && minimum <= hardThreshold;
+        // At a hard stop, this motor can alternate near-zero SG_RESULT with
+        // normal electrical-phase readings. Two distinct deep pulses in
+        // the decision window establish contact without requiring adjacent
+        // low phases. A single low spike still cannot trigger this path.
+        const bool repeatedDeepPulses =
+            deepPulseCount >= 2 && sample <= deepPulseThreshold;
         // The votes may include an older low cluster even when SG_RESULT has
         // recovered by the final sample. Stop only on a current low reading.
-        return sample <= softThreshold &&
-               softLowCount >= m_requiredSamples &&
-               (clusteredCollapse || deepCollapse);
+        return repeatedDeepPulses ||
+               (sample <= softThreshold &&
+                softLowCount >= m_requiredSamples &&
+                (clusteredCollapse || deepCollapse));
     }
 
     uint16_t baseline() const { return static_cast<uint16_t>(m_baseline); }
@@ -111,6 +121,7 @@ private:
     // supplying six soft-low votes. Every recorded non-stop constriction was
     // rejected by the independent five-of-nine soft vote even at 0.50 here.
     static constexpr float kHardCollapseRatio = 0.35f;
+    static constexpr float kDeepPulseRatio = 0.10f;
 
     uint32_t m_ignoreMs;
     uint8_t m_requiredSamples;

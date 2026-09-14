@@ -1,5 +1,6 @@
 """Host-side checks for lossless homing trace collection."""
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -16,7 +17,7 @@ from rho_homing_tuner import (  # noqa: E402
     require_expected_motors,
     validate_trial,
 )
-from rho_homing_replay import replay_phase  # noqa: E402
+from rho_homing_replay import replay_artifact, replay_phase  # noqa: E402
 
 
 def snapshot(cycle: int, total: int, first: int) -> dict:
@@ -60,12 +61,13 @@ class HomingTraceCollectorTest(unittest.TestCase):
         }
         reports = {
             "rho-coarse": report,
-            "rho-precision": {**report, "terminalSteps": 1840,
+            "rho-precision": {**report, "terminalSteps": 1800,
                               "expectedContactSteps": 1600,
-                              "overrunMm": 0.6},
+                              "overrunMm": 0.5},
         }
         self.assertTrue(any("shared 1 mm" in failure for failure in
                             validate_trial(reports, 400.0)))
+        self.assertEqual(validate_trial(reports, 400.0, 2.0), [])
 
     def test_rejects_two_early_triggers(self) -> None:
         report = {
@@ -160,6 +162,56 @@ class HomingTraceCollectorTest(unittest.TestCase):
             samples, ratio=0.75, votes=5, minimum_steps=500,
             steps_per_second=100000,
         ))
+
+    def test_detector_replay_full_step_alternating_stop(self) -> None:
+        values = [180] * 60 + [150, 160, 146, 160, 0, 160, 0]
+        samples = [
+            {"t": index * 7, "s": index, "g": value, "v": True}
+            for index, value in enumerate(values)
+        ]
+        result = replay_phase(
+            samples, ratio=0.75, votes=5, minimum_steps=0,
+            steps_per_second=300, external_steps_per_full_step=1,
+        )
+        self.assertEqual(result["sg"], 0)
+        self.assertEqual(result["steps"], len(samples) - 1)
+
+        isolated = [180] * 60 + [150, 128, 146, 120, 0, 128, 150, 154, 148]
+        isolated_samples = [
+            {"t": index * 7, "s": index, "g": value, "v": True}
+            for index, value in enumerate(isolated)
+        ]
+        self.assertIsNone(replay_phase(
+            isolated_samples, ratio=0.75, votes=5, minimum_steps=0,
+            steps_per_second=300, external_steps_per_full_step=1,
+        ))
+
+    def test_runway_arming_rejects_recorded_mid_travel_false_trigger(self) -> None:
+        path = (Path(__file__).resolve().parents[1] /
+                "tuning-recordings/rho-main-only-20260914/"
+                "20260914T175722Z-rho-home-p75-n5-start-r0-cw0mm-result.json")
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+        coarse = [sample for sample in artifact["trace"]
+                  if sample["a"] == 1 and sample["p"] == 2]
+        old = replay_phase(
+            coarse, ratio=0.75, votes=5, minimum_steps=150,
+            steps_per_second=300, external_steps_per_full_step=1,
+        )
+        guarded = replay_phase(
+            coarse, ratio=0.75, votes=5, minimum_steps=350,
+            steps_per_second=300, external_steps_per_full_step=1,
+        )
+        self.assertEqual(old["steps"], 217)
+        self.assertIsNone(guarded)
+
+    def test_replay_preserves_precision_trigger_at_time_gate(self) -> None:
+        path = (Path(__file__).resolve().parents[1] /
+                "tuning-recordings/rho-main-only-20260914/"
+                "20260914T181817Z-rho-home-p75-n5-start-r0-cw0mm-result.json")
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+        report = replay_artifact(artifact, 0.75, 5)
+        self.assertEqual(report["coarse"]["steps"], 400)
+        self.assertEqual(report["precision"]["steps"], 196)
 
 
 if __name__ == "__main__":

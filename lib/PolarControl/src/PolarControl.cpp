@@ -1446,7 +1446,7 @@ PolarControl::HomingAttempt PolarControl::approachHome(
     uint32_t minimumTravelSteps, uint8_t requiredSamples,
     float triggerRatio, uint16_t externalStepsPerFullStep) {
     HomingAttempt result;
-    constexpr uint32_t kSampleIntervalMs = 5;
+    constexpr uint32_t kSampleIntervalMs = 1;
     constexpr uint8_t kMaxConsecutiveUartErrors = 3;
     const uint32_t startedAt = millis();
     const uint32_t timeoutMs = std::max<uint32_t>(
@@ -1514,9 +1514,9 @@ PolarControl::HomingAttempt PolarControl::approachHome(
         consecutiveUartErrors = 0;
         const uint16_t sample = static_cast<uint16_t>(registerValue & 0x03FF);
         const uint32_t sampleSteps = m_planner.getRhoHomingStepCount();
-        // SG_RESULT updates once per full step. At the fixed MRES=8 homing
-        // resolution, reject duplicate polls until at least eight external
-        // STEP pulses have advanced the driver's electrical sequencer.
+        // SG_RESULT updates once per full step. Reject duplicate polls until
+        // enough external STEP pulses have advanced one full electrical step
+        // at the configured homing microstep resolution.
         if (haveDetectorSample &&
             sampleSteps - lastDetectorSampleSteps <
                 std::max<uint16_t>(1, externalStepsPerFullStep)) {
@@ -1717,11 +1717,10 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
                             const char* inactiveName,
                             bool companionAxis,
                             const DriverSettings& homingSettings) {
-    // SG_RESULT is updated once per full step and becomes unstable at very
-    // low motor speeds. With this mechanism's 50 full steps/mm, 6 mm/s is
-    // 1.5 revolutions/s: above the TMC2209's documented problematic region
-    // below roughly one revolution/s. Use the same characterized velocity
-    // for both passes so one threshold describes one operating condition.
+    // SG_RESULT updates once per full step and becomes unstable at very low
+    // motor speeds. At 50 full steps/mm, the current 6 mm/s trial is 1.5
+    // revolutions/s, above the TMC2209's problematic low-speed region. Use
+    // the same velocity for both passes so one threshold describes both.
     constexpr float kCoarseMmPerSecond =
         Config::kRhoHomingVelocityMmPerSecond;
     constexpr float kPrecisionMmPerSecond =
@@ -1731,7 +1730,16 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
         Config::kRhoHomingVerificationBackoffMm;
     constexpr float kVerificationToleranceMm =
         Config::kRhoHomingMaximumOverrunMm;
-    constexpr float kImpossibleContactTravelMm = 3.0f;
+    // The outward runway places the real end stop at least this far away if
+    // the commanded outward motion actually happened. A one-millimetre
+    // margin allows small outward step loss without accepting rail-load
+    // events several millimetres before contact.
+    constexpr float kCoarseRunwayMarginMm =
+        Config::kRhoHomingCoarseRunwayMarginMm;
+    // Agreement between independent approaches is a precision check, not
+    // the same allowance as the hard-stop command cap.
+    constexpr float kVerificationAgreementMm =
+        Config::kRhoHomingApproachAgreementMm;
     constexpr uint32_t kSettleMs = 150;
     const uint32_t stepsPerMm = 50U * homingSettings.microsteps;
     const uint32_t maxStepRate = 1000000U / STEP_TIMER_PERIOD_US;
@@ -1750,6 +1758,8 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
     // how far the mechanism may be commanded into the hard stop.
     const uint32_t toleranceSteps = static_cast<uint32_t>(
         std::lround(kVerificationToleranceMm * stepsPerMm));
+    const uint32_t agreementSteps = static_cast<uint32_t>(
+        std::lround(kVerificationAgreementMm * stepsPerMm));
     uint32_t maximumTravelSteps = static_cast<uint32_t>(
         std::lround(R_MAX * stepsPerMm));
     uint32_t expectedContactSteps = 0;
@@ -1777,8 +1787,11 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
     }
 #endif
     const float triggerRatio = m_homingSettings.triggerPercent / 100.0f;
-    const uint32_t coarseMinimumTravelSteps = static_cast<uint32_t>(
-        std::lround(kImpossibleContactTravelMm * stepsPerMm));
+    const uint32_t coarseMinimumTravelSteps = runwaySteps >
+        static_cast<uint32_t>(std::lround(kCoarseRunwayMarginMm * stepsPerMm))
+        ? runwaySteps - static_cast<uint32_t>(
+            std::lround(kCoarseRunwayMarginMm * stepsPerMm))
+        : 0;
     const uint8_t coarseSamples = std::max<uint8_t>(
         5, static_cast<uint8_t>(m_homingSettings.consecutiveSamples / 3));
     uint32_t inactivePhaseRegister = 0;
@@ -1985,9 +1998,11 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
 
         const uint32_t minimumReturnSteps = std::max<uint32_t>(
             configuredMinimumSteps,
-            backoffSteps > toleranceSteps ? backoffSteps - toleranceSteps : 0);
+            backoffSteps > agreementSteps ? backoffSteps - agreementSteps : 0);
         if (precision.steps < minimumReturnSteps ||
-            precision.steps > precisionMaximumSteps) {
+            precision.steps > precisionMaximumSteps ||
+            !rhoApproachesAgree(backoffSteps, precision.steps,
+                                agreementSteps)) {
             m_homingFailure.store(4);
             ErrorLog::instance().log("ERROR", "HOME", "INCONSISTENT_RETURN",
                                      "Precision trigger fell outside the verification window",
