@@ -99,6 +99,40 @@ also rejected exact setting restoration. The local artifact is
 The source now checks CHOPCONF readback and retries a transient echo failure;
 this fix needs a new hardware trial before the profile can pass.
 
+### Main-only repeat after UART fix (2026-09-14 04:47 UTC)
+
+The repeat passed the host's instrument checks and left firmware in
+`HOMING_REVIEW`. All 321 SG reads passed UART validation. The coarse pass
+stopped at 3,333 steps, 0.3325 mm beyond the expected contact; its moving SG
+median was 178 and terminal value 96. The precision pass stopped at exactly
+1,600 steps, with moving median 177 and terminal value 46. Antlion audio rose
+12.26 dB and 12.24 dB near those SG events. Firmware restored main RHO's
+normal driver settings and kept the empty CW bridge at `TOFF=0`.
+
+The artifact is
+`tuning-recordings/rho-main-only-20260914/20260914T044741Z-rho-home-p75-n5-result.json`.
+No camera or rotor-position sensor verified the final physical position. The
+host therefore did not call `/api/home/confirm`; main RHO remains in
+`HOMING_REVIEW`, and 75% / five votes remains a candidate, not a qualified
+production setting.
+
+The offline replay command below reproduced the exact coarse and precision
+trigger steps in both main-only traces at 75% / five votes:
+
+```bash
+python3 scripts/rho_homing_replay.py \
+  tuning-recordings/rho-main-only-20260914/*-result.json
+```
+
+On the recorded prefixes, 55–70% did not produce a precision trigger before
+the original stop. They might trigger later; the recordings end at the
+75% event, so replay cannot judge the remaining 1 mm safety budget. The
+80–85% five-vote candidates triggered no later than 75%, but a higher
+threshold could increase false contacts on rail-load changes. Nine or 13
+votes often needed samples beyond the second recording's stop. Keep 75% /
+five votes for the next physically checked repeat; do not promote any replay
+candidate directly to production.
+
 ## Decision
 
 Use polled `SG_RESULT` as the primary RHO contact signal. The TMC2209 does not

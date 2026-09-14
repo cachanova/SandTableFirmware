@@ -13,6 +13,7 @@ from rho_homing_tuner import (  # noqa: E402
     require_expected_motors,
     validate_trial,
 )
+from rho_homing_replay import replay_phase  # noqa: E402
 
 
 def snapshot(cycle: int, total: int, first: int) -> dict:
@@ -111,6 +112,23 @@ class HomingTraceCollectorTest(unittest.TestCase):
         require_expected_motors((1,), "main")
         with self.assertRaisesRegex(RuntimeError, "do not match"):
             require_expected_motors((1, 2), "main")
+
+    def test_detector_replay_rejects_phase_ripple_then_accepts_collapse(self) -> None:
+        values = [200] * 48 + [125, 200] * 4 + [125]
+        samples = [{"t": index * 10, "s": index * 8, "g": value, "v": True}
+                   for index, value in enumerate(values)]
+        self.assertIsNone(replay_phase(
+            samples, ratio=0.75, votes=5, minimum_steps=0,
+            steps_per_second=800,
+        ))
+        samples.extend(
+            {"t": index * 10, "s": index * 8, "g": 50, "v": True}
+            for index in range(len(samples), len(samples) + 9)
+        )
+        self.assertIsNotNone(replay_phase(
+            samples, ratio=0.75, votes=5, minimum_steps=0,
+            steps_per_second=800,
+        ))
 
 
 if __name__ == "__main__":
