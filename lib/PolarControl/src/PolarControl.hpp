@@ -45,9 +45,9 @@ struct MotionSettings {
   float rMaxVelocity = 4.25f;   // mm/s
   float rMaxAccel = 20.0f;      // mm/s²
   float rMaxJerk = 100.0f;      // mm/s³
-  // Operator-selected loaded theta profile (2026-09-07). Commissioning builds
-  // override this with their quiet-first boot envelope.
-  float tMaxVelocity = 0.48f;   // rad/s
+  // Operator-selected provisional quiet theta profile (2026-09-13).
+  // Commissioning builds override this with their quiet-first boot envelope.
+  float tMaxVelocity = 0.225f;  // rad/s
   float tMaxAccel = 2.0f;       // rad/s²
   float tMaxJerk = 10.0f;       // rad/s³
 };
@@ -185,7 +185,8 @@ public:
   // The caller must require explicit operator confirmation first.
   bool setCurrentPositionAsHome();
   HomingStatus getHomingStatus() const;
-  size_t getHomingTrace(HomingTraceSample* output, size_t capacity) const;
+  size_t getHomingTrace(HomingTraceSample* output, size_t capacity,
+                        size_t* total = nullptr) const;
   DriverAvailability getDriverAvailability() const;
 #if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
   // Test/commissioning convenience wrapper around setCurrentPositionAsHome().
@@ -422,6 +423,7 @@ private:
     uint32_t elapsedMs = 0;
     uint32_t steps = 0;
     uint16_t peakStallGuard = 0;
+    uint8_t healthySecondHalfSamples = 0;
   };
   bool rampRhoStepRate(int8_t direction, uint32_t targetStepsPerSecond,
                        uint32_t maxSteps, uint32_t rampMs);

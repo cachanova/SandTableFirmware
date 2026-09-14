@@ -45,6 +45,48 @@ TRANSIENT_DRIVER_SETTINGS = {
 }
 
 
+class HomingTraceCollector:
+    """Collect the bounded firmware ring without silently losing early phases."""
+
+    def __init__(self) -> None:
+        self.cycle: int | None = None
+        self.samples: list[dict[str, Any]] = []
+
+    def add(self, snapshot: dict[str, Any]) -> None:
+        if "total" not in snapshot:
+            raise RuntimeError("Firmware trace lacks a total sample index")
+        cycle = int(snapshot["cycle"])
+        total = int(snapshot["total"])
+        window = snapshot["samples"]
+        if not isinstance(window, list) or int(snapshot["count"]) != len(window):
+            raise RuntimeError("Malformed homing trace window")
+        if total < len(window):
+            raise RuntimeError("Homing trace count exceeds its total")
+        if self.cycle is None:
+            self.cycle = cycle
+        elif cycle != self.cycle:
+            raise RuntimeError("Homing cycle changed during trace capture")
+
+        first_index = total - len(window)
+        if first_index > len(self.samples):
+            raise RuntimeError(
+                f"Homing trace lost samples {len(self.samples)}..{first_index - 1}"
+            )
+        if total < len(self.samples):
+            raise RuntimeError("Homing trace total moved backwards")
+        self.samples.extend(window[len(self.samples) - first_index:])
+        if len(self.samples) != total:
+            raise RuntimeError("Homing trace window did not join continuously")
+
+    def result(self) -> dict[str, Any]:
+        return {
+            "cycle": self.cycle,
+            "count": len(self.samples),
+            "total": len(self.samples),
+            "samples": self.samples,
+        }
+
+
 def persistent_driver_settings(driver: dict[str, Any]) -> dict[str, Any]:
     """Return settings that homing must preserve across enable/disable changes."""
     return {
@@ -224,12 +266,39 @@ def validate_trial(
         ) / steps_per_mm
         if step_error_mm > MAX_OVERRUN_MM + 0.05:
             failures.append(f"{name}: trigger was more than 1 mm from expected contact")
+    for axis in TRACE_AXES.values():
+        coarse = reports.get(f"{axis}-coarse", {})
+        precision = reports.get(f"{axis}-precision", {})
+        if coarse.get("valid") and precision.get("valid"):
+            combined_overrun = (
+                float(coarse["overrunMm"]) + float(precision["overrunMm"])
+            )
+            if combined_overrun > MAX_OVERRUN_MM + 0.05:
+                failures.append(
+                    f"{axis}: two approaches consumed {combined_overrun:.3f} mm "
+                    "beyond the shared 1 mm allowance"
+                )
+            combined_error_mm = (
+                int(coarse["terminalSteps"]) - int(coarse["expectedContactSteps"])
+                + int(precision["terminalSteps"])
+                - int(precision["expectedContactSteps"])
+            ) / steps_per_mm
+            if abs(combined_error_mm) > MAX_OVERRUN_MM + 0.05:
+                failures.append(
+                    f"{axis}: combined return ended {combined_error_mm:+.3f} mm "
+                    "from the confirmed zero"
+                )
     return failures
 
 
 def run(args: argparse.Namespace) -> int:
     board = Board(args.board)
     telemetry = board.get("/api/motion/telemetry")
+    trace_probe = board.get("/api/tuning/homing/trace")
+    if "total" not in trace_probe:
+        raise RuntimeError(
+            "The installed firmware cannot prove complete homing trace capture"
+        )
     separate_known_positions = (
         args.rho_start_mm is not None or args.companion_start_mm is not None
     )
@@ -287,6 +356,15 @@ def run(args: argparse.Namespace) -> int:
     drivers_before = {
         role: board.get(path) for role, path in DRIVER_PATHS.items()
     }
+    for role, driver in drivers_before.items():
+        if not driver.get("connected") or not driver.get("uartResponseValid"):
+            raise RuntimeError(f"{role}: driver UART preflight failed")
+        status = driver.get("status", {})
+        if any(status.get(fault, False) for fault in (
+            "overTempWarning", "overTempShutdown", "shortToGroundA",
+            "shortToGroundB", "lowSideShortA", "lowSideShortB",
+        )):
+            raise RuntimeError(f"{role}: driver fault before homing")
 
     output_dir = Path(args.output_dir)
     if separate_known_positions:
@@ -303,18 +381,26 @@ def run(args: argparse.Namespace) -> int:
     recorder = TimestampedRecorder(audio_path, args.source, args.rate)
     mic_before = microphone_metadata(args.source)
     recorder.start()
-    assert recorder.audio_start_monotonic is not None
-    time.sleep(args.pre_idle)
-    request_start = time.monotonic()
-    if known_position_trial:
-        board.post("/api/tuning/home/known-positions", {
-            "rhoStartMm": rho_start_mm,
-            "companionStartMm": companion_start_mm,
-            "confirmKnownPositions": "true",
-        })
-    else:
-        board.post("/api/home")
-    request_stop = time.monotonic()
+    try:
+        if recorder.audio_start_monotonic is None:
+            raise RuntimeError("Microphone recorder did not start")
+        time.sleep(args.pre_idle)
+        request_start = time.monotonic()
+        if known_position_trial:
+            board.post("/api/tuning/home/known-positions", {
+                "rhoStartMm": rho_start_mm,
+                "companionStartMm": companion_start_mm,
+                "confirmKnownPositions": "true",
+            })
+        else:
+            board.post("/api/home")
+        request_stop = time.monotonic()
+    except BaseException:
+        try:
+            board.recovering_stop()
+        finally:
+            recorder.stop()
+        raise
     home_start_host = (request_start + request_stop) / 2.0
     terminal_status: dict[str, Any] | None = None
     full_travel_timeout = (
@@ -323,25 +409,31 @@ def run(args: argparse.Namespace) -> int:
         / homing_velocity_mm_s * 1.5 + 30.0
     )
     deadline = time.monotonic() + max(args.timeout, full_travel_timeout)
+    trace_collector = HomingTraceCollector()
     try:
         while time.monotonic() < deadline:
             status = board.get("/api/status")
+            trace_collector.add(board.get(
+                "/api/tuning/homing/trace", timeout_s=5.0
+            ))
             if status.get("state") in {"HOMING_REVIEW", "HOMING_FAILED"}:
                 terminal_status = status
                 break
-            time.sleep(0.05)
+            time.sleep(0.25)
         if terminal_status is None:
             board.recovering_stop()
             raise RuntimeError("Bounded homing timed out and was stopped")
         time.sleep(args.post_idle)
+        trace_collector.add(board.get(
+            "/api/tuning/homing/trace", timeout_s=5.0
+        ))
     except BaseException:
-        if terminal_status is None:
-            board.recovering_stop()
+        board.recovering_stop()
         raise
     finally:
         recorder.stop()
 
-    trace = board.get("/api/tuning/homing/trace", timeout_s=8.0)
+    trace = trace_collector.result()
     audio_times, audio_levels = frame_a_levels(audio_path)
     audio_home_start_s = home_start_host - recorder.audio_start_monotonic
     homing_steps_per_mm = float(
@@ -407,30 +499,33 @@ def run(args: argparse.Namespace) -> int:
         if pwm_scale is None or int(pwm_scale) >= 255:
             failures.append(f"{role}: invalid or saturated PWM_SCALE_SUM")
 
-    accepted = not failures
-    confirmed_status: dict[str, Any] | None = None
-    if terminal_status.get("state") == "HOMING_REVIEW":
-        try:
-            post_form(board, "/api/home/confirm", {"successful": accepted})
-            confirmed_status = board.get("/api/status")
-            expected_state = "IDLE" if accepted else "HOMING_FAILED"
-            if confirmed_status.get("state") != expected_state:
-                failures.append(
-                    f"confirmation ended in {confirmed_status.get('state')}, "
-                    f"expected {expected_state}"
-                )
-                accepted = False
-        except Exception as exc:
-            failures.append(f"homing confirmation failed: {exc}")
-            accepted = False
-
     mic_after = microphone_metadata(args.source)
     if mic_after != mic_before:
         failures.append("microphone source, gain, format, or mute state changed")
-        accepted = False
+
+    instrumented_pass = not failures
+    confirmed_status: dict[str, Any] | None = None
+    review_pending = (
+        terminal_status.get("state") == "HOMING_REVIEW" and instrumented_pass
+    )
+    if terminal_status.get("state") == "HOMING_REVIEW" and not review_pending:
+        try:
+            post_form(board, "/api/home/confirm", {"successful": False})
+            confirmed_status = board.get("/api/status")
+            if confirmed_status.get("state") != "HOMING_FAILED":
+                failures.append(
+                    f"confirmation ended in {confirmed_status.get('state')}, "
+                    "expected HOMING_FAILED"
+                )
+        except Exception as exc:
+            failures.append(f"homing confirmation failed: {exc}")
+    if failures:
+        review_pending = False
     payload = {
         "kind": "rho-homing-trial",
-        "accepted": accepted,
+        "accepted": False,
+        "instrumentedPass": instrumented_pass,
+        "awaitingPhysicalReview": review_pending,
         "failures": failures,
         "settings": {
             "triggerPercent": args.trigger_percent,
@@ -475,13 +570,15 @@ def run(args: argparse.Namespace) -> int:
     save_result(output_dir, payload)
     print(json.dumps({
         "result": str(result_path),
-        "accepted": accepted,
+        "accepted": False,
+        "instrumentedPass": instrumented_pass,
+        "awaitingPhysicalReview": review_pending,
         "failures": failures,
         "settings": payload["settings"],
         "traceCount": payload["traceCount"],
         "reports": reports,
     }, indent=2))
-    return 0 if accepted else 2
+    return 3 if review_pending else 2
 
 
 def main() -> int:

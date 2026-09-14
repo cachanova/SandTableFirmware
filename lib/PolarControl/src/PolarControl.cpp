@@ -5,6 +5,7 @@
 #include "Logger.hpp"
 #include "ErrorLog.hpp"
 #include "StallGuardDetector.hpp"
+#include "RhoHomingBounds.hpp"
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
@@ -18,10 +19,22 @@
 
 PolarControl::PolarControl() {
     // Initialize default driver settings
-    // Operator-selected loaded theta profile (2026-09-07).
+    // Operator-selected provisional quiet theta profile (2026-09-13).
     m_tDriverSettings.runCurrent = 700;
     m_tDriverSettings.holdCurrent = 200;
-    m_tDriverSettings.microsteps = 64;
+    m_tDriverSettings.microsteps = 16;
+    m_tDriverSettings.chopperOffTime = 5;
+    m_tDriverSettings.automaticCurrentScaling = false;
+    m_tDriverSettings.automaticGradientAdaptation = false;
+    m_tDriverSettings.pwmOffset = 76;
+    m_tDriverSettings.pwmGradient = 23;
+    // Preserve the measured complete register surface even while CoolStep is
+    // off, so a fallback boot matches the recorded 2026-09-11 trial.
+    m_tDriverSettings.coolStepLowerThreshold = 5;
+    m_tDriverSettings.coolStepUpperThreshold = 2;
+    m_tDriverSettings.coolStepCurrentIncrement = 1;
+    m_tDriverSettings.coolStepMeasurementCount = 1;
+    m_tDriverSettings.coolStepThreshold = 2000;
     // Loaded RHO reliability profile. The 150 mA acoustic candidate passed
     // steady travel but lost physical synchronization during the reversal
     // stress profile, so keep both run and standstill torque at 200 mA until
@@ -890,9 +903,10 @@ HomingStatus PolarControl::getHomingStatus() const {
 }
 
 size_t PolarControl::getHomingTrace(HomingTraceSample* output,
-                                    size_t capacity) const {
+                                    size_t capacity, size_t* totalOutput) const {
     if (output == nullptr || capacity == 0) return 0;
     const size_t total = m_homingTraceTotal.load(std::memory_order_acquire);
+    if (totalOutput != nullptr) *totalOutput = total;
     const size_t available = std::min(kHomingTraceCapacity, total);
     const size_t count = std::min(capacity, available);
     size_t source = total < kHomingTraceCapacity
@@ -1376,6 +1390,10 @@ PolarControl::HomingMove PolarControl::moveRhoBySteps(
         consecutiveUartErrors = 0;
         const uint16_t sample = static_cast<uint16_t>(registerValue & 0x03FF);
         result.peakStallGuard = std::max(result.peakStallGuard, sample);
+        if (m_planner.getRhoHomingStepCount() >= stepCount / 2U &&
+            sample >= 4U && result.healthySecondHalfSamples < UINT8_MAX) {
+            ++result.healthySecondHalfSamples;
+        }
         if (recoveryThreshold == 0 || sample > recoveryThreshold) {
             if (consecutiveRecovered < UINT8_MAX) ++consecutiveRecovered;
             if (consecutiveRecovered >= recoverySamples) {
@@ -1705,7 +1723,9 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
         std::lround(kVerificationToleranceMm * stepsPerMm));
     uint32_t maximumTravelSteps = static_cast<uint32_t>(
         std::lround(R_MAX * stepsPerMm));
+    uint32_t expectedContactSteps = 0;
     if (m_confirmedOriginBoundedHoming.load()) {
+        expectedContactSteps = runwaySteps;
         maximumTravelSteps = runwaySteps + toleranceSteps;
     }
 #ifdef SISYPHUS_RHO_COMMISSIONING
@@ -1720,6 +1740,8 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
             const int64_t boundedTravel =
                 static_cast<int64_t>(knownStartSteps) + runwaySteps +
                 toleranceSteps;
+            expectedContactSteps = static_cast<uint32_t>(
+                std::max<int64_t>(1, boundedTravel - toleranceSteps));
             maximumTravelSteps = static_cast<uint32_t>(
                 std::max<int64_t>(1, boundedTravel));
         }
@@ -1731,6 +1753,8 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
     const uint8_t coarseSamples = std::max<uint8_t>(
         5, static_cast<uint8_t>(m_homingSettings.consecutiveSamples / 3));
     uint32_t inactivePhaseRegister = 0;
+    uint32_t precisionMaximumSteps = backoffSteps + toleranceSteps;
+    uint32_t coarseContactSteps = 0;
 
     m_homingFailedAxis.store(companionAxis ? 2 : 1);
     xSemaphoreTake(m_mutex, portMAX_DELAY);
@@ -1795,6 +1819,16 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
                                  activeName);
         goto axis_cleanup;
     }
+    // A disconnected or jammed motor can consume the outward STEP budget
+    // without moving the carriage. Do not issue the inward command unless
+    // StallGuard showed sustained healthy load at cruising speed.
+    if (runway.healthySecondHalfSamples < 8U) {
+        m_homingFailure.store(4);
+        ErrorLog::instance().log("ERROR", "HOME", "RUNWAY_LOAD_INVALID",
+                                 "Outward motion lacked healthy SG_RESULT samples",
+                                 activeName);
+        goto axis_cleanup;
+    }
     vTaskDelay(pdMS_TO_TICKS(kSettleMs));
 
     {
@@ -1820,6 +1854,25 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
                                      "Coarse approach did not find a sustained stall",
                                      activeName);
             goto axis_cleanup;
+        }
+        if (expectedContactSteps > 0) {
+            const RhoBoundedReturn bound = rhoBoundedReturn(
+                expectedContactSteps, coarse.steps, backoffSteps,
+                toleranceSteps);
+            if (!bound.contactWithinWindow) {
+                m_homingFailure.store(4);
+                ErrorLog::instance().log("ERROR", "HOME",
+                                         "COARSE_OUTSIDE_KNOWN_WINDOW",
+                                         "Coarse trigger fell outside the confirmed-origin window",
+                                         activeName);
+                goto axis_cleanup;
+            }
+            precisionMaximumSteps = bound.precisionCapSteps;
+            coarseContactSteps = coarse.steps;
+            LOG("%s shared contact budget: coarse overrun=%lu steps, "
+                "precision cap=%lu steps\r\n", activeName,
+                static_cast<unsigned long>(bound.coarseOverrunSteps),
+                static_cast<unsigned long>(precisionMaximumSteps));
         }
         LOG("%s coarse home: steps=%lu baseline=%u trigger=%u\r\n",
             activeName, static_cast<unsigned long>(coarse.steps),
@@ -1847,7 +1900,7 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
             static_cast<uint64_t>(precisionRate) *
             m_homingSettings.minimumTravelMs / 1000U);
         HomingAttempt precision = approachHome(
-            activeAddress, precisionRate, backoffSteps + toleranceSteps,
+            activeAddress, precisionRate, precisionMaximumSteps,
             configuredMinimumSteps,
             m_homingSettings.consecutiveSamples, triggerRatio,
             homingSettings.microsteps);
@@ -1874,10 +1927,20 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
             configuredMinimumSteps,
             backoffSteps > toleranceSteps ? backoffSteps - toleranceSteps : 0);
         if (precision.steps < minimumReturnSteps ||
-            precision.steps > backoffSteps + toleranceSteps) {
+            precision.steps > precisionMaximumSteps) {
             m_homingFailure.store(4);
             ErrorLog::instance().log("ERROR", "HOME", "INCONSISTENT_RETURN",
                                      "Precision trigger fell outside the verification window",
+                                     activeName);
+            goto axis_cleanup;
+        }
+        if (expectedContactSteps > 0 && !rhoReturnWithinWindow(
+                expectedContactSteps, coarseContactSteps, backoffSteps,
+                precision.steps, toleranceSteps)) {
+            m_homingFailure.store(4);
+            ErrorLog::instance().log("ERROR", "HOME",
+                                     "FINAL_OUTSIDE_KNOWN_WINDOW",
+                                     "Combined return ended outside the confirmed-origin window",
                                      activeName);
             goto axis_cleanup;
         }

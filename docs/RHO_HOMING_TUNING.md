@@ -1,11 +1,21 @@
 # RHO sensorless-homing tuning playbook
 
-## Paused checkpoint (2026-09-10)
+## Current checkpoint (2026-09-13)
 
-RHO homing tuning is **on hold** while theta sound tuning and replacement
-RHO-driver work proceed. The implementation is a guarded experimental method,
-not a qualified production home. Do not enable automatic boot homing or treat
-the current detector values as final.
+The replacement drivers at RHO address 0 and RHO-CW address 1 now answer UART
+reads. The operator assembled the table, placed the RHO mechanisms at physical
+zero, and allowed bounded homing tests without camera verification. The
+experimental method still needs measured trials and physical qualification.
+Keep automatic boot homing off and treat the current detector values as a
+starting point.
+
+The regular image accepted Set as Home at rho 0 after we cleared a stale web
+motion flag. Installing the RHO commissioning image rebooted the ESP32 and
+cleared that logical zero. The operator then left the site and asked us to use
+the prior zero confirmation, microphone, and command bounds. Post-upload
+telemetry showed no STEP motion since boot. We accepted that zero as a
+provisional trial reference, then ran one guarded test. It failed on the CW
+outward runway; do not use the resulting logical zero for another trial.
 
 What is established:
 
@@ -37,19 +47,46 @@ What is not established:
   primary appeared not fully homed while RHO-CW was at home. There is no
   encoder evidence that distinguishes missed mechanical motion from physical
   disturbance.
-- The RHO-CW motor/driver hardware subsequently failed or was removed. The
-  latest normal-firmware preflight found neither RHO UART address, while theta
-  at address 2 remained healthy. Two-driver homing cannot be resumed until both
-  RHO addresses respond reliably and both mechanisms move under load.
-- No durable homing trace/result artifact was captured in
-  `tuning-recordings/`; therefore the numeric settings below are an
-  implementation checkpoint, not measured optima.
+- Both RHO UART addresses now respond, but UART presence does not prove that
+  either motor coil is connected or that the carriage moved. The RHO-CW driver
+  showed both open-load flags at standstill under StealthChop. The
+  [TMC2209 datasheet](https://www.analog.com/media/en/technical-documentation/data-sheets/tmc2209_datasheet_rev1.09.pdf)
+  says standstill flags alone cannot establish an open coil; verify CW motion
+  and inspect loaded-run diagnostics before trusting a trial.
+- The first assembled-table artifact captures a complete outward CW runway,
+  but no inward contact event. Its numeric settings are not measured optima.
 
-Resume only after installing healthy hardware, confirming addresses 0 and 1,
-manually placing both mechanisms at the same physical zero, and capturing a
-fresh known-position trace. Start the new search from the checkpoint below,
-but re-bracket current, speed, trigger ratio, and vote count rather than
-assuming the checkpoint is good.
+Begin with one confirmed-zero trial and capture a complete trace. Re-bracket
+current, speed, trigger ratio, and vote count from the measured SG separation.
+The host script now polls `/api/tuning/homing/trace` during motion and rejects
+any missing sample index; the firmware's 768-sample ring can otherwise
+overwrite the first motor's readings before the trial ends.
+
+### First assembled-table trial (2026-09-14 UTC)
+
+The 75% trigger, five-sample vote, and 600 ms minimum-travel trial used 153 mA
+actual homing current and a 6 mm/s commanded runway. The CW driver answered
+all 53 UART reads. Its outward STEP count reached the 8 mm runway, but 41 of
+53 `SG_RESULT` samples were 2, three were 0, seven were 6, and two were 18.
+Only four of 32 samples in the second half reached the firmware's minimum
+healthy-load value of 4; the guard requires eight. Firmware stopped before
+either inward approach or any main-RHO motion, returned `HOMING_FAILED`
+(`RUNWAY_LOAD_INV`, axis 2), and verified both rho power stages off.
+
+The local worktree artifact
+`tuning-recordings/rho-homing-20260913/20260914T030511Z-rho-home-p75-n5-result.json`
+contains all 53 samples and the Antlion recording. A-weighted median levels
+were −60.68 dBFS before motion, −62.36 dBFS during the CW runway, and
+−63.95 dBFS afterward. Brief onset and stop sounds do not establish that the
+CW carriage moved. The trial did not reach a contact event, so it cannot tune
+the trigger percentage or vote count.
+
+The CW mechanism may have stayed at zero, moved outward, or slipped. Low
+homing current, reversed motor direction, a jam, and an electrical connection
+fault remain plausible. The operator must inspect CW's physical position and
+re-establish both mechanisms at zero before another inward command. Verify
+positive STEP/DIR direction and loaded CW motion before changing SG
+thresholds. No camera was used for this trial. Keep automatic boot homing off.
 
 ## Decision
 
@@ -82,7 +119,7 @@ read back the exact prior settings.
 | Outward runway | 8 mm |
 | Coarse inward speed | 6 mm/s |
 | Verification backoff | 4 mm |
-| Precision inward speed | 1.5 mm/s |
+| Precision inward speed | 6 mm/s |
 | Trigger | 75% of adaptive normal-load `SG_RESULT` |
 | Precision vote count | 5 fresh full-step samples in a 9-sample window |
 | Coarse vote count | 5 fresh full-step samples in a 9-sample window |
@@ -105,12 +142,24 @@ Start only after manually placing both mechanisms at physical home and using
 the UI's explicit RHO Commissioning confirmation. In this mode each motor:
 
 1. Moves 8 mm outward to establish constant-velocity runway.
+   Before reversing, the firmware requires eight valid moving `SG_RESULT`
+   samples at or above 4 in the second half of that
+   runway. A motor that consumes STEP pulses without convincing load feedback
+   stops the trial outward of zero.
 2. Approaches inward with an absolute command cap of 9 mm.
 3. Stops on the filtered `SG_RESULT` drop or after at most 1 mm of commanded
    hard-stop overrun.
 4. Moves 4 mm outward and requires load recovery.
-5. Re-approaches at 1.5 mm/s and requires contact within 1 mm of the expected
+5. Re-approaches at 6 mm/s and requires contact within 1 mm of the expected
    four-millimetre return.
+
+The firmware subtracts any coarse-approach overrun from the precision-pass
+travel cap. Both inward approaches share one 1 mm allowance relative to the
+confirmed zero; the former fixed five-millimetre precision cap could spend a
+second millimetre after a late coarse trigger. It also requires the sum of
+both contact errors to end within 1 mm of the confirmed zero. Otherwise two
+early triggers could pass the individual checks and leave the mechanism 2 mm
+out. The host report checks both combined conditions too.
 
 The cap is valid only because commissioning began at a manually confirmed
 zero. Production boot homing begins at an unknown position and therefore
@@ -137,7 +186,8 @@ python3 scripts/rho_homing_tuner.py \
 ```
 
 The script records audio before starting motion, waits for `HOMING_REVIEW` or
-`HOMING_FAILED`, downloads `/api/tuning/homing/trace`, and computes for each
+`HOMING_FAILED`, collects `/api/tuning/homing/trace` throughout the run, and
+computes for each
 motor's coarse and precision approach:
 
 - normal-load median, minimum, and terminal `SG_RESULT`;
@@ -146,9 +196,11 @@ motor's coarse and precision approach:
 - distance error from expected contact;
 - A-weighted audio level at the terminal SG event versus the preceding sound.
 
-It confirms logical zero only when both motors and both approaches pass every
-hard check. Otherwise it rejects the review result, which disables the RHO
-stages.
+If the instrument checks pass, the script leaves the controller in
+`HOMING_REVIEW`. The operator must check the physical position before calling
+`/api/home/confirm` with `successful=true`. The script rejects a failed result,
+which disables both RHO stages. Microphone evidence and STEP bounds do not
+establish physical position after missed steps.
 
 ## Threshold search
 

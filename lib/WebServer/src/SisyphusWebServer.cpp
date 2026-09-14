@@ -1763,13 +1763,15 @@ void SisyphusWebServer::handleHomingTrace(
             "{\"success\":false,\"message\":\"Trace buffer allocation failed\"}");
         return;
     }
+    size_t total = 0;
     const size_t count = m_polarControl->getHomingTrace(
-        samples.get(), kTraceCapacity);
+        samples.get(), kTraceCapacity, &total);
     const HomingStatus status = m_polarControl->getHomingStatus();
     AsyncResponseStream *response = request->beginResponseStream(
         "application/json", 49152);
-    response->printf("{\"cycle\":%lu,\"count\":%u,\"samples\":[",
-        static_cast<unsigned long>(status.cycle), static_cast<unsigned>(count));
+    response->printf("{\"cycle\":%lu,\"count\":%u,\"total\":%lu,\"samples\":[",
+        static_cast<unsigned long>(status.cycle), static_cast<unsigned>(count),
+        static_cast<unsigned long>(total));
     for (size_t index = 0; index < count; ++index) {
         const HomingTraceSample& sample = samples[index];
         if (index != 0) response->print(',');

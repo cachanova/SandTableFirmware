@@ -21,13 +21,11 @@ the UI confirmation flow apply only to rho.
   operator could hear. Historical artifacts may contain Logitech fields; ignore
   them for every comparison and acceptance decision.
 
-The last operator-selected production candidate was 64 external microsteps, TMC2209
-interpolation to 256, StealthChop, CoolStep off, 700 mA run / 200 mA hold,
-0.48 rad/s velocity, 2 rad/s² acceleration, and 10 rad/s³ jerk. Re-run the
-procedure after mechanical, microphone, motor, driver, supply, or mounting
-changes rather than assuming those values still apply. The 2026-09-11 loaded
-retune below found a quieter 16-microstep driver profile, but it does not become
-the production selection until the operator listens to and chooses a tier.
+The operator selected a conservative provisional 0.225 rad/s profile on
+2026-09-13. It uses the 2026-09-11 loaded-retune 16-microstep driver settings
+below. The earlier human-approved 0.48 rad/s, 64-microstep profile remains a
+historical comparison, not the current fallback. Re-run the procedure after
+mechanical, microphone, motor, driver, supply, or mounting changes.
 
 ## Sources of truth
 
@@ -36,12 +34,13 @@ boot envelope:
 
 | Scope | Velocity / accel / jerk | Current | Purpose |
 |---|---|---|---|
-| Production fallback | 0.48 rad/s / 2 rad/s² / 10 rad/s³ | 700 mA run / 200 mA hold | Used when no valid saved tuning exists |
+| Production fallback | 0.225 rad/s / 2 rad/s² / 10 rad/s³ | 700 mA run / 200 mA hold | Provisional selection when no valid saved tuning exists |
 | LittleFS tuning store | Query with `GET /api/tuning` | Query with `GET /api/tuning` | Runtime/production authority when persistence is available |
 | Theta commissioning after reboot | 0.05 rad/s / 0.10 rad/s² / 0.50 rad/s³ | 250 mA run / 100 mA hold | Deliberately safe start; a trial applies its requested values |
 
-The production fallback and commissioning boot envelope use 64 external
-microsteps, StealthChop, and CoolStep off. The
+The production fallback uses 16 external microsteps and the manual StealthChop
+PWM settings in the loaded-retune result below. The commissioning boot envelope
+uses its separate conservative settings. The
 production fallback lives in `MotionSettings` plus the `PolarControl`
 constructor. The commissioning override lives in `PolarControl::begin()` and
 uses the current constants in `Config.h`. A tuning trial posts and persists its
@@ -205,12 +204,14 @@ dB SPL. If the Antlion moves or its gain changes, discard the profile numbers
 and recalibrate all three in the same fixed-mic session.
 
 The operator selected **Baseline** as the production default on 2026-09-07
-after a live rotation-and-stress listening pass. Firmware fallback defaults and
-the board tuning store use 0.48 rad/s, 2 rad/s², 10 rad/s³, 64 microsteps,
-700 mA run, and 200 mA hold. Commissioning firmware still forces its safe
-250 mA / 0.05 rad/s envelope after every reboot. Keep the -3 dB and -6 dB
-profiles available as measured alternatives; after mechanical changes, retune
-rather than assuming any old profile remains optimal.
+after a live rotation-and-stress listening pass. On 2026-09-13 the operator
+instead selected 0.225 rad/s provisionally. The source fallback now uses that
+velocity with 2 rad/s² acceleration, 10 rad/s³ jerk, 16 microsteps, 700 mA
+run, and 200 mA hold. Query `/api/tuning` for the board's persisted settings;
+the older 0.48 rad/s record does not establish its current contents.
+Commissioning firmware still forces its safe 250 mA / 0.05 rad/s envelope
+after every reboot. After mechanical changes, retune rather than assuming
+either profile remains optimal.
 
 The final human-listening artifact is
 `20260907T050228Z-theta-profile-baseline-human-listen-64u-700ma-v0.48-a2-j10-result.json`.

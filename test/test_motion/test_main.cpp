@@ -15,6 +15,7 @@
 #include "profile_validator.hpp"
 #include "RhoAcousticProfile.hpp"
 #include "StallGuardDetector.hpp"
+#include "RhoHomingBounds.hpp"
 
 // Directly include implementations for native build to resolve linker errors
 // This mimics a unity build
@@ -552,6 +553,42 @@ bool testBoundedRhoHomingPulses() {
               << ": bounded=" << boundedCount
               << ", stopped-at=" << countBeforeStop << std::endl;
     return passed;
+}
+
+bool testRhoSharedOverrunBudget() {
+    std::cout << "\n=== Test: Rho Shared Homing Overrun Budget ===" << std::endl;
+    constexpr uint32_t expected = 3200;  // 8 mm at 400 steps/mm
+    constexpr uint32_t backoff = 1600;
+    constexpr uint32_t tolerance = 400;
+    for (uint32_t coarse : {2800U, 3200U, 3400U, 3600U}) {
+        const RhoBoundedReturn bound = rhoBoundedReturn(
+            expected, coarse, backoff, tolerance);
+        const int64_t finalOffset = static_cast<int64_t>(expected) - coarse +
+            backoff - bound.precisionCapSteps;
+        if (!bound.contactWithinWindow || finalOffset < -400) {
+            std::cout << "FAIL: coarse=" << coarse << ", final="
+                      << finalOffset << std::endl;
+            return false;
+        }
+    }
+    if (rhoBoundedReturn(expected, 2799, backoff, tolerance)
+            .contactWithinWindow ||
+        rhoBoundedReturn(expected, 3601, backoff, tolerance)
+            .contactWithinWindow ||
+        rhoBoundedReturn(expected, 3600, backoff, tolerance)
+            .precisionCapSteps != backoff) {
+        std::cout << "FAIL: contact window or second-pass cap" << std::endl;
+        return false;
+    }
+    if (!rhoReturnWithinWindow(expected, 3200, backoff, 1600, tolerance) ||
+        rhoReturnWithinWindow(expected, 2800, backoff, 1200, tolerance) ||
+        !rhoReturnWithinWindow(expected, 3000, backoff, 1500, tolerance)) {
+        std::cout << "FAIL: combined return window" << std::endl;
+        return false;
+    }
+    std::cout << "PASS: both approaches share one 1 mm contact budget"
+              << std::endl;
+    return true;
 }
 
 // ============================================================================
@@ -1176,6 +1213,7 @@ int main(int argc, char* argv[]) {
     allPassed &= testInvalidMotionInputs();
     allPassed &= testGracefulStopAfterFullGeneration();
     allPassed &= testBoundedRhoHomingPulses();
+    allPassed &= testRhoSharedOverrunBudget();
     allPassed &= testSCurveBasic();
     allPassed &= testDecelDistance();
     allPassed &= testMaxEntryVel();
