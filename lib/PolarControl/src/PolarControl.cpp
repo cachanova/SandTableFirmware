@@ -657,10 +657,11 @@ bool PolarControl::home(bool confirmedOriginBounded) {
     }
 #endif
     if (!m_rhoDriverConnected.load() ||
-        !m_rhoCompanionDriverConnected.load()) {
-        LOG("Cannot home: both rho drivers must be connected\r\n");
+        (Config::kRhoCompanionMotorEnabled &&
+         !m_rhoCompanionDriverConnected.load())) {
+        LOG("Cannot home: a configured rho motor driver is offline\r\n");
         ErrorLog::instance().log("WARN", "HOME", "DRIVER_OFFLINE",
-                                 "Both rho drivers are required for homing");
+                                 "A configured rho motor driver is offline");
         return false;
     }
     xSemaphoreTake(m_mutex, portMAX_DELAY);
@@ -1755,44 +1756,52 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
     uint32_t inactivePhaseRegister = 0;
     uint32_t precisionMaximumSteps = backoffSteps + toleranceSteps;
     uint32_t coarseContactSteps = 0;
+    const bool holdInactiveMotor =
+        companionAxis || Config::kRhoCompanionMotorEnabled;
 
     m_homingFailedAxis.store(companionAxis ? 2 : 1);
     xSemaphoreTake(m_mutex, portMAX_DELAY);
-    const bool phaseRead = m_state.load() == HOMING &&
-        readTmcRegisterChecked(inactiveAddress, 0x6A,
-                               inactivePhaseRegister);
+    const bool inactiveReady = m_state.load() == HOMING &&
+        (holdInactiveMotor
+            ? readTmcRegisterChecked(inactiveAddress, 0x6A,
+                                     inactivePhaseRegister)
+            : disableDriverMotion(inactiveDriver, inactiveAddress,
+                                  homingSettings));
     bool holdStarted = false;
     bool motorsEnabled = false;
-    if (phaseRead) {
+    if (inactiveReady) {
         activeDriver.moveUsingStepDirInterface();
-        holdStarted = startInactiveRhoHoldLocked(
+        holdStarted = !holdInactiveMotor || startInactiveRhoHoldLocked(
             inactiveAddress,
             static_cast<uint16_t>(inactivePhaseRegister & 0x03FFU));
         motorsEnabled = holdStarted &&
-            setDriverEnabled(inactiveDriver, inactiveAddress,
-                             homingSettings, true) &&
+            (!holdInactiveMotor || setDriverEnabled(
+                inactiveDriver, inactiveAddress, homingSettings, true)) &&
             setDriverEnabled(activeDriver, activeAddress,
                              homingSettings, true);
     }
     uint32_t activeChopconf = 0;
     uint32_t inactiveChopconf = 0;
-    const bool enablesVerified = phaseRead && holdStarted && motorsEnabled &&
+    const bool enablesVerified = inactiveReady && holdStarted && motorsEnabled &&
         readTmcRegisterChecked(activeAddress, 0x6C, activeChopconf) &&
         readTmcRegisterChecked(inactiveAddress, 0x6C, inactiveChopconf) &&
         (activeChopconf & 0x0FU) != 0 &&
-        (inactiveChopconf & 0x0FU) != 0 &&
+        ((inactiveChopconf & 0x0FU) != 0) == holdInactiveMotor &&
         (activeChopconf & 0x0F000000UL) ==
             (static_cast<uint32_t>(
                 microstepsToMres(homingSettings.microsteps)) << 24) &&
-        (inactiveChopconf & 0x0F000000UL) == 0;
+        (!holdInactiveMotor ||
+         (inactiveChopconf & 0x0F000000UL) == 0);
     if (!enablesVerified) {
         clearInactiveRhoHoldLocked();
         writeTmcRegisterAcknowledged(inactiveAddress, 0x22, 0U);
         setDriverEnabled(activeDriver, activeAddress, homingSettings, false);
         setDriverEnabled(inactiveDriver, inactiveAddress,
                          homingSettings, false);
-        setDriverMicrostepsChecked(
-            inactiveAddress, homingSettings.microsteps);
+        if (holdInactiveMotor) {
+            setDriverMicrostepsChecked(
+                inactiveAddress, homingSettings.microsteps);
+        }
     }
     xSemaphoreGive(m_mutex);
     if (!enablesVerified) {
@@ -1803,8 +1812,13 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
         return false;
     }
 
-    LOG("Homing %s by STEP/DIR with %s held in u256 VACTUAL mode\r\n",
-        activeName, inactiveName);
+    if (holdInactiveMotor) {
+        LOG("Homing %s by STEP/DIR with %s held in u256 VACTUAL mode\r\n",
+            activeName, inactiveName);
+    } else {
+        LOG("Homing %s by STEP/DIR with %s bridge disabled\r\n",
+            activeName, inactiveName);
+    }
     vTaskDelay(pdMS_TO_TICKS(kSettleMs));
 
     bool axisSuccess = false;
@@ -1958,7 +1972,17 @@ axis_cleanup:
     m_planner.stopRhoHoming();
     setDriverEnabled(activeDriver, activeAddress, homingSettings, false);
     clearInactiveRhoHoldLocked();
+    const bool inactiveStillDisabled = holdInactiveMotor ||
+        disableDriverMotion(inactiveDriver, inactiveAddress, homingSettings);
     xSemaphoreGive(m_mutex);
+    if (!inactiveStillDisabled) {
+        m_homingFailure.store(9);
+        ErrorLog::instance().log("ERROR", "HOME", "INACTIVE_DISABLE_FAILED",
+                                 "Could not verify unused rho bridge disabled",
+                                 inactiveName);
+        return false;
+    }
+    if (!holdInactiveMotor) return axisSuccess;
     if (!restoreHeldDriverPhase(
             inactiveDriver, inactiveAddress,
             static_cast<uint16_t>(inactivePhaseRegister & 0x03FFU),
@@ -1974,7 +1998,8 @@ axis_cleanup:
 }
 
 bool PolarControl::homeDrivers() {
-    LOG("Preparing sequential STEP/DIR sensorless homing\r\n");
+    LOG("Preparing %s STEP/DIR sensorless homing\r\n",
+        Config::kRhoCompanionMotorEnabled ? "paired" : "main-only");
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     uint32_t rhoIo = 0;
     uint32_t companionIo = 0;
@@ -2040,25 +2065,28 @@ bool PolarControl::homeDrivers() {
         xSemaphoreTake(m_mutex, portMAX_DELAY);
         m_planner.stopRhoHoming();
         // Keep both power stages off while restoring configuration. A failed
-        // homing attempt stays de-energized; only a fully verified two-axis
-        // result may re-enable the pair.
+        // attempt stays de-energized; success re-enables only fitted motors.
         const bool initiallyDisabled = disableRhoDriversLocked();
         if (!initiallyDisabled) {
             xSemaphoreGive(m_mutex);
             return false;
         }
         m_rDriver.moveUsingStepDirInterface();
-        m_rCDriver.moveUsingStepDirInterface();
+        if (Config::kRhoCompanionMotorEnabled) {
+            m_rCDriver.moveUsingStepDirInterface();
+        }
         const bool primaryApplied = applyDriverSettings(
             m_rDriver, normalSettings, R_ADDR, "rho");
-        const bool companionApplied = applyDriverSettings(
-            m_rCDriver, normalSettings, RC_ADDR, "rho-companion");
+        const bool companionApplied = !Config::kRhoCompanionMotorEnabled ||
+            applyDriverSettings(m_rCDriver, normalSettings, RC_ADDR,
+                                "rho-companion");
         bool stateVerified = primaryApplied && companionApplied;
         if (stateVerified && enableDrivers) {
             const bool primaryEnabled = setDriverEnabled(
                 m_rDriver, R_ADDR, normalSettings, true);
-            const bool companionEnabled = setDriverEnabled(
-                m_rCDriver, RC_ADDR, normalSettings, true);
+            const bool companionEnabled = Config::kRhoCompanionMotorEnabled
+                ? setDriverEnabled(m_rCDriver, RC_ADDR, normalSettings, true)
+                : disableDriverMotion(m_rCDriver, RC_ADDR, normalSettings);
 
             uint32_t primaryChopconf = 0;
             uint32_t companionChopconf = 0;
@@ -2066,7 +2094,8 @@ bool PolarControl::homeDrivers() {
                 readTmcRegisterChecked(R_ADDR, 0x6C, primaryChopconf) &&
                 readTmcRegisterChecked(RC_ADDR, 0x6C, companionChopconf) &&
                 (primaryChopconf & 0x0FU) != 0 &&
-                (companionChopconf & 0x0FU) != 0;
+                (((companionChopconf & 0x0FU) != 0) ==
+                 Config::kRhoCompanionMotorEnabled);
         }
 
         if (!stateVerified || !enableDrivers) {
@@ -2080,10 +2109,14 @@ bool PolarControl::homeDrivers() {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     const bool homingConfigApplied = disableRhoDriversLocked() &&
         applyDriverSettings(m_rDriver, homingSettings, R_ADDR, "rho") &&
-        applyDriverSettings(m_rCDriver, homingSettings, RC_ADDR,
-                            "rho-companion") &&
+        (Config::kRhoCompanionMotorEnabled
+            ? applyDriverSettings(m_rCDriver, homingSettings, RC_ADDR,
+                                  "rho-companion")
+            : disableDriverMotion(m_rCDriver, RC_ADDR, normalSettings)) &&
         setDriverEnabled(m_rDriver, R_ADDR, homingSettings, false) &&
-        setDriverEnabled(m_rCDriver, RC_ADDR, homingSettings, false);
+        setDriverEnabled(m_rCDriver, RC_ADDR,
+                         Config::kRhoCompanionMotorEnabled
+                             ? homingSettings : normalSettings, false);
     xSemaphoreGive(m_mutex);
     if (!homingConfigApplied) {
         m_homingFailure.store(7);
@@ -2093,11 +2126,9 @@ bool PolarControl::homeDrivers() {
         return false;
     }
 
-    // Home the mechanically stable counterweight side first. The inactive
-    // motor must be unpowered so the shared STEP/DIR pulses only move the
-    // selected side; placing the more back-drive-prone primary RHO last means
-    // it cannot be displaced again by the companion's homing interval.
-    const bool companionHomed = homeAxis(
+    // With a fitted counterweight motor, home it first. With an empty socket,
+    // keep its bridge off and home only the main motor.
+    const bool companionHomed = !Config::kRhoCompanionMotorEnabled || homeAxis(
         m_rCDriver, RC_ADDR, "rho-companion", m_rDriver, R_ADDR,
         "rho", true, homingSettings);
     const bool primaryHomed = companionHomed && m_state.load() == HOMING &&
@@ -3696,7 +3727,8 @@ bool PolarControl::testRhoContinuous() {
     return false;
 #endif
     if (m_state != IDLE || !m_rhoDriverConnected.load() ||
-        !m_rhoCompanionDriverConnected.load()) return false;
+        (Config::kRhoCompanionMotorEnabled &&
+         !m_rhoCompanionDriverConnected.load())) return false;
     LOG("Starting rho continuous test...\r\n");
     const PolarCord_t startPosition = getCurrentPosition();
     if (startPosition.rho < 0.0f ||
@@ -3718,7 +3750,8 @@ bool PolarControl::testRhoStress() {
     return false;
 #endif
     if (m_state != IDLE || !m_rhoDriverConnected.load() ||
-        !m_rhoCompanionDriverConnected.load()) return false;
+        (Config::kRhoCompanionMotorEnabled &&
+         !m_rhoCompanionDriverConnected.load())) return false;
     LOG("Starting rho stress test...\r\n");
     const PolarCord_t startPosition = getCurrentPosition();
     if (startPosition.rho < 0.0f ||
@@ -3740,7 +3773,9 @@ bool PolarControl::testRhoSegment(float targetRhoMm) {
     return false;
 #else
     if (m_state != IDLE || !m_rhoDriverConnected.load() ||
-        !m_rhoCompanionDriverConnected.load() || !std::isfinite(targetRhoMm) ||
+        (Config::kRhoCompanionMotorEnabled &&
+         !m_rhoCompanionDriverConnected.load()) ||
+        !std::isfinite(targetRhoMm) ||
         targetRhoMm < 0.0f || targetRhoMm > RhoAcousticProfile::kExcursionMm) {
         return false;
     }
@@ -3974,13 +4009,15 @@ void PolarControl::writeRhoCompanionDriverSettings(Print& out) {
         out.print("{\"error\":\"Driver diagnostics unavailable during homing\"}");
         return;
     }
-    if (!m_rhoCompanionDriverConnected.load()) {
+    if (Config::kRhoCompanionMotorEnabled &&
+        !m_rhoCompanionDriverConnected.load()) {
         writeDisconnectedDriver(out, "rhoCompanion");
         return;
     }
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     JsonDocument doc;
     fillDriverJson(m_rCDriver, RC_ADDR, "rhoCompanion", doc);
+    doc["motorConfigured"] = Config::kRhoCompanionMotorEnabled;
     serializeJson(doc, out);
     xSemaphoreGive(m_mutex);
 }

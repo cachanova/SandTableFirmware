@@ -45,6 +45,34 @@ TRANSIENT_DRIVER_SETTINGS = {
 }
 
 
+def configured_motor_axes(homing_profile: dict[str, Any]) -> tuple[int, ...]:
+    companion_enabled = homing_profile.get("companionMotorEnabled")
+    if not isinstance(companion_enabled, bool):
+        raise RuntimeError("Firmware does not report its configured RHO motors")
+    return (1, 2) if companion_enabled else (1,)
+
+
+def require_expected_motors(active_axes: tuple[int, ...], expected: str) -> None:
+    if (expected == "main" and active_axes != (1,)) or (
+        expected == "paired" and active_axes != (1, 2)
+    ):
+        raise RuntimeError(
+            f"Firmware configured axes {active_axes} do not match "
+            f"--expected-motors={expected}"
+        )
+
+
+def disabled_companion_verified(driver: dict[str, Any]) -> bool:
+    settings = driver.get("settings", {})
+    return (
+        driver.get("motorConfigured") is False
+        and driver.get("connected") is True
+        and driver.get("uartResponseValid") is True
+        and settings.get("softwareEnabled") is False
+        and settings.get("chopperOffTime") == 0
+    )
+
+
 class HomingTraceCollector:
     """Collect the bounded firmware ring without silently losing early phases."""
 
@@ -98,7 +126,7 @@ def persistent_driver_settings(driver: dict[str, Any]) -> dict[str, Any]:
 def move_to_known_start(
     board: Board, target_mm: float, velocity_mm_s: float,
 ) -> dict[str, Any]:
-    """Move both RHO mechanisms outward and verify the logical start ledger."""
+    """Move configured RHO mechanisms outward and verify the logical ledger."""
     board.post("/api/tuning/test/rho/segment", {"targetMm": target_mm})
     deadline = time.monotonic() + target_mm / max(velocity_mm_s, 0.1) * 1.5 + 20.0
     motion_seen = False
@@ -335,6 +363,13 @@ def run(args: argparse.Namespace) -> int:
     })
     tuning = board.get("/api/tuning")
     homing_profile = tuning.get("homing", {})
+    active_axes = configured_motor_axes(homing_profile)
+    require_expected_motors(active_axes, args.expected_motors)
+    companion_enabled = 2 in active_axes
+    if not companion_enabled:
+        if args.companion_start_mm not in (None, 0.0):
+            raise RuntimeError("CW is disabled; its known position must be zero")
+        companion_start_mm = 0.0
     runway_mm = float(homing_profile.get("runwayMm", RUNWAY_MM))
     backoff_mm = float(
         homing_profile.get("verificationBackoffMm", BACKOFF_MM)
@@ -342,6 +377,22 @@ def run(args: argparse.Namespace) -> int:
     homing_velocity_mm_s = float(
         homing_profile.get("velocityMmS", 6.0)
     )
+    drivers_before = {
+        role: board.get(path) for role, path in DRIVER_PATHS.items()
+    }
+    for role, driver in drivers_before.items():
+        if not driver.get("connected") or not driver.get("uartResponseValid"):
+            raise RuntimeError(f"{role}: driver UART preflight failed")
+        if role == "rho-companion" and not companion_enabled and not (
+            disabled_companion_verified(driver)
+        ):
+            raise RuntimeError("CW bridge is not verified disabled")
+        status = driver.get("status", {})
+        if any(status.get(fault, False) for fault in (
+            "overTempWarning", "overTempShutdown", "shortToGroundA",
+            "shortToGroundB", "lowSideShortA", "lowSideShortB",
+        )):
+            raise RuntimeError(f"{role}: driver fault before homing")
     if (
         known_position_trial and not separate_known_positions
         and abs(initial_position_mm) <= 0.05
@@ -353,18 +404,11 @@ def run(args: argparse.Namespace) -> int:
             move_to_known_start(board, rho_start_mm, velocity_mm_s)
         finally:
             board.post("/api/speed", {"speed": original_speed})
-    drivers_before = {
-        role: board.get(path) for role, path in DRIVER_PATHS.items()
-    }
-    for role, driver in drivers_before.items():
-        if not driver.get("connected") or not driver.get("uartResponseValid"):
-            raise RuntimeError(f"{role}: driver UART preflight failed")
-        status = driver.get("status", {})
-        if any(status.get(fault, False) for fault in (
-            "overTempWarning", "overTempShutdown", "shortToGroundA",
-            "shortToGroundB", "lowSideShortA", "lowSideShortB",
-        )):
-            raise RuntimeError(f"{role}: driver fault before homing")
+        if not companion_enabled and not disabled_companion_verified(
+            board.get(DRIVER_PATHS["rho-companion"])
+        ):
+            board.recovering_stop()
+            raise RuntimeError("CW bridge changed state during known-start move")
 
     output_dir = Path(args.output_dir)
     if separate_known_positions:
@@ -404,8 +448,9 @@ def run(args: argparse.Namespace) -> int:
     home_start_host = (request_start + request_stop) / 2.0
     terminal_status: dict[str, Any] | None = None
     full_travel_timeout = (
-        (max(0.0, rho_start_mm) + max(0.0, companion_start_mm)
-         + 2.0 * runway_mm)
+        (max(0.0, rho_start_mm) +
+         (max(0.0, companion_start_mm) if companion_enabled else 0.0) +
+         len(active_axes) * runway_mm)
         / homing_velocity_mm_s * 1.5 + 30.0
     )
     deadline = time.monotonic() + max(args.timeout, full_travel_timeout)
@@ -444,7 +489,7 @@ def run(args: argparse.Namespace) -> int:
     if homing_steps_per_mm <= 0.0:
         homing_steps_per_mm = DEFAULT_HOMING_STEPS_PER_MM
     reports: dict[str, dict[str, Any]] = {}
-    for axis in (1, 2):
+    for axis in active_axes:
         axis_start_mm = rho_start_mm if axis == 1 else companion_start_mm
         for phase, expected_mm in (
             (2, axis_start_mm + runway_mm), (4, backoff_mm)
@@ -465,6 +510,10 @@ def run(args: argparse.Namespace) -> int:
                 )
 
     failures = validate_trial(reports, homing_steps_per_mm)
+    if not companion_enabled and any(
+        int(sample["a"]) == 2 for sample in trace.get("samples", [])
+    ):
+        failures.append("Disabled CW produced homing trace samples")
     if terminal_status.get("state") != "HOMING_REVIEW":
         failures.append(
             f"firmware ended in {terminal_status.get('state')} with "
@@ -481,6 +530,10 @@ def run(args: argparse.Namespace) -> int:
         ):
             failures.append(f"{role}: acoustic driver settings did not restore exactly")
         settings_after = drivers_after[role].get("settings", {})
+        if role == "rho-companion" and not companion_enabled:
+            if not disabled_companion_verified(drivers_after[role]):
+                failures.append("rho-companion: disabled bridge changed state")
+            continue
         if terminal_status.get("state") == "HOMING_REVIEW":
             if not settings_after.get("softwareEnabled", False):
                 failures.append(f"{role}: driver was not enabled after successful homing")
@@ -543,6 +596,8 @@ def run(args: argparse.Namespace) -> int:
             "inactiveHoldStrategy": homing_profile.get(
                 "inactiveHoldStrategy", "unknown"
             ),
+            "companionMotorEnabled": companion_enabled,
+            "activeMotors": [TRACE_AXES[axis] for axis in active_axes],
             "knownRhoStartMm": rho_start_mm,
             "knownCompanionStartMm": companion_start_mm,
             "maximumCommissioningOverrunMm": MAX_OVERRUN_MM,
@@ -608,6 +663,10 @@ def main() -> int:
     parser.add_argument("--pre-idle", type=float, default=2.0)
     parser.add_argument("--post-idle", type=float, default=2.0)
     parser.add_argument("--timeout", type=float, default=45.0)
+    parser.add_argument(
+        "--expected-motors", choices=("main", "paired"), default="main",
+        help="refuse to start if firmware would home a different motor set",
+    )
     args = parser.parse_args()
     if not 40 <= args.trigger_percent <= 85:
         parser.error("--trigger-percent must be 40..85")

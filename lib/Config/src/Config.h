@@ -52,7 +52,9 @@ static constexpr uint8_t kUartTxPin = 26;
 static constexpr uint8_t kRhoDriverAddress = 0;
 static constexpr uint8_t kRhoCDriverAddress = 1;
 static constexpr uint8_t kThetaDriverAddress = 2;
-static constexpr bool kRhoCompanionMotorEnabled = true;
+// The address-1 driver is fitted, but its motor is not connected. Keep its
+// bridge off during all motion, including main-only sensorless homing.
+static constexpr bool kRhoCompanionMotorEnabled = false;
 
 // FYSETC TMC2209 V3.0 uses 0.11 ohm external sense resistors. UART operation
 // disables analog current scaling, so the onboard VREF potentiometer does not

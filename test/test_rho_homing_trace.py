@@ -6,7 +6,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from rho_homing_tuner import HomingTraceCollector, validate_trial  # noqa: E402
+from rho_homing_tuner import (  # noqa: E402
+    HomingTraceCollector,
+    configured_motor_axes,
+    disabled_companion_verified,
+    require_expected_motors,
+    validate_trial,
+)
 
 
 def snapshot(cycle: int, total: int, first: int) -> dict:
@@ -71,6 +77,40 @@ class HomingTraceCollectorTest(unittest.TestCase):
         }
         self.assertTrue(any("combined return" in failure for failure in
                             validate_trial(reports, 400.0)))
+
+    def test_main_only_report_does_not_require_cw_samples(self) -> None:
+        report = {
+            "valid": True, "uartValidFraction": 1.0,
+            "terminalToBaselineRatio": 0.2,
+            "terminalSteps": 3200, "expectedContactSteps": 3200,
+            "overrunMm": 0.0,
+        }
+        reports = {
+            "rho-coarse": report,
+            "rho-precision": {**report, "terminalSteps": 1600,
+                              "expectedContactSteps": 1600},
+        }
+        self.assertEqual(validate_trial(reports, 400.0), [])
+
+    def test_main_only_requires_cw_bridge_off(self) -> None:
+        self.assertEqual(configured_motor_axes({"companionMotorEnabled": False}),
+                         (1,))
+        self.assertEqual(configured_motor_axes({"companionMotorEnabled": True}),
+                         (1, 2))
+        with self.assertRaisesRegex(RuntimeError, "configured RHO motors"):
+            configured_motor_axes({})
+        driver = {
+            "connected": True, "uartResponseValid": True,
+            "motorConfigured": False,
+            "settings": {"softwareEnabled": False, "chopperOffTime": 0},
+        }
+        self.assertTrue(disabled_companion_verified(driver))
+        self.assertFalse(disabled_companion_verified({
+            **driver, "settings": {**driver["settings"], "chopperOffTime": 3}
+        }))
+        require_expected_motors((1,), "main")
+        with self.assertRaisesRegex(RuntimeError, "do not match"):
+            require_expected_motors((1, 2), "main")
 
 
 if __name__ == "__main__":

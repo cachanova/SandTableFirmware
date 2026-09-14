@@ -1,21 +1,22 @@
 # RHO sensorless-homing tuning playbook
 
-## Current checkpoint (2026-09-13)
+## Current checkpoint (2026-09-14 UTC)
 
-The replacement drivers at RHO address 0 and RHO-CW address 1 now answer UART
-reads. The operator assembled the table, placed the RHO mechanisms at physical
-zero, and allowed bounded homing tests without camera verification. The
-experimental method still needs measured trials and physical qualification.
-Keep automatic boot homing off and treat the current detector values as a
-starting point.
+The main RHO motor is connected at driver address 0. A driver answers UART at
+RHO-CW address 1, but **no CW motor is connected**. The operator confirmed main
+RHO remains physically homed after the first failed trial. The new main-only
+firmware config keeps the CW bridge at `TOFF=0` and homes only main RHO. It
+still needs a measured main-motor trial and physical qualification. Keep
+automatic boot homing off.
 
 The regular image accepted Set as Home at rho 0 after we cleared a stale web
 motion flag. Installing the RHO commissioning image rebooted the ESP32 and
 cleared that logical zero. The operator then left the site and asked us to use
 the prior zero confirmation, microphone, and command bounds. Post-upload
 telemetry showed no STEP motion since boot. We accepted that zero as a
-provisional trial reference, then ran one guarded test. It failed on the CW
-outward runway; do not use the resulting logical zero for another trial.
+provisional trial reference, then ran one guarded test. Firmware sent the
+first outward command to CW and stopped there. It sent no STEP pulses to
+main RHO. The operator then confirmed main RHO remains at zero.
 
 What is established:
 
@@ -24,48 +25,39 @@ What is established:
   the electrical sequencer, not physical carriage position.
 - Homing uses STEP/DIR, not UART velocity control. UART is used for driver
   configuration, per-driver selection, `SG_RESULT`, and phase handling.
-- Both RHO drivers share STEP/DIR. The active driver follows STEP/DIR while the
-  inactive driver remains energized at 256 microsteps in a phase-correcting
-  `VACTUAL=+/-1` hold. The inactive driver is restored to STEP/DIR and its saved
-  `MSCNT` phase after the active pass.
-- The counterweight pass runs first and the primary RHO pass runs last, so the
-  more back-drive-prone primary side is not disturbed by a later pass.
+- Both daughterboard drivers receive shared STEP/DIR. With no CW motor fitted,
+  firmware turns off its bridge and verifies `TOFF=0` before main RHO moves.
+  The former phase-correcting `VACTUAL=+/-1` hold applies only when both motors
+  are fitted.
 - Every approach is bounded, UART reads are CRC-checked, three consecutive
   UART failures abort, and normal driver settings are restored only after
   verified success.
-- The current daughterboard mapping is primary RHO address 0, RHO-CW address
-  1, and theta address 2. Both RHO `GCONF.SHAFT` settings are normal; direction
-  is set by the installed motor-lead polarity.
+- The daughterboard maps main RHO to address 0, CW to address 1, and theta to
+  address 2. Main RHO uses `GCONF.SHAFT=0` with its installed motor-lead
+  polarity.
 
 What is not established:
 
 - No candidate has completed the required ten cold/warm cycles with zero
   misses, false triggers, or physical desynchronization.
-- At least one RHO-CW pass visibly stopped short. One later trial was disturbed
-  by the operator, so it cannot be used as evidence either way.
-- Primary RHO and RHO-CW were observed out of sync after testing, and the
-  primary appeared not fully homed while RHO-CW was at home. There is no
-  encoder evidence that distinguishes missed mechanical motion from physical
-  disturbance.
-- Both RHO UART addresses now respond, but UART presence does not prove that
-  either motor coil is connected or that the carriage moved. The RHO-CW driver
-  showed both open-load flags at standstill under StealthChop. The
-  [TMC2209 datasheet](https://www.analog.com/media/en/technical-documentation/data-sheets/tmc2209_datasheet_rev1.09.pdf)
-  says standstill flags alone cannot establish an open coil; verify CW motion
-  and inspect loaded-run diagnostics before trusting a trial.
-- The first assembled-table artifact captures a complete outward CW runway,
-  but no inward contact event. Its numeric settings are not measured optima.
+- No main-RHO homing trial has produced a contact trace on the assembled table.
+- The first assembled-table artifact captures only address-1 driver data from
+  an unplugged motor. It cannot calibrate main RHO or CW contact thresholds.
+- STEP counts and the driver's electrical sequencer do not prove physical
+  movement. The main-only trial must still pass the SG and microphone checks,
+  then receive physical confirmation before production use.
 
-Begin with one confirmed-zero trial and capture a complete trace. Re-bracket
-current, speed, trigger ratio, and vote count from the measured SG separation.
+Begin with one confirmed-zero main-RHO trial and capture a complete trace.
+Re-bracket current, speed, trigger ratio, and vote count from its measured SG
+separation.
 The host script now polls `/api/tuning/homing/trace` during motion and rejects
 any missing sample index; the firmware's 768-sample ring can otherwise
-overwrite the first motor's readings before the trial ends.
+overwrite early runway readings before the trial ends.
 
 ### First assembled-table trial (2026-09-14 UTC)
 
 The 75% trigger, five-sample vote, and 600 ms minimum-travel trial used 153 mA
-actual homing current and a 6 mm/s commanded runway. The CW driver answered
+actual homing current and a 6 mm/s commanded runway. The empty CW driver answered
 all 53 UART reads. Its outward STEP count reached the 8 mm runway, but 41 of
 53 `SG_RESULT` samples were 2, three were 0, seven were 6, and two were 18.
 Only four of 32 samples in the second half reached the firmware's minimum
@@ -77,16 +69,14 @@ The local worktree artifact
 `tuning-recordings/rho-homing-20260913/20260914T030511Z-rho-home-p75-n5-result.json`
 contains all 53 samples and the Antlion recording. A-weighted median levels
 were −60.68 dBFS before motion, −62.36 dBFS during the CW runway, and
-−63.95 dBFS afterward. Brief onset and stop sounds do not establish that the
-CW carriage moved. The trial did not reach a contact event, so it cannot tune
-the trigger percentage or vote count.
+−63.95 dBFS afterward. Those sounds cannot represent powered CW travel
+because no motor was connected. The trial did not reach a contact event, so
+it cannot tune the trigger percentage or vote count.
 
-The CW mechanism may have stayed at zero, moved outward, or slipped. Low
-homing current, reversed motor direction, a jam, and an electrical connection
-fault remain plausible. The operator must inspect CW's physical position and
-re-establish both mechanisms at zero before another inward command. Verify
-positive STEP/DIR direction and loaded CW motion before changing SG
-thresholds. No camera was used for this trial. Keep automatic boot homing off.
+The operator later clarified that no CW motor was connected. The failed CW
+runway therefore says nothing about main-RHO load sensing. The main-only image
+must verify address 1 stays disabled before sending main RHO STEP pulses. No
+camera was used for this trial. Keep automatic boot homing off.
 
 ## Decision
 
@@ -105,9 +95,9 @@ must never trigger homing.
 
 ## Implemented provisional homing profile
 
-Normal acoustic settings must not change homing behavior. Both quiet RHO
-profiles therefore transition to one dedicated profile, home, then restore and
-read back the exact prior settings.
+Normal acoustic settings must not change homing behavior. The main motor uses
+one dedicated profile for homing, then firmware restores and reads back its
+normal settings. Firmware keeps the empty CW channel disabled throughout.
 
 | Control | Current implementation |
 |---|---:|
@@ -131,15 +121,15 @@ recommendations. A saved tuning record can override the three detector fields
 (`triggerPercent`, `consecutiveSamples`, and `minimumTravelMs`), so record the
 live `/api/tuning` response before every resumed trial.
 
-The two RHO motors are homed separately. Firmware keeps the inactive stage
-energized but decouples it from shared STEP/DIR through the slow `VACTUAL`
-phase-hold described above, then swaps roles. It records motor, phase, elapsed
-time, emitted steps, raw `SG_RESULT`, and UART validity for every sample.
+The current build homes main RHO only. It records phase, elapsed time, emitted
+steps, raw `SG_RESULT`, and UART validity for each sample. The host trial
+requires the CW bridge disabled before and after motion and rejects any CW
+homing trace sample.
 
 ## Commissioning safety envelope
 
-Start only after manually placing both mechanisms at physical home and using
-the UI's explicit RHO Commissioning confirmation. In this mode each motor:
+Start only after confirming main RHO at physical home and using the UI's
+explicit RHO Commissioning confirmation. In this mode the main motor:
 
 1. Moves 8 mm outward to establish constant-velocity runway.
    Before reversing, the firmware requires eight valid moving `SG_RESULT`
@@ -175,11 +165,14 @@ and manually re-establish zero.
 
 ## Run one trial
 
-Install the RHO service image, switch to RHO Commissioning at the manually
-confirmed origin, and run:
+Install the main-only RHO service image. Confirm that `/api/tuning` reports
+`homing.companionMotorEnabled=false`, that the CW driver dump reports
+`motorConfigured=false` and `TOFF=0`, then switch to RHO Commissioning at
+main RHO's manually confirmed zero and run:
 
 ```bash
 python3 scripts/rho_homing_tuner.py \
+  --expected-motors main \
   --trigger-percent 75 \
   --consecutive-samples 5 \
   --minimum-travel-ms 600
@@ -187,8 +180,7 @@ python3 scripts/rho_homing_tuner.py \
 
 The script records audio before starting motion, waits for `HOMING_REVIEW` or
 `HOMING_FAILED`, collects `/api/tuning/homing/trace` throughout the run, and
-computes for each
-motor's coarse and precision approach:
+computes for the main motor's coarse and precision approach:
 
 - normal-load median, minimum, and terminal `SG_RESULT`;
 - valid-UART fraction;
@@ -222,9 +214,10 @@ trace. Then tune one dimension at a time:
    CoolStep off and use a fixed current. Do not reuse normal-motion current as
    an implicit homing parameter.
 
-Select thresholds independently for RHO and RHO-CW if their distributions
-differ. The current settings schema shares detector parameters, so production
-must use the stricter common intersection until per-motor fields are added.
+Tune main-RHO thresholds alone while CW has no motor. When a CW motor is
+installed, qualify its direction, current, and SG distribution before
+re-enabling paired homing. The settings schema still shares detector values,
+so paired production use will need a safe common setting or per-motor fields.
 
 ## Qualification
 
@@ -234,7 +227,7 @@ including cold and warm driver starts. Require:
 - zero false triggers and zero missed contacts;
 - all UART samples valid except isolated retries, never three consecutive
   failures;
-- coarse and precision terminal positions within 1 mm for both motors;
+- main-RHO coarse and precision terminal positions within 1 mm;
 - maximum commanded overrun no greater than 1 mm;
 - clear separation between normal-load and terminal SG distributions;
 - backoff SG recovery on every cycle;
@@ -250,20 +243,19 @@ state leakage before creating separate threshold sets.
 ## Restart checklist
 
 1. Power down before changing any motor or driver connection.
-2. Install two known-good TMC2209 modules and confirm UART replies at RHO 0,
-   RHO-CW 1, and theta 2 with the non-motion scan image.
-3. Confirm both RHO axes move outward for positive STEP/DIR commands with the
-   current normal `SHAFT=0` setting. Correct wiring/polarity before homing; do
-   not discover direction by driving into a stop.
+2. Confirm UART replies at main RHO 0 and CW 1. Leave the empty CW driver at
+   `TOFF=0`; confirm that state through `/api/tuning/dump/rho-companion`.
+3. Confirm main RHO moves outward for positive STEP/DIR with `SHAFT=0`.
+   Correct wiring/polarity before homing; do not discover direction by driving
+   into a stop.
 4. Confirm the 500 mA RMS motor rating, 0.11 ohm sense-resistor assumption, and
    healthy loaded travel at the candidate homing current.
-5. Manually home both mechanisms, press **Set current position as home**, and
+5. Manually home main RHO, press **Set current position as home**, and
    enter RHO Commissioning. Use only known-position bounded trials first.
 6. Record `/api/tuning`, both driver dumps, telemetry, errors, the complete
    homing trace, and synchronized Antlion audio for every attempt.
-7. Tune each motor's distributions separately. Use the common intersection of
-   safe settings until the schema supports per-motor detector values.
+7. Tune only main RHO's SG distribution. Leave CW motor configuration off.
 8. After a failure or any physical intervention, invalidate the STEP ledger,
-   disable both stages, manually re-establish zero, and restart the trial.
+   disable both stages, manually re-establish main RHO zero, and restart.
 9. Complete the full qualification section before enabling production or boot
    homing.

@@ -2659,7 +2659,9 @@ void SisyphusWebServer::handleTuningGet(AsyncWebServerRequest *request) {
     homingObj["verificationBackoffMm"] =
         Config::kRhoHomingVerificationBackoffMm;
     homingObj["maximumOverrunMm"] = Config::kRhoHomingMaximumOverrunMm;
-    homingObj["inactiveHoldStrategy"] = "vactual-u256";
+    homingObj["companionMotorEnabled"] = Config::kRhoCompanionMotorEnabled;
+    homingObj["inactiveHoldStrategy"] = Config::kRhoCompanionMotorEnabled
+        ? "vactual-u256" : "disabled-bridge";
 
     JsonObject limitsObj = doc["limits"].to<JsonObject>();
     limitsObj["thetaMaxRunCurrentMa"] = Config::kThetaMaxRunCurrentMa;
