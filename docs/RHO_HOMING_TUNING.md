@@ -38,6 +38,34 @@ counter evidence, not a logic-analyzer measurement of individual pulse jitter.
 | 03:45:27 | 25 / 8 mm | 3 / 0.11 mm | Home |
 | 03:46:23 | 25 / 15 mm | 3 / 0.2825 mm | Home |
 | 03:47:23 | 25 / 25 mm | 3 / 0.0825 mm | Home |
+| 03:48:58 | 25 / 10 mm | 3 / 0.38 mm | Home |
+| 03:52:08 | 25 / 6 mm, 450 ms gate | 3 / 0.295 mm | Home |
+| 03:52:48 | 0 / 6 mm, 450 ms gate | 3 / 0.2775 mm | Home |
+| 03:55:05 | 100 / 6 mm, 450 ms gate | 3 / 0.1825 mm | Unverified: room became dark |
+
+At the 25 mm start, 8/10/15/25 mm backoffs took 8.47/9.13/10.777/14.104
+seconds respectively through the last contact (excluding staging and host
+idle recording). There is no demonstrated reliability advantage to the longer
+backoffs. Six and eight millimetres are the current shortlist, not a proven
+optimum. The 6 mm return collected 83..90 SG samples in the first three trials,
+above the detector's 57-sample minimum, but with less margin than 8 mm.
+
+### Pause after the 100 mm trial
+
+Seven hardware-timer runs have camera-confirmed home positions; the eighth
+(100 mm start) passed the instrument checks but remains `HOMING_REVIEW`.
+Its contacts were +0.05, +0.2325, and +0.1825 mm in the inward command ledger,
+with all 2,988 UART reads valid. These coordinates are not measured physical
+positions. The room became dark before the endpoint camera check. Maximum
+camera exposure and a zoom/contrast check did not restore a sufficiently clear
+view; do not mark this run physically accepted. No motion followed it.
+
+Restore illumination and check the endpoint before confirming this trial or
+resetting the logical origin. Camera controls were restored to brightness 230,
+contrast 128, gain 255, manual exposure 875, and zoom 100. The board is stopped
+with no queued motion; its logical rho=100 is the stale pre-home value, not
+evidence that the mechanism is still 100 mm out. The live test profile remains
+6 mm backoff / 450 ms gate, not a promoted production default.
 
 These are screening runs. Repeat the leading backoff at distinct starts and
 compare warm/cold runs before calling it reliable. Do not select a larger
@@ -51,11 +79,17 @@ without agreement. Three agreeing contacts away from the known zero still
 fail the commissioning check.
 
 Use `--backoff-mm` with the host script, or `verificationBackoffMm` on
-`POST /api/tuning/homing`, to select 8..50 mm without reflashing. Start the
+`POST /api/tuning/homing`, to select 6..50 mm without reflashing. Start the
 comparison with 8, 10, 15, and 25 mm. Firmware clamps each backoff to the
 available outward distance from the first inward approach's starting point,
 accounting for previously consumed overrun. Start comparison trials at least
 25 mm out so the travel clamp does not erase the differences between choices.
+After the 8..25 mm screen, test 6 mm with `minimumTravelMs=450`; the old
+650 ms gate requires 7.8 mm and is unsuitable for a 6 mm return. Retry arming
+still waits until backoff minus 0.4 mm. Do not shorten to 4 mm: at 12 mm/s the
+500 ms ramp takes roughly 3 mm, and the detector then needs 57 fresh samples
+(48 baseline plus nine decision samples), about 2 mm at observed UART cadence.
+If 6 mm lacks margin, bisect upward to 7 mm or retain the 8 mm candidate.
 
 The command ledger increases inward from the first approach's start. Trace
 field `o` records each leg's starting coordinate; `o+s` gives an inward
@@ -494,7 +528,7 @@ python3 scripts/rho_homing_tuner.py \
   --rho-start-mm 0 --companion-start-mm 0 \
   --trigger-percent 85 \
   --consecutive-samples 5 \
-  --minimum-travel-ms 650
+  --minimum-travel-ms 650 --backoff-mm 8
 ```
 
 The script records audio before starting motion, waits for `HOMING_REVIEW` or
@@ -513,7 +547,7 @@ If the instrument checks pass, the script leaves the controller in
 which disables both RHO stages. Microphone evidence and STEP bounds do not
 establish physical position after missed steps.
 
-## Threshold search
+## Earlier threshold-search guidance (superseded by the current experiment)
 
 The old 3 mm arming profile at 75% / five votes / 650 ms failed on its
 seventh repeat. The newer 7 mm arming / 0.5 mm agreement profile has ten
@@ -544,22 +578,34 @@ so paired production use will need a safe common setting or per-motor fields.
 
 ## Qualification
 
-For the dedicated homing profile, perform at least ten complete homing cycles
-including power-cold and warm driver starts. Require:
+Screen backoff choices first, then freeze the selected timer, current, speed,
+SG filter, and agreement window. Perform at least ten additional complete
+cycles at that fixed profile across starts of 0, 10, 25, 100, 200, and 400 mm,
+including power-cold and warm driver starts. Screening successes at different
+backoffs do not count as ten repetitions of the selected profile. Require:
 
 - zero false triggers and zero missed contacts;
 - all UART samples valid except isolated retries, never three consecutive
   failures;
 - main-RHO coarse and precision terminal commands within the 2 mm
   known-origin window, and the final camera image aligned with zero;
-- maximum shared commanded overrun no greater than 2 mm;
-- coarse arming only after 7 mm of inward runway travel and two triggers
-  agreeing within 0.5 mm;
+- no approach extends the inward high-water mark by more than 2 mm, and no
+  cycle extends it by more than 5 mm total;
+- coarse arming only after 7 mm of inward runway travel and three consecutive
+  contacts within a 0.4 mm total span (provisional until validation);
 - clear separation between normal-load and terminal SG distributions;
 - backoff SG recovery on every cycle;
 - no driver, thermal, short, undervoltage, or planner fault;
 - exact readback restoration of the incoming acoustic settings;
 - the post-home acoustic regression still passes that profile's threshold.
+
+Keep unknown-origin boot homing disabled until its own entry sequence is
+qualified. A known-position trial's outward runway and independent home veto
+are not available from an arbitrary boot position: 425 mm is a maximum-travel
+label, not a measurement of remaining distance. In particular, an outward
+runway at the outer limit and a long inward search starting at the inner stop
+need separate handling. Repeated agreement cannot provide an independent
+2..5 mm physical overrun guarantee after position is lost.
 
 Because the dedicated homing profile is intended to erase incoming-state
 history, results should not depend on whether the source profile is −60, −63,

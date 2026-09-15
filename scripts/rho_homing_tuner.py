@@ -733,7 +733,7 @@ def main() -> int:
     parser.add_argument("--trigger-percent", type=int, default=75)
     parser.add_argument("--consecutive-samples", type=int, default=5)
     parser.add_argument("--minimum-travel-ms", type=int, default=600)
-    parser.add_argument("--backoff-mm", type=int, help="retry backoff, clamped by safe outward room (8..50)")
+    parser.add_argument("--backoff-mm", type=int, help="retry backoff, clamped by safe outward room (6..50)")
     parser.add_argument(
         "--known-start-mm", type=float, default=0.0,
         help=(
@@ -757,8 +757,8 @@ def main() -> int:
         help="refuse to start if firmware would home a different motor set",
     )
     args = parser.parse_args()
-    if args.backoff_mm is not None and not 8 <= args.backoff_mm <= 50:
-        parser.error("--backoff-mm must be 8..50")
+    if args.backoff_mm is not None and not 6 <= args.backoff_mm <= 50:
+        parser.error("--backoff-mm must be 6..50")
     if not 40 <= args.trigger_percent <= 85:
         parser.error("--trigger-percent must be 40..85")
     if not 5 <= args.consecutive_samples <= 50:

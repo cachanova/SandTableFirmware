@@ -1790,8 +1790,7 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
                             bool companionAxis,
                             const DriverSettings& homingSettings) {
     // SG_RESULT updates once per full step and becomes unstable at very low
-    // motor speeds. At 50 full steps/mm, the current 6 mm/s trial is 1.5
-    // revolutions/s, above the TMC2209's problematic low-speed region. Use
+    // motor speeds. At 50 full steps/mm, 12 mm/s is 600 full steps/s. Use
     // the same velocity for both passes so one threshold describes both.
     constexpr float kCoarseMmPerSecond =
         Config::kRhoHomingVelocityMmPerSecond;
@@ -3137,7 +3136,7 @@ static bool validHomingSettings(const HomingSettings& settings) {
     return settings.triggerPercent >= 40 && settings.triggerPercent <= 85 &&
         settings.consecutiveSamples >= 5 && settings.consecutiveSamples <= 50 &&
         settings.minimumTravelMs >= 100 && settings.minimumTravelMs <= 2500 &&
-        settings.verificationBackoffMm >= 8 && settings.verificationBackoffMm <= 50;
+        settings.verificationBackoffMm >= 6 && settings.verificationBackoffMm <= 50;
 }
 
 static bool tuningAllowed(PolarControl::State_t state) {
