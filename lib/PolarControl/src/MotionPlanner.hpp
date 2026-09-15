@@ -99,6 +99,23 @@ struct StepEvent {
     uint8_t dirMask;           // direction bits: bit 0 = theta dir, bit 1 = rho dir
 };
 
+// Normal-motion diagnostics only. Timestamps describe software immediately
+// before the GPIO rise, not electrical pulse validation or mechanical motion.
+// Counters are boot-cumulative modulo uint32_t; stop/home never reset them.
+struct AxisStepTimingTelemetry {
+    bool valid = false;
+    uint32_t stepCount = 0;
+    uint32_t outlierCount = 0;
+    uint32_t maxLatenessUs = 0;
+    uint32_t maxAbsIntervalErrorUs = 0;
+    uint32_t outlierEpoch = 0;
+    uint32_t outlierScheduledMicros = 0;
+    uint32_t outlierActualMicros = 0;
+    uint32_t outlierPlannedIntervalUs = 0;
+    uint32_t outlierActualIntervalUs = 0;
+    uint32_t outlierIntervalValid = 0;
+};
+
 struct PlannerTelemetry {
     uint32_t queueDepth = 0;
     uint32_t minQueueDepth = 0;
@@ -111,6 +128,13 @@ struct PlannerTelemetry {
     bool timerActive = false;
     bool running = false;
     bool stepMotionActive = false;
+    AxisStepTimingTelemetry thetaStepTiming;
+    AxisStepTimingTelemetry rhoStepTiming;
+    bool callbackTimingValid = false;
+    uint32_t callbackGapCount = 0;
+    uint32_t maxCallbackGapUs = 0;
+    uint32_t lastCallbackGapMicros = 0;
+    uint32_t lastCallbackGapUs = 0;
 };
 
 // Motion planner with independent axis control and S-curve profiles
@@ -223,6 +247,36 @@ public:
     float getMaxBoundaryVelocityDiscontinuity() const;
 
 private:
+#ifdef NATIVE_BUILD
+    friend struct MotionTimingTestAccess;
+#endif
+    // Single writer: the existing esp_timer task callback. Atomic payload
+    // fields plus a versioned bounded snapshot avoid C++ data races and torn
+    // outlier records without taking locks in the pulse path.
+    struct AxisStepTimingState {
+        std::atomic<uint32_t> version{0};
+        std::atomic<uint32_t> stepCount{0}, outlierCount{0};
+        std::atomic<uint32_t> maxLatenessUs{0}, maxAbsIntervalErrorUs{0};
+        std::atomic<uint32_t> outlierEpoch{0}, outlierScheduledMicros{0};
+        std::atomic<uint32_t> outlierActualMicros{0};
+        std::atomic<uint32_t> outlierPlannedIntervalUs{0}, outlierActualIntervalUs{0};
+        std::atomic<uint32_t> outlierIntervalValid{0};
+        bool previousValid = false;
+        uint32_t previousEpoch = 0, previousScheduledUs = 0, previousActualUs = 0;
+    };
+    AxisStepTimingState m_thetaStepTiming, m_rhoStepTiming;
+    std::atomic<uint32_t> m_timingRunSerial{0};
+    uint32_t m_callbackTimingRunSerial = 0, m_previousCallbackUs = 0;
+    bool m_previousCallbackValid = false;
+    std::atomic<uint32_t> m_callbackTimingVersion{0};
+    std::atomic<uint32_t> m_callbackGapCount{0}, m_maxCallbackGapUs{0};
+    std::atomic<uint32_t> m_lastCallbackGapMicros{0}, m_lastCallbackGapUs{0};
+    void recordNormalCallbackTiming(uint32_t now);
+    static void recordAxisStepTiming(AxisStepTimingState& timing, uint32_t epoch,
+                                    uint32_t scheduledUs, uint32_t actualUs);
+    static void snapshotAxisStepTiming(const AxisStepTimingState& timing,
+                                      AxisStepTimingTelemetry& out);
+
     // Physical parameters
     int m_stepsPerMmR;
     int m_stepsPerRadT;

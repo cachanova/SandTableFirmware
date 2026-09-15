@@ -24,6 +24,22 @@
 #include "../../lib/PolarControl/src/SCurve.cpp"
 #include "../../lib/PolarControl/src/MotionPlanner.cpp"
 
+struct MotionTimingTestAccess {
+    static void pulse(MotionPlanner& p, bool theta, uint32_t epoch,
+                      uint32_t scheduled, uint32_t actual) {
+        p.recordAxisStepTiming(theta ? p.m_thetaStepTiming : p.m_rhoStepTiming,
+                               epoch, scheduled, actual);
+    }
+    static void callback(MotionPlanner& p, uint32_t run, uint32_t now) {
+        p.m_timingRunSerial.store(run);
+        p.recordNormalCallbackTiming(now);
+    }
+    static void busySnapshot(MotionPlanner& p, bool busy) {
+        p.m_rhoStepTiming.version.store(busy ? 1U : 2U);
+        p.m_callbackTimingVersion.store(busy ? 1U : 2U);
+    }
+};
+
 // Test configuration
 static constexpr float R_MAX = 450.0f;           // mm
 static constexpr int STEPS_PER_MM_R = 100;       // steps per mm for rho
@@ -700,6 +716,97 @@ bool testBoundedRhoHomingPulses() {
     return passed;
 }
 
+bool testNormalStepTimingDiagnostics() {
+    std::cout << "\n=== Test: Normal STEP Timing Diagnostics ===" << std::endl;
+    resetMock();
+    MotionPlanner p;
+    // Actual timestamp zero is valid, not an uninitialized sentinel. The
+    // second pulse crosses micros rollover with exactly matching intervals.
+    MotionTimingTestAccess::pulse(p, false, 1, 0xFFFFFFCEU, 0);
+    MotionTimingTestAccess::pulse(p, false, 1, 4950, 5000);
+    PlannerTelemetry t;
+    p.getTelemetry(t);
+    if (!t.rhoStepTiming.valid || t.rhoStepTiming.stepCount != 2 ||
+        t.rhoStepTiming.outlierCount != 0 || t.rhoStepTiming.maxLatenessUs != 50 ||
+        t.rhoStepTiming.maxAbsIntervalErrorUs != 0) return false;
+    MotionTimingTestAccess::pulse(p, false, 1, 9950, 11000); // delayed edge
+    MotionTimingTestAccess::pulse(p, false, 1, 14950, 15000); // catch-up edge
+    MotionTimingTestAccess::pulse(p, true, 1, 9950, 11000); // first theta pulse
+    p.getTelemetry(t);
+    const auto& r = t.rhoStepTiming;
+    if (r.outlierCount != 2 || r.maxLatenessUs != 1050 ||
+        r.maxAbsIntervalErrorUs != 1000 || r.outlierActualMicros != 15000 ||
+        r.outlierScheduledMicros != 14950 || r.outlierPlannedIntervalUs != 5000 ||
+        r.outlierActualIntervalUs != 4000 || !r.outlierIntervalValid ||
+        t.thetaStepTiming.stepCount != 1 || t.thetaStepTiming.outlierIntervalValid) return false;
+    p.stop();
+    MotionTimingTestAccess::pulse(p, false, 2, 20000, 20050);
+    p.getTelemetry(t);
+    if (t.rhoStepTiming.stepCount != 5 || t.rhoStepTiming.outlierCount != 2 ||
+        t.rhoStepTiming.outlierEpoch != 1 || t.rhoStepTiming.maxLatenessUs != 1050) return false;
+    MotionTimingTestAccess::pulse(p, false, 3, 25000, 24900); // any early edge
+    p.getTelemetry(t);
+    if (t.rhoStepTiming.outlierCount != 3 || t.rhoStepTiming.outlierIntervalValid ||
+        t.rhoStepTiming.outlierActualMicros != 24900) return false;
+    MotionTimingTestAccess::callback(p, 1, 0);
+    MotionTimingTestAccess::callback(p, 1, 250);
+    MotionTimingTestAccess::callback(p, 1, 1000);
+    MotionTimingTestAccess::callback(p, 2, 100000); // idle/new run isn't a gap
+    MotionTimingTestAccess::callback(p, 3, 0xFFFFFF9BU);
+    MotionTimingTestAccess::callback(p, 3, 500); // rollover gap: 601 us
+    p.getTelemetry(t);
+    if (!t.callbackTimingValid || t.callbackGapCount != 2 ||
+        t.maxCallbackGapUs != 750 || t.lastCallbackGapUs != 601 ||
+        t.lastCallbackGapMicros != 500) return false;
+    MotionTimingTestAccess::busySnapshot(p, true);
+    p.getTelemetry(t);
+    if (t.rhoStepTiming.valid || t.callbackTimingValid) return false;
+    MotionTimingTestAccess::busySnapshot(p, false);
+    p.getTelemetry(t);
+    if (!t.rhoStepTiming.valid || !t.callbackTimingValid) return false;
+    std::cout << "PASS: rollover, epoch reset, catch-up, early edge, cumulative and coherent snapshots" << std::endl;
+    return true;
+}
+
+bool testStepTimingCallbackIntegration() {
+    std::cout << "\n=== Test: STEP Timing Callback Integration ===" << std::endl;
+    resetMock();
+    MotionPlanner p;
+    p.init(100, 3000, 425, 2, 20, 100, .25f, 1, 10);
+    p.addSegment(0, 2);
+    p.setEndOfPattern(true);
+    p.recalculate();
+    p.start();
+    for (unsigned i = 0; i < 400; ++i) {
+        p.process();
+        advanceMicros(1000);
+    }
+    // Simulate task dispatch not running for 10ms while its queue remains
+    // populated. No commanded geometry or per-pulse schedule is modified.
+    setMicros(micros64() + 10000);
+    if (!g_timerActive || !g_timerCallback) return false;
+    g_timerCallback(g_timerArg);
+    unsigned loops = 0;
+    while (!p.isIdle() && loops++ < 10000) {
+        p.process();
+        advanceMicros(1000);
+    }
+    PlannerTelemetry t;
+    p.getTelemetry(t);
+    if (!p.isIdle() || t.rhoStepTiming.stepCount != 200 ||
+        t.thetaStepTiming.stepCount != 0 || t.rhoStepTiming.outlierCount == 0 ||
+        t.callbackGapCount == 0 || t.maxCallbackGapUs < 10000 || t.underruns != 0) return false;
+    const uint32_t outliers = t.rhoStepTiming.outlierCount;
+    const uint32_t gaps = t.callbackGapCount;
+    if (!p.startRhoHoming(-1, 200, 20)) return false;
+    advanceMicros(200000);
+    p.getTelemetry(t);
+    if (p.getRhoHomingStepCount() != 20 || t.rhoStepTiming.stepCount != 200 ||
+        t.rhoStepTiming.outlierCount != outliers || t.callbackGapCount != gaps) return false;
+    std::cout << "PASS: delayed dispatch detected with zero underruns; pulse totals and homing unchanged" << std::endl;
+    return true;
+}
+
 bool testRhoSharedOverrunBudget() {
     std::cout << "\n=== Test: Rho Shared Homing Overrun Budget ===" << std::endl;
     constexpr uint32_t expected = 3200;  // 8 mm at 400 steps/mm
@@ -1355,6 +1462,8 @@ int main(int argc, char* argv[]) {
     allPassed &= testInvalidMotionInputs();
     allPassed &= testGracefulStopAfterFullGeneration();
     allPassed &= testBoundedRhoHomingPulses();
+    allPassed &= testNormalStepTimingDiagnostics();
+    allPassed &= testStepTimingCallbackIntegration();
     allPassed &= testRhoSharedOverrunBudget();
     allPassed &= testSCurveBasic();
     allPassed &= testDecelDistance();

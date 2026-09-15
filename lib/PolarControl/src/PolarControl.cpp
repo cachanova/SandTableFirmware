@@ -4078,9 +4078,14 @@ static void fillMotionHealthJson(uint8_t address, const char* name,
         readTmcRegisterCheckedOnce(address, 0x6F, status);
     const bool sgValid = healthyRead &&
         readTmcRegisterCheckedOnce(address, 0x41, sg);
+    const uint32_t finished = micros();
     doc["name"] = name;
     doc["snapshotKind"] = "motion-health";
-    doc["readDurationMicros"] = micros() - started;
+    // Same wrapping clock as STEP telemetry: includes the entire checked UART
+    // burst, excludes JSON construction and network response scheduling.
+    doc["readStartMicros"] = started;
+    doc["readEndMicros"] = finished;
+    doc["readDurationMicros"] = finished - started;
     doc["connected"] = healthyRead;
     doc["uartResponseValid"] = healthyRead;
     doc["communicating"] = healthyRead;

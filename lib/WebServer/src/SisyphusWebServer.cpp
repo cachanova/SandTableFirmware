@@ -1389,6 +1389,25 @@ void SisyphusWebServer::handleMotionStop(AsyncWebServerRequest *request) {
             : "{\"success\":true,\"emergency\":false}");
 }
 
+static void writeAxisStepTiming(Print& out, const AxisStepTimingTelemetry& timing) {
+    out.printf(
+        "{\"valid\":%s,\"steps\":%lu,\"outliers\":%lu,\"maxLateUs\":%lu,"
+        "\"maxIntervalErrorUs\":%lu,\"last\":{\"epoch\":%lu,"
+        "\"scheduledMicros\":%lu,\"actualMicros\":%lu,"
+        "\"plannedIntervalUs\":%lu,\"actualIntervalUs\":%lu,\"intervalValid\":%s}}",
+        timing.valid ? "true" : "false",
+        static_cast<unsigned long>(timing.stepCount),
+        static_cast<unsigned long>(timing.outlierCount),
+        static_cast<unsigned long>(timing.maxLatenessUs),
+        static_cast<unsigned long>(timing.maxAbsIntervalErrorUs),
+        static_cast<unsigned long>(timing.outlierEpoch),
+        static_cast<unsigned long>(timing.outlierScheduledMicros),
+        static_cast<unsigned long>(timing.outlierActualMicros),
+        static_cast<unsigned long>(timing.outlierPlannedIntervalUs),
+        static_cast<unsigned long>(timing.outlierActualIntervalUs),
+        timing.outlierIntervalValid ? "true" : "false");
+}
+
 void SisyphusWebServer::handleMotionTelemetry(AsyncWebServerRequest *request) {
     const PolarCord_t position = m_polarControl->getActualPosition();
     const PolarVelocity_t velocity = m_polarControl->getActualVelocity();
@@ -1396,7 +1415,7 @@ void SisyphusWebServer::handleMotionTelemetry(AsyncWebServerRequest *request) {
     m_polarControl->getTelemetry(telemetry);
     const uint32_t sampleMicros = micros();
 
-    AsyncResponseStream *response = request->beginResponseStream("application/json", 576);
+    AsyncResponseStream *response = request->beginResponseStream("application/json", 1536);
     response->print("{\"state\":\"");
     response->print(getStateString());
     response->printf(
@@ -1421,6 +1440,22 @@ void SisyphusWebServer::handleMotionTelemetry(AsyncWebServerRequest *request) {
         static_cast<unsigned long>(telemetry.lastStepMotionStartUs),
         static_cast<unsigned long>(telemetry.lastStepMotionStopUs),
         telemetry.stepMotionActive ? "true" : "false");
+    // Fixed-size summary, not a per-pulse stream. "last" is the latest
+    // outlier, not necessarily the latest pulse; counter deltas expose missed
+    // outliers between HTTP samples. Require each valid flag before use.
+    response->printf(
+        ",\"stepTiming\":{\"thresholdUs\":%lu,\"callback\":{\"valid\":%s,"
+        "\"gaps\":%lu,\"maxGapUs\":%lu,\"lastMicros\":%lu,\"lastGapUs\":%lu},\"theta\":",
+        static_cast<unsigned long>(2U * STEP_TIMER_PERIOD_US),
+        telemetry.callbackTimingValid ? "true" : "false",
+        static_cast<unsigned long>(telemetry.callbackGapCount),
+        static_cast<unsigned long>(telemetry.maxCallbackGapUs),
+        static_cast<unsigned long>(telemetry.lastCallbackGapMicros),
+        static_cast<unsigned long>(telemetry.lastCallbackGapUs));
+    writeAxisStepTiming(*response, telemetry.thetaStepTiming);
+    response->print(",\"rho\":");
+    writeAxisStepTiming(*response, telemetry.rhoStepTiming);
+    response->print("}");
 #ifdef SISYPHUS_BENCH_MOTION_TEST
     response->print(",\"benchMotionTest\":true");
 #else

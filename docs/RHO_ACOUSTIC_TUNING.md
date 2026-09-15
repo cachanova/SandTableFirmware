@@ -124,6 +124,27 @@ motion-dependent electrical interference. Numeric evidence is in
 only GET requests and checks state, coordinates, STEP epochs and driver health.
 All 25 bounded endpoint audits through 08:44 UTC passed on the frozen profile.
 
+Timing instrumentation adds `stepTiming` to motion telemetry: boot-cumulative
+per-axis pulse/outlier counts, maximum lateness and interval error, and the
+latest outlier's scheduled/pre-rise timestamps and planned/actual interval.
+Callback gaps are tracked separately. Require the snapshot's `valid` flag;
+counter changes can reveal multiple outliers between polls, but only the latest
+record is retained. The 100 us firmware threshold is diagnostic, not a validated
+stall or acoustic limit. First pulses after an epoch change have no interval
+comparison. Unsigned deltas handle microsecond rollover.
+
+The timestamp is taken after DIR setup and immediately before GPIO writes;
+bookkeeping runs after STEP falls. These are software observations, not a logic
+analyzer or mechanical encoder. Instrumentation has small unmeasured overhead
+and changes telemetry payload size, so compare measured behavior rather than
+assuming a perfectly passive observer. Fast driver snapshots now include
+`readStartMicros`/`readEndMicros` for the checked UART burst on the same clock.
+No timer scheduling, driver settings or homing logic changed. A native injected
+10 ms callback delay produces timing outliers with zero underruns and the same
+200 commanded pulses, demonstrating why underrun counts alone are insufficient.
+[Espressif's timer documentation](https://docs.espressif.com/projects/esp-idf/en/v4.4.7/esp32/api-reference/system/esp_timer.html)
+describes task-dispatch delays and overdue callback handling.
+
 Homing qualification, production boot enable and cleanup merged to main as
 `a558c4e`, including the user-confirmed power-cold boot. Only the main RHO motor is connected;
 keep the CW driver at `TOFF=0` and theta stationary. Pass

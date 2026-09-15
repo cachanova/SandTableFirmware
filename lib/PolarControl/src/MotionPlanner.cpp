@@ -918,6 +918,7 @@ void MotionPlanner::start() {
 
     if (!ensureStepTimer()) return;
 
+    m_timingRunSerial.fetch_add(1, std::memory_order_relaxed);
     m_running.store(true);
     m_segmentStartTime = micros();
     m_segmentElapsed = 0.0f;
@@ -1658,8 +1659,105 @@ void MotionPlanner::getTelemetry(PlannerTelemetry& out) {
     out.timerActive = m_timerActive.load();
     out.running = m_running.load();
     out.stepMotionActive = m_stepMotionActive.load(std::memory_order_acquire);
+    snapshotAxisStepTiming(m_thetaStepTiming, out.thetaStepTiming);
+    snapshotAxisStepTiming(m_rhoStepTiming, out.rhoStepTiming);
+    out.callbackTimingValid = false;
+    for (unsigned attempt = 0; attempt < 3; ++attempt) {
+        const uint32_t version = m_callbackTimingVersion.load(std::memory_order_seq_cst);
+        if (version & 1U) continue;
+        out.callbackGapCount = m_callbackGapCount.load(std::memory_order_seq_cst);
+        out.maxCallbackGapUs = m_maxCallbackGapUs.load(std::memory_order_seq_cst);
+        out.lastCallbackGapMicros = m_lastCallbackGapMicros.load(std::memory_order_seq_cst);
+        out.lastCallbackGapUs = m_lastCallbackGapUs.load(std::memory_order_seq_cst);
+        if (version == m_callbackTimingVersion.load(std::memory_order_seq_cst)) {
+            out.callbackTimingValid = true;
+            break;
+        }
+    }
 
     m_minQueueDepth = out.queueDepth;
+}
+
+void MotionPlanner::recordNormalCallbackTiming(uint32_t now) {
+    const uint32_t run = m_timingRunSerial.load(std::memory_order_relaxed);
+    if (!m_previousCallbackValid || run != m_callbackTimingRunSerial) {
+        m_callbackTimingRunSerial = run;
+        m_previousCallbackValid = true;
+    } else {
+        const uint32_t gap = now - m_previousCallbackUs;
+        if (gap > 2U * STEP_TIMER_PERIOD_US) {
+            m_callbackTimingVersion.fetch_add(1, std::memory_order_seq_cst);
+            m_callbackGapCount.fetch_add(1, std::memory_order_seq_cst);
+            if (gap > m_maxCallbackGapUs.load(std::memory_order_seq_cst)) {
+                m_maxCallbackGapUs.store(gap, std::memory_order_seq_cst);
+            }
+            m_lastCallbackGapMicros.store(now, std::memory_order_seq_cst);
+            m_lastCallbackGapUs.store(gap, std::memory_order_seq_cst);
+            m_callbackTimingVersion.fetch_add(1, std::memory_order_seq_cst);
+        }
+    }
+    m_previousCallbackUs = now;
+}
+
+void MotionPlanner::recordAxisStepTiming(AxisStepTimingState& timing,
+                                       uint32_t epoch, uint32_t scheduledUs,
+                                       uint32_t actualUs) {
+    const int32_t lateness = static_cast<int32_t>(actualUs - scheduledUs);
+    const bool intervalValid = timing.previousValid && timing.previousEpoch == epoch;
+    const uint32_t plannedInterval = intervalValid ? scheduledUs - timing.previousScheduledUs : 0;
+    const uint32_t actualInterval = intervalValid ? actualUs - timing.previousActualUs : 0;
+    const uint32_t intervalError = actualInterval > plannedInterval
+        ? actualInterval - plannedInterval : plannedInterval - actualInterval;
+    const uint32_t threshold = 2U * STEP_TIMER_PERIOD_US;
+    // Scheduled queue events are <half a micros wrap away. Any early edge is
+    // anomalous. First STEP in an epoch deliberately has no interval metric.
+    const bool outlier = lateness < 0 || static_cast<uint32_t>(lateness) > threshold
+        || (intervalValid && intervalError > threshold);
+    timing.version.fetch_add(1, std::memory_order_seq_cst);
+    timing.stepCount.fetch_add(1, std::memory_order_seq_cst);
+    if (lateness > 0 && static_cast<uint32_t>(lateness) > timing.maxLatenessUs.load(std::memory_order_seq_cst)) {
+        timing.maxLatenessUs.store(static_cast<uint32_t>(lateness), std::memory_order_seq_cst);
+    }
+    if (intervalError > timing.maxAbsIntervalErrorUs.load(std::memory_order_seq_cst)) {
+        timing.maxAbsIntervalErrorUs.store(intervalError, std::memory_order_seq_cst);
+    }
+    if (outlier) {
+        timing.outlierCount.fetch_add(1, std::memory_order_seq_cst);
+        timing.outlierEpoch.store(epoch, std::memory_order_seq_cst);
+        timing.outlierScheduledMicros.store(scheduledUs, std::memory_order_seq_cst);
+        timing.outlierActualMicros.store(actualUs, std::memory_order_seq_cst);
+        timing.outlierPlannedIntervalUs.store(plannedInterval, std::memory_order_seq_cst);
+        timing.outlierActualIntervalUs.store(actualInterval, std::memory_order_seq_cst);
+        timing.outlierIntervalValid.store(intervalValid, std::memory_order_seq_cst);
+    }
+    timing.version.fetch_add(1, std::memory_order_seq_cst);
+    timing.previousValid = true;
+    timing.previousEpoch = epoch;
+    timing.previousScheduledUs = scheduledUs;
+    timing.previousActualUs = actualUs;
+}
+
+void MotionPlanner::snapshotAxisStepTiming(const AxisStepTimingState& timing,
+                                         AxisStepTimingTelemetry& out) {
+    out.valid = false;
+    for (unsigned attempt = 0; attempt < 3; ++attempt) {
+        const uint32_t version = timing.version.load(std::memory_order_seq_cst);
+        if (version & 1U) continue;
+        out.stepCount = timing.stepCount.load(std::memory_order_seq_cst);
+        out.outlierCount = timing.outlierCount.load(std::memory_order_seq_cst);
+        out.maxLatenessUs = timing.maxLatenessUs.load(std::memory_order_seq_cst);
+        out.maxAbsIntervalErrorUs = timing.maxAbsIntervalErrorUs.load(std::memory_order_seq_cst);
+        out.outlierEpoch = timing.outlierEpoch.load(std::memory_order_seq_cst);
+        out.outlierScheduledMicros = timing.outlierScheduledMicros.load(std::memory_order_seq_cst);
+        out.outlierActualMicros = timing.outlierActualMicros.load(std::memory_order_seq_cst);
+        out.outlierPlannedIntervalUs = timing.outlierPlannedIntervalUs.load(std::memory_order_seq_cst);
+        out.outlierActualIntervalUs = timing.outlierActualIntervalUs.load(std::memory_order_seq_cst);
+        out.outlierIntervalValid = timing.outlierIntervalValid.load(std::memory_order_seq_cst);
+        if (version == timing.version.load(std::memory_order_seq_cst)) {
+            out.valid = true;
+            break;
+        }
+    }
 }
 
 float MotionPlanner::getMaxBoundaryVelocityDiscontinuity() const {
@@ -1752,6 +1850,10 @@ void IRAM_ATTR MotionPlanner::handleStepTimer() {
         return;
     }
 
+    // Normal-motion diagnostics do not observe or modify the homing ISR.
+    uint32_t now = micros();
+    if (m_running.load(std::memory_order_relaxed)) recordNormalCallbackTiming(now);
+
     // Check if there's a step event ready to execute
     const int tail = m_stepQueueTail.load(std::memory_order_relaxed);
     if (m_stepQueueHead.load(std::memory_order_acquire) == tail) {
@@ -1766,7 +1868,6 @@ void IRAM_ATTR MotionPlanner::handleStepTimer() {
         return;  // Queue empty
     }
 
-    uint32_t now = micros();
     StepEvent& event = m_stepQueue[tail];
 
     // Check if it's time to execute this event
@@ -1813,6 +1914,10 @@ void IRAM_ATTR MotionPlanner::handleStepTimer() {
     delayMicroseconds(DIR_SETUP_TIME_US);
 #endif
 
+    // Timestamp immediately before the rising writes, AFTER DIR setup. Keep
+    // bookkeeping after STEP falls so it cannot extend setup or pulse width.
+    const uint32_t preRiseUs = (event.stepMask & 0x03) ? micros() : 0;
+
     // Generate step pulses
     if (event.stepMask & 0x01) {
         FastGPIO::setHigh(T_STEP_PIN);
@@ -1848,6 +1953,11 @@ void IRAM_ATTR MotionPlanner::handleStepTimer() {
     }
 
     // Advance queue tail
+    const uint8_t executedMask = event.stepMask;
+    const uint32_t scheduledUs = event.executeTime;
     m_stepQueueTail.store((tail + 1) % STEP_QUEUE_SIZE, std::memory_order_release);
     m_consecutiveUnderruns.store(0);
+    const uint32_t epoch = m_stepMotionEpoch.load(std::memory_order_relaxed);
+    if (executedMask & 0x01) recordAxisStepTiming(m_thetaStepTiming, epoch, scheduledUs, preRiseUs);
+    if (executedMask & 0x02) recordAxisStepTiming(m_rhoStepTiming, epoch, scheduledUs, preRiseUs);
 }
