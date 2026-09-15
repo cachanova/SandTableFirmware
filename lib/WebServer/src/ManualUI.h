@@ -176,7 +176,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
                 </div>
             </section>
         </div>
-        <button id="stop">Stop all motion</button><div id="error" class="error"></div>
+        <button id="stop">Stop all motion / Abort homing</button><div id="error" class="error"></div>
     </section>
 </div>
 <script>

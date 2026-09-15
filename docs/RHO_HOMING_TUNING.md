@@ -2,6 +2,45 @@
 
 ## Current experiment (2026-09-15 UTC)
 
+### Website abort and SG-startup authorization
+
+The user approved qualifying SG-based unknown-position startup with automatic
+travel/time limits, accepting that missed detection cannot guarantee a 5 mm
+physical-overrun cap. This resolves the safety-choice question from the prior
+session; it does not qualify the startup algorithm or enable power-on motion.
+
+The main page now offers **Abort homing** without a confirmation dialog or a
+dependency on the first status poll. `POST /api/home/abort` uses the emergency
+motion-stop path. Manual and tuning pages label their existing stop controls
+as homing abort controls too. Abort also invalidates `HOMING_REVIEW`, covering
+a request that arrives after the final contact.
+
+Emergency stop publishes cancellation, stops STEP generation before UART
+transactions, and disables both RHO bridges for an active or review-stage
+homing cycle. The settings-restoration path checks cancellation before enabling
+drivers, preventing a late homing task from restoring power after abort.
+The controller leaves the position untrusted. If UART disable verification
+fails, it records `ABORT_DISABLE_FAILED`; remove motor power if motion persists.
+
+The main-page button reports missing acknowledgement after 2.5 seconds and
+allows retry. That browser timeout does not stop the motor. Keep a physical
+power cutoff available: Wi-Fi, the browser, and human reaction time are not
+unattended stall safeguards. Do not replace firmware caps with this button.
+
+Validation: production and service builds pass, along with 26 host trace
+tests and five JavaScript abort tests (acknowledgement, idle, HTTP failure,
+network failure, timeout). A live immediate-cancellation test acknowledged in
+77.3 ms, left both RHO drivers at `TOFF=0`, and kept `INITIALIZED` with no STEP
+activity. The camera matched home. This was a pre-motion cancellation, not a
+measurement of stopping distance during cruise or under failed UART.
+
+After the abort update, the 04:45:15 known-zero homing trial passed with three
+contacts spanning 0.25 mm. The review-stage abort then returned the controller
+to `INITIALIZED`, and both RHO bridges read back `TOFF=0`. A stale home-confirm
+request returned HTTP 409. Camera review matched physical home; leave the
+logical position untrusted to preserve the abort outcome. No motor motion
+followed this review-stage abort.
+
 ### Resumed validation, after 04:09 UTC
 
 The user restored illumination and confirmed that the mechanism was homed.

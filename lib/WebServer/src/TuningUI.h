@@ -462,7 +462,7 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
                 <button class="btn-test-rho" id="btn-test-rho-continuous">Rho Sweep</button>
                 <button class="btn-test-rho" id="btn-test-rho-stress">Rho Stress</button>
             </div>
-            <button class="btn-secondary" id="btn-stop-motion">Stop Motion</button>
+            <button class="btn-secondary" id="btn-stop-motion">Stop motion / Abort homing</button>
         </section>
 
         <section class="block">

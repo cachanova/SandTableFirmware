@@ -333,6 +333,12 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
         handleMotionStop(request);
     });
 
+    m_server.on(AsyncURIMatcher::exact("/api/home/abort"), HTTP_POST,
+        [this](AsyncWebServerRequest *request) {
+            noteRequest(request);
+            handleMotionStop(request);
+        });
+
     m_server.on("/api/motion/telemetry", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handleMotionTelemetry(request);
@@ -1358,11 +1364,11 @@ void SisyphusWebServer::handleMotionStop(AsyncWebServerRequest *request) {
     const bool activeMotion = state == PolarControl::RUNNING ||
         state == PolarControl::PAUSED || state == PolarControl::STOPPING ||
         state == PolarControl::CLEARING || state == PolarControl::PREPARING ||
-        state == PolarControl::HOMING;
+        state == PolarControl::HOMING || state == PolarControl::HOMING_REVIEW;
     if (activeMotion) {
-        // This endpoint backs the explicitly named "Stop all motion" button.
-        // It must also stop UART velocity-mode homing, which stop() cannot do,
-        // and must discard already-generated planner events immediately.
+        // Abort also invalidates a result that reached review while the
+        // request was in flight. Cancel homing STEP/DIR and any UART motion,
+        // and discard generated planner events rather than decelerating.
         m_polarControl->emergencyStop();
     }
 

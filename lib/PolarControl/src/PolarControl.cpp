@@ -2234,6 +2234,9 @@ bool PolarControl::homeDrivers() {
 
     auto restoreNormalSettings = [&](bool enableDrivers) {
         xSemaphoreTake(m_mutex, portMAX_DELAY);
+        // Cancellation can arrive after the last contact but before restore.
+        // Do not re-enable a bridge after emergencyStop has acknowledged it.
+        enableDrivers = enableDrivers && m_state.load() == HOMING;
         m_planner.stopRhoHoming();
         // Keep both power stages off while restoring configuration. A failed
         // attempt stays de-energized; success re-enables only fitted motors.
@@ -2777,16 +2780,24 @@ int PolarControl::getProgressPercent() const {
 void PolarControl::emergencyStop() {
     // Publish cancellation before waiting for the UART/motion lock. The homing
     // task checks this state while holding the same lock before every command.
-    m_state.store(INITIALIZED);
+    const State_t previousState = m_state.exchange(INITIALIZED);
     xSemaphoreTake(m_mutex, portMAX_DELAY);
+    // Stop STEP generation before potentially slow UART transactions.
+    m_planner.stop();
     if (m_driverBusInitialized.load()) {
         if (m_thetaDriverConnected.load()) m_tDriver.moveAtVelocity(0);
         if (m_rhoDriverConnected.load()) {
             m_rDriver.moveAtVelocity(0);
         }
         if (m_rhoCompanionDriverConnected.load()) m_rCDriver.moveAtVelocity(0);
+        if (previousState == HOMING || previousState == HOMING_REVIEW ||
+            m_homingTaskHandle != NULL) {
+            if (!disableRhoDriversLocked()) {
+                ErrorLog::instance().log("ERROR", "HOME", "ABORT_DISABLE_FAILED",
+                    "Homing aborted but rho bridge disable could not be verified; remove motor power");
+            }
+        }
     }
-    m_planner.stop();
     m_posGen.reset();
     m_resumePoints.clear();
     m_resumePointIndex = 0;

@@ -432,7 +432,9 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 <button class="t-btn" id="btn-pause">Pause</button>
                 <button class="t-btn" id="btn-stop">Stop</button>
                 <button class="t-btn" id="btn-home">Home</button>
+                <button class="t-btn" id="btn-home-abort" style="color: var(--danger); border-color: var(--danger);">Abort homing</button>
             </div>
+            <p id="home-abort-status" role="alert" aria-live="assertive"></p>
 
             <div class="sliders">
                 <div class="slider-section">
@@ -812,6 +814,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 document.getElementById('btn-pause').addEventListener('click', () => this.pausePattern());
                 document.getElementById('btn-stop').addEventListener('click', () => this.stopPattern());
                 document.getElementById('btn-home').addEventListener('click', () => { this.clearPath(); this.homeDevice(); });
+                document.getElementById('btn-home-abort').addEventListener('click', () => this.abortHoming());
                 document.getElementById('btn-home-confirm').addEventListener('click', () => this.confirmHome(true));
                 document.getElementById('btn-home-reject').addEventListener('click', () => this.confirmHome(false));
                 document.getElementById('btn-home-retry').addEventListener('click', () => { this.clearPath(); this.homeDevice(); });
@@ -880,6 +883,36 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
 
             async stopPattern() { await fetch(this.apiBase + '/pattern/stop', { method: 'POST' }); }
             async pausePattern() { await fetch(this.apiBase + '/pattern/pause', { method: 'POST' }); }
+
+            async abortHoming() {
+                // Keep this control available even before the first status
+                // poll. Never delay a stop behind a confirmation dialog.
+                if (this.abortInFlight) return;
+                this.abortInFlight = true;
+                const button = document.getElementById('btn-home-abort');
+                const message = document.getElementById('home-abort-status');
+                button.disabled = true;
+                message.textContent = 'Sending abort. If motion continues, switch off motor power.';
+                const request = new AbortController();
+                const timeout = setTimeout(() => request.abort(), 2500);
+                try {
+                    const response = await fetch(this.apiBase + '/home/abort', {
+                        method: 'POST', signal: request.signal
+                    });
+                    const result = await response.json();
+                    if (!response.ok || !result.success) throw new Error('Abort not acknowledged');
+                    message.textContent = result.requiresHoming
+                        ? 'Abort acknowledged. Position is untrusted; home again before running patterns. If motion continues, switch off motor power.'
+                        : 'Controller reports no active motion. If the motor is still moving, switch off motor power.';
+                } catch (error) {
+                    message.textContent = 'No abort acknowledgement. SWITCH OFF MOTOR POWER if motion continues. You can retry Abort.';
+                } finally {
+                    clearTimeout(timeout);
+                    this.abortInFlight = false;
+                    button.disabled = false;
+                }
+                try { await this.pollStatusOnce(); } catch (error) { /* Keep the abort message visible. */ }
+            }
 
             async homeDevice() {
                 if (!confirm('Run sensorless homing? Keep clear of the mechanism and watch the carriage. You will be asked to verify the result.')) return;
@@ -1120,9 +1153,9 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 } else if (status.state === 'INITIALIZED') {
                     homingMessage.textContent = 'Homing is required before a pattern can run.';
                 } else if (status.state === 'HOMING') {
-                    homingMessage.textContent = 'Sequential rho homing is in progress. Keep clear and verify the inactive motor remains mechanically stationary.';
+                    homingMessage.textContent = 'Rho homing is in progress. Keep clear. Press Abort homing if it keeps pushing against the end stop; switch off motor power if the website cannot stop it.';
                 } else if (status.state === 'HOMING_REVIEW') {
-                    homingMessage.textContent = 'Visually verify that both rho mechanisms reached their physical center stops. Confirm only if they did; patterns remain locked out until then.';
+                    homingMessage.textContent = 'Verify that each connected rho motor reached its physical home stop. Confirm only if it did; patterns remain locked out until then.';
                 } else if (status.state === 'HOMING_FAILED') {
                     const failures = {
                         1: 'One or both rho drivers are not communicating.',
