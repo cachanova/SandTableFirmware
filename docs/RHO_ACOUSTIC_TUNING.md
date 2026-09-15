@@ -6,6 +6,43 @@ the telemetry-aligned analysis in `scripts/acoustic_tuner.py`.
 
 ## Current assembled main-only retune (2026-09-15)
 
+Qualification correction: energized idle was not always room background. A
+stationary A/B/A check at regulated 275 mA, unchanged mic gain and no STEP
+epochs found:
+
+| PWM frequency setting | Stationary A-weighted level | Distinct tone |
+|---|---:|---|
+| 0 | -56.14 dBFS | 11,718.8 Hz |
+| 1 | -56.73 dBFS | 17,543 Hz |
+| 2, three interleaved checks | -68.96 / -68.91 / -68.83 dBFS | neither tone |
+| 3 | -68.87 dBFS | neither tone |
+
+These are total stationary recordings, not background-subtracted motor levels.
+The reversible, settings-locked difference identifies driver-related hold noise;
+do not call it environmental noise. Earlier frequency-0/1 motion-excess passes
+are not total-sound qualifications. Preserve those results as incremental-motion
+comparisons only. Frequency 2's 2 mm/s offset verification measured -60.47 dBFS
+motion-excess upper bound with healthy motion, but still needs the corrected
+total-sound checks and repeated full-range qualification.
+
+Keep all existing timing, adjacent-idle, gain, clipping, cruise and hardware
+checks. Add raw recorded-power upper bounds for each motion gate and every
+adjacent idle block. Both must be under the RHO tier as well as the existing
+motion-excess bound. If raw sound exceeds the tier but incremental motion passes,
+the result is inconclusive: the recording alone cannot distinguish external room
+noise from idle motor noise. Missing raw bounds also prevent qualification.
+Confidence bounds describe individual windows, not simultaneous 95% coverage
+for an entire multi-window profile. Use raw p95 bounds for ramp/stress transients.
+
+Offline replay preserved every original incremental metric and found these
+worst raw cruise bounds at 275 mA / 2 mm/s: frequency 0 = -54.55, 1 = -55.35,
+2 = -59.67 and 3 = -58.15 dBFS. Frequency 2 is the best of these comparisons
+but misses the conservative total -60 ceiling by 0.33 dB. None is qualified.
+The replay is in `total-sound-review/results.jsonl`; the reversible idle check
+is in `idle-frequency-ab/results.jsonl`. Raw-total exceedance alone is not
+proof of motor noise; attribution of the frequency-0/1 hold tones comes from
+the separate stationary A/B experiment.
+
 Homing qualification, production boot enable and cleanup merged to main as
 `a558c4e`, including the user-confirmed power-cold boot. Only the main RHO motor is connected;
 keep the CW driver at `TOFF=0` and theta stationary. Pass

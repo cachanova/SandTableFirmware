@@ -216,6 +216,13 @@ class TimedAcousticMetrics:
     motion_a_weighted_dbfs: float
     motion_p95_a_weighted_dbfs: float
     idle_p95_a_weighted_dbfs: float
+    raw_pre_idle_median_upper_95_a_weighted_dbfs: float | None
+    raw_post_idle_median_upper_95_a_weighted_dbfs: float | None
+    raw_motion_p95_upper_95_a_weighted_dbfs: float | None
+    raw_gate_median_upper_95_a_weighted_dbfs: list[float | None]
+    raw_gate_p95_upper_95_a_weighted_dbfs: list[float | None]
+    raw_gate_pre_idle_median_upper_95_a_weighted_dbfs: list[float | None]
+    raw_gate_post_idle_median_upper_95_a_weighted_dbfs: list[float | None]
     transient_p95_excess_a_weighted_dbfs: float | None
     transient_p95_excess_upper_95_a_weighted_dbfs: float | None
     transient_gate_p95_excess_a_weighted_dbfs: list[float]
@@ -252,6 +259,31 @@ class TimedAcousticMetrics:
 
 def db(value: float, power: bool = False) -> float:
     return (10.0 if power else 20.0) * math.log10(max(float(value), 1e-20))
+
+
+def raw_percentile_upper_95(
+    frame_power: np.ndarray, percentile: float, seed: int,
+) -> float | None:
+    """Per-window bootstrap upper bound in linear power, without subtraction.
+
+    Every fourth frame removes the spectrogram's 75% frame overlap; it does
+    not establish independence of persistent environmental noise. This is a
+    per-window empirical bound, not simultaneous coverage of an entire run.
+    Energized idle is included as sound, never assumed to be room-only noise.
+    """
+    values = np.asarray(frame_power, dtype=float)
+    if not math.isfinite(percentile) or not 0.0 <= percentile <= 100.0:
+        raise ValueError("percentile must be finite and between 0 and 100")
+    if (values.ndim != 1 or not np.all(np.isfinite(values))
+            or np.any(values < 0.0)):
+        return None
+    values = values[::4]
+    if len(values) < 5:
+        return None
+    rng = np.random.default_rng(seed)
+    indexes = rng.integers(0, len(values), size=(800, len(values)))
+    estimates = np.percentile(values[indexes], percentile, axis=1)
+    return float(np.percentile(estimates, 95))
 
 
 def median_excess_upper_95(
@@ -770,6 +802,10 @@ def analyze_timed(
     local_excess_upper_95_powers: list[float | None] = []
     local_transient_p95_excess_powers: list[float] = []
     local_transient_p95_excess_upper_95_powers: list[float | None] = []
+    raw_gate_median_bounds: list[float | None] = []
+    raw_gate_p95_bounds: list[float | None] = []
+    raw_gate_pre_idle_bounds: list[float | None] = []
+    raw_gate_post_idle_bounds: list[float | None] = []
     local_background_drift_db: list[float] = []
     outbound_excess_powers: list[float] = []
     inbound_excess_powers: list[float] = []
@@ -794,6 +830,18 @@ def analyze_timed(
             before_idle_median / max(after_idle_median, 1e-20), power=True,
         )))
         local_frames = frame_a_power[start:stop]
+        raw_median_frames = local_frames[moving[start:stop]]
+        # Transient total sound includes ramps, unlike the sustained-cruise
+        # median below. Keep the existing transition-safe motion mask.
+        raw_gate_p95_bounds.append(raw_percentile_upper_95(
+            local_frames[moving[start:stop]], 95.0, seed=0x3200 + gate_index,
+        ))
+        raw_gate_pre_idle_bounds.append(raw_percentile_upper_95(
+            frame_a_power[before], 50.0, seed=0x3300 + gate_index,
+        ))
+        raw_gate_post_idle_bounds.append(raw_percentile_upper_95(
+            frame_a_power[after], 50.0, seed=0x3400 + gate_index,
+        ))
         if velocities is not None and expected_max_velocity is not None:
             gate_speeds = np.abs(velocities[start:stop])
             gate_peak_velocities.append(round(float(np.max(gate_speeds)), 6))
@@ -805,6 +853,12 @@ def analyze_timed(
                 float(np.sum(cruise)) * frame_period_s, 3,
             ))
             local_frames = local_frames[cruise]
+            raw_median_frames = frame_a_power[start:stop][
+                cruise & moving[start:stop]
+            ]
+        raw_gate_median_bounds.append(raw_percentile_upper_95(
+            raw_median_frames, 50.0, seed=0x3500 + gate_index,
+        ))
         if len(local_frames) == 0:
             local_motion = 0.0
         else:
@@ -879,6 +933,10 @@ def analyze_timed(
         )
         locked_power += float(np.sum(excess * weights[band]))
     centered = audio - np.mean(audio)
+
+    def raw_bound_db(value: float | None) -> float | None:
+        return round(db(value, power=True), 2) if value is not None else None
+
     metrics = TimedAcousticMetrics(
         duration_s=round(len(audio) / rate, 3),
         sample_rate_hz=rate,
@@ -893,6 +951,27 @@ def analyze_timed(
         motion_a_weighted_dbfs=round(motion_a_dbfs, 2),
         motion_p95_a_weighted_dbfs=round(motion_p95_a_dbfs, 2),
         idle_p95_a_weighted_dbfs=round(idle_p95_a_dbfs, 2),
+        raw_pre_idle_median_upper_95_a_weighted_dbfs=raw_bound_db(
+            raw_percentile_upper_95(frame_a_power[pre], 50.0, seed=0x3600)
+        ),
+        raw_post_idle_median_upper_95_a_weighted_dbfs=raw_bound_db(
+            raw_percentile_upper_95(frame_a_power[post], 50.0, seed=0x3601)
+        ),
+        raw_motion_p95_upper_95_a_weighted_dbfs=raw_bound_db(
+            raw_percentile_upper_95(frame_a_power[moving], 95.0, seed=0x3602)
+        ),
+        raw_gate_median_upper_95_a_weighted_dbfs=[
+            raw_bound_db(value) for value in raw_gate_median_bounds
+        ],
+        raw_gate_p95_upper_95_a_weighted_dbfs=[
+            raw_bound_db(value) for value in raw_gate_p95_bounds
+        ],
+        raw_gate_pre_idle_median_upper_95_a_weighted_dbfs=[
+            raw_bound_db(value) for value in raw_gate_pre_idle_bounds
+        ],
+        raw_gate_post_idle_median_upper_95_a_weighted_dbfs=[
+            raw_bound_db(value) for value in raw_gate_post_idle_bounds
+        ],
         transient_p95_excess_a_weighted_dbfs=(
             round(db(transient_p95_excess_power, power=True), 2)
             if transient_p95_excess_power > 0.0 else None
@@ -2674,6 +2753,64 @@ def confirmed_tones(repeats: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(confirmed, key=lambda tone: tone["medianMotionLevelDbfs"], reverse=True)
 
 
+def total_sound_check(repeats: list[dict[str, Any]], profile: str,
+                      required_pairs: int, ceiling_dbfs: float | None) -> dict[str, Any]:
+    """Do not subtract persistent driver hold noise and call it inaudible.
+
+    A raw-total exceedance alone cannot distinguish room noise from motor noise.
+    Bounds are per-window 95% estimates, not simultaneous profile coverage.
+    """
+    motion_levels: list[float] = []
+    idle_levels: list[float] = []
+    valid = bool(repeats)
+    for repeat in repeats:
+        metrics = repeat["metrics"]
+        valid = valid and bool(
+            repeat.get("timingQuality", {}).get("valid")
+            and repeat.get("gainFingerprintStable")
+            and metrics.get("background_stable")
+            and not metrics.get("clipping_detected", True)
+        )
+        idle = [metrics.get("raw_pre_idle_median_upper_95_a_weighted_dbfs"),
+                metrics.get("raw_post_idle_median_upper_95_a_weighted_dbfs")]
+        if required_pairs and profile != "stress":
+            motion_key = ("raw_gate_p95_upper_95_a_weighted_dbfs" if profile == "ramp"
+                          else "raw_gate_median_upper_95_a_weighted_dbfs")
+            motion = metrics.get(motion_key, [])
+            before = metrics.get("raw_gate_pre_idle_median_upper_95_a_weighted_dbfs", [])
+            after = metrics.get("raw_gate_post_idle_median_upper_95_a_weighted_dbfs", [])
+            valid = valid and all(len(values) == required_pairs for values in (motion, before, after))
+            valid = valid and bool(
+                metrics.get("all_local_background_stable")
+                and metrics.get("on_off_pair_count") == required_pairs
+                and (profile == "ramp" or metrics.get("all_gates_sustain_commanded_velocity") is True)
+            )
+            idle += before + after
+        else:
+            motion = [metrics.get("raw_motion_p95_upper_95_a_weighted_dbfs")]
+        for values, destination in ((motion, motion_levels), (idle, idle_levels)):
+            for value in values:
+                if value is None or not math.isfinite(float(value)):
+                    valid = False
+                else:
+                    destination.append(float(value))
+    valid = bool(valid and motion_levels and idle_levels)
+    within = bool(valid and ceiling_dbfs is not None
+                  and max(motion_levels + idle_levels) <= ceiling_dbfs)
+    return {
+        "measurementValid": valid,
+        "withinTier": within,
+        "status": ("pass" if within else "inconclusive-invalid-measurement" if not valid
+                   else "inconclusive-no-tier" if ceiling_dbfs is None
+                   else "inconclusive-total-above-tier"),
+        "loudestRawMotionUpper95AWeightedDbfs": max(motion_levels) if motion_levels else None,
+        "loudestRawIdleUpper95AWeightedDbfs": max(idle_levels) if idle_levels else None,
+        "ceilingAWeightedDbfs": ceiling_dbfs,
+        "confidenceScope": "per-window 95%; not simultaneous whole-profile coverage",
+        "limitation": "A raw exceedance does not identify room versus motor noise",
+    }
+
+
 def repeat_confirmation_satisfied(
     profile_summaries: dict[str, dict[str, Any]], requested_repeats: int,
 ) -> bool:
@@ -3035,6 +3172,15 @@ def cmd_trial(args: argparse.Namespace) -> int:
                 for level in confirmed_tone_peak_levels
             )
         )
+        total_sound = total_sound_check(
+            profile_repeats, profile, required_pair_count,
+            None if args.reference_only else args.acceptable_ceiling_dbfs,
+        )
+        excess_within_tier = (
+            level_valid and bool(acceptance_levels)
+            and all(level <= args.acceptable_ceiling_dbfs for level in acceptance_levels)
+            and tone_measurement_valid and tone_levels_within_ceiling
+        ) if not args.reference_only else None
         profile_summaries[profile] = {
             "provisionalScreen": profile == "screen",
             "qualificationEligible": profile not in ("screen", "verify"),
@@ -3154,18 +3300,16 @@ def cmd_trial(args: argparse.Namespace) -> int:
                     if near_high_speed_levels else None
                 ),
                 "rawHighSpeedMetricUsedForAcceptance": False,
+                "totalRecordedSound": total_sound,
+                "totalRecordedSoundRequired": axis.name == "rho",
+                "motorExcessWithinAcceptableReference": excess_within_tier,
                 "acceptableMotorExcessCeilingAWeightedDbfs": (
                     None if args.reference_only else args.acceptable_ceiling_dbfs
                 ),
                 "everyRepeatWithinAcceptableReference": (
                     None if args.reference_only else (
-                    level_valid
-                    and all(
-                        level <= args.acceptable_ceiling_dbfs
-                        for level in acceptance_levels
-                    )
-                    and tone_measurement_valid
-                    and tone_levels_within_ceiling
+                    excess_within_tier
+                    and (axis.name != "rho" or total_sound["withinTier"])
                     )
                 ),
             },
