@@ -6,6 +6,16 @@ the telemetry-aligned analysis in `scripts/acoustic_tuner.py`.
 
 ## Current assembled main-only retune (2026-09-15)
 
+**Hardware testing paused after the 09:39 UTC slow-speed trial.** Three
+consecutive SG_RESULT <=5 samples during the return caused an automatic stop.
+The retained emitted-step ledger is 2.5125 mm, not a verified physical position.
+The camera image is too dark to resolve the mechanism. Do not Set Home, jog
+back to zero, increase the recovery allowance, or resume sound trials from
+this ledger alone. Restore an independently checked origin first. The current
+service image has boot motion OFF; production boot homing is enabled in main
+but has not been reinstalled after these timing experiments. Leave it off until
+recovery is checked. None of the new sound profiles is qualified.
+
 Qualification correction: energized idle was not always room background. A
 stationary A/B/A check at regulated 275 mA, unchanged mic gain and no STEP
 epochs found:
@@ -259,6 +269,29 @@ timing outliers across 8,000 pulses, -67.06 dBFS raw cruise upper bound and
 microstepping alone did not solve the near-home event. Its frozen post-home
 audit passed (contacts 2493 / 2513 / 2493, 0.05 mm span). The audit count is
 34 through 09:36 UTC; these are still SG-based origin checks.
+
+Reducing acceleration/jerk to 2 mm/s² / 10 mm/s³ at the same 2 mm/s did not
+solve it: raw cruise upper bound -66.86 dBFS, return whole-STEP maximum
+-49.61. Its post-home audit passed, bringing the count to 35 through 09:38.
+Across u2/u8 and both deceleration profiles, loud-event onset was near
+commanded 0.35–0.44 mm. Other 10/50/100 mm endpoints were quiet through their
+stop-speed transitions. The gentler return had several ringing events spaced
+about 0.08 mm apart in the step ledger. This favors contact/compliance or
+near-home loading over a generic StealthChop transition, but is not proof of
+physical contact or measured lost steps. Homing currently ends on contact
+consensus without a final clearance move. Do not silently change its zero or
+declare an offset-only sound test a full-range qualification.
+
+The subsequent 1 mm/s trial aborted before completing its return. Current,
+driver health and STEP timing did not report a separate fault in the later
+stationary snapshot. SG can be unreliable at low speed, but the evidence does
+not justify ignoring its guard. The original runner lost in-trial telemetry
+on that exception; only its WAV remains. `failed-trial-review/results.jsonl`
+preserves the subsequent stopped-state observation, explicitly not reconstructed
+motion/audio timing. The host failure path is being corrected to retain future
+failed timelines. When a checked origin is available, a diagnostic 1 -> 11 ->
+1 mm comparison would test clearance from the noisy near-zero region without
+redefining zero; it would not qualify operation down to 0 mm.
 
 Homing qualification, production boot enable and cleanup merged to main as
 `a558c4e`, including the user-confirmed power-cold boot. Only the main RHO motor is connected;
