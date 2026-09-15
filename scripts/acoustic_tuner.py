@@ -1511,6 +1511,17 @@ class CruiseDriverGuard:
             )
 
 
+def motion_driver_poll_phase(
+    axis_name: str, velocity: float, expected_max_velocity: float,
+) -> str:
+    """Cruise SG protection must also apply to the fast-poll verify profile."""
+    if (axis_name == "rho" and math.isfinite(velocity)
+            and math.isfinite(expected_max_velocity) and expected_max_velocity > 0
+            and abs(velocity) >= 0.9 * expected_max_velocity):
+        return "during-cruise"
+    return "during-motion"
+
+
 def planner_repeat_healthy(repeat: dict[str, Any]) -> bool:
     """Counters are boot-cumulative; reject changes or resets within this repeat."""
     samples = repeat.get("telemetry", [])
@@ -2486,12 +2497,16 @@ def run_timed_repeat(
         """Capture driver health and abort sustained-cruise SG collapse."""
         for driver_role, dump_path in axis.driver_dump_paths:
             lightweight = args.lightweight_driver_polling and phase.startswith("during-")
+            request_started = time.monotonic() - recording_zero
             driver = board.get(dump_path + ("?motionHealth=true" if lightweight else ""))
+            request_ended = time.monotonic() - recording_zero
             if lightweight and driver.get("snapshotKind") != "motion-health":
                 raise RuntimeError("Firmware did not provide a motion-health snapshot")
             driver["driverRole"] = driver_role
             driver["samplePhase"] = phase
-            driver["hostOffsetS"] = round(time.monotonic() - recording_zero, 6)
+            driver["hostOffsetS"] = round(request_ended, 6)
+            driver["requestStartHostS"] = round(request_started, 6)
+            driver["requestEndHostS"] = round(request_ended, 6)
             driver_samples.append(driver)
             cruise_guard.observe(driver_role, driver, phase)
 
@@ -2528,7 +2543,10 @@ def run_timed_repeat(
                 if (telemetry and telemetry[-1].get("state") == "RUNNING"
                         and time.monotonic() >= next_driver_poll):
                     if profile == "verify":
-                        sample_drivers("during-motion")
+                        sample_drivers(motion_driver_poll_phase(
+                            axis.name, float(telemetry[-1]["velocity"][axis.name]),
+                            expected_max_velocity,
+                        ))
                         next_driver_poll = time.monotonic() + 0.10
                     elif (axis.name == "rho" and
                           abs(float(telemetry[-1]["velocity"][axis.name])) >=

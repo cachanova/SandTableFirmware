@@ -12,7 +12,7 @@ from acoustic_tuner import (motor_participates, interpolation_readback_confirmed
                             CruiseDriverGuard, planner_repeat_healthy,
                             rho_segment_targets, rho_profile_distance_mm,
                             repeat_confirmation_satisfied, save_timing_plot, AXES,
-                            precondition_rho_stealthchop)
+                            precondition_rho_stealthchop, motion_driver_poll_phase)
 
 
 class CalibrationCleanupTest(unittest.TestCase):
@@ -106,6 +106,23 @@ class CruiseGuardTest(unittest.TestCase):
 
     def observe(self, phase="during-cruise"):
         self.guard.observe("rho", self.driver, phase)
+
+    def test_verify_cruise_phase_preserves_sustained_sg_guard(self):
+        for velocity in (2, -2, 1.8):
+            self.guard = CruiseDriverGuard()
+            phase = motion_driver_poll_phase("rho", velocity, 2)
+            self.assertEqual(phase, "during-cruise")
+            self.observe(phase)
+            self.observe(phase)
+            with self.assertRaisesRegex(RuntimeError, "possible physical stall"):
+                self.observe(phase)
+
+    def test_ramps_theta_and_invalid_target_do_not_claim_rho_cruise(self):
+        for axis, velocity, maximum in (("rho", .1, 2), ("theta", 2, 2),
+                                        ("rho", 0, 0), ("rho", 2, float("nan")),
+                                        ("rho", float("nan"), 2)):
+            self.assertEqual(motion_driver_poll_phase(axis, velocity, maximum),
+                             "during-motion")
 
     def test_three_low_samples_abort_but_isolated_zero_does_not(self):
         self.observe()

@@ -76,6 +76,54 @@ wrapping microsecond snapshot, not an independent 32-bit millisecond counter.
 epochs, clock drift, rollover-zero timestamps and stale-epoch filtering. A real
 four-leg replay retained valid timing with changes within measured RTT bounds.
 
+At 200 mA / frequency 2 / TBL 1 / REG 4 / 2 mm/s, switching external
+microsteps from 8 to 2 (interpolation still on) reduced the worst sustained
+raw bound to -63.21 dBFS and incremental bound to -65.08. All four gates had
+full cruise and clean motion/timing. However, the raw per-gate p95 bounds were
+-47.60, -47.09, -48.28 and -49.29 dBFS. Visible bursts occur within the motion
+windows. The quiet median is therefore not a whole-motion qualification;
+investigate these transients before selecting this profile or increasing speed.
+
+The u4 comparison was worse: -55.80 dBFS incremental and -55.45 raw cruise
+upper bounds, with healthy planner/driver readbacks and logical return. The
+subsequent bounded endpoint audit passed at contact coordinates 2440, 2481
+and 2503 steps (0.1575 mm total span), with 14.43/13.25/6.34 dB audio rises.
+
+Parallel review found that 6.37%, 6.67% and 10.84% of cruise frames exceeded
+-55 dBFS for u8/REG15, u8/REG4 and u2/REG4, respectively; none of their idle
+frames did. Removing the first and last second of each u2 gate left similar
+burst fractions. The strongest u2 bursts last about 55 ms (median waveform
+energy duration), with about 90% of excess energy at 1-5 kHz. Quiet cruise
+medians cannot qualify these profiles as inaudible.
+
+Burst timing correlates with diagnostic polling more strongly than shifted
+controls, but does not yet identify UART interference, microphone EMI, Wi-Fi
+scheduling or STEP timing as the cause. Normal motion uses a 50 us
+`ESP_TIMER_TASK` callback, one queue event per callback. Delayed execution can
+produce late and compressed pulses without a queue underrun. Reported speed
+is the planned S-curve, not measured pulse spacing. Homing uses its separate
+hardware ISR and is unchanged. First run the read-only stationary
+`scripts/acoustic_polling_probe.py` telemetry/UART A/B/A diagnostic, then
+instrument actual normal STEP timing before changing the timer architecture.
+Retain all bounds and health monitoring during causal comparisons.
+
+Host guard correction: older `verify` trials checked faults and active/CW
+bridge state, but labeled every moving driver sample `during-motion`. This
+skipped the guard's sustained-cruise SG-collapse check. The quick profile now
+labels samples at >=90% target RHO speed `during-cruise`, at the same polling
+cadence. This does not retroactively qualify old trials. Driver samples now
+record request start and completion times, not only completion, for attribution.
+
+The stationary polling probe completed five 20-second blocks with unchanged
+coordinates, STEP epoch 102 and microphone gain. Telemetry-only blocks measured
+-63.60/-63.67/-63.53 dBFS median; telemetry plus fast driver polls measured
+-63.67/-63.67. No frame exceeded -55 dBFS in any block. Thus polling did not
+reproduce the motion bursts at standstill in this test; it does not rule out
+motion-dependent electrical interference. Numeric evidence is in
+`stationary-polling/20260915T084723Z-stationary-polling.json`. The script issues
+only GET requests and checks state, coordinates, STEP epochs and driver health.
+All 25 bounded endpoint audits through 08:44 UTC passed on the frozen profile.
+
 Homing qualification, production boot enable and cleanup merged to main as
 `a558c4e`, including the user-confirmed power-cold boot. Only the main RHO motor is connected;
 keep the CW driver at `TOFF=0` and theta stationary. Pass
