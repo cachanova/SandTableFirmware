@@ -62,7 +62,14 @@ DEFAULT_ACCEPTABLE_NEAR_HIGH_SPEED_CEILING_DBFS = -53.92
 DEFAULT_ACCEPTABLE_NEAR_TONE_CEILING_DBFS = -58.45
 
 
-def rho_segment_targets(profile: str, excursion_mm: float) -> tuple[float, ...]:
+def rho_segment_targets(profile: str, excursion_mm: float,
+                        window_start_mm: float = 0.0) -> tuple[float, ...]:
+    if window_start_mm:
+        if profile not in ("verify", "screen", "gated", "ramp"):
+            raise ValueError("Offset windows require a segmented screen, gate, verify or ramp")
+        core = rho_segment_targets(profile, excursion_mm)
+        return ((window_start_mm,) + tuple(window_start_mm + target for target in core)
+                + (0.0,))
     if profile == "range":
         return tuple(index * excursion_mm / 8.0
                      for index in (*range(1, 9), *range(7, -1, -1)))
@@ -84,9 +91,10 @@ def rho_segment_targets(profile: str, excursion_mm: float) -> tuple[float, ...]:
     )
 
 
-def rho_profile_distance_mm(profile: str, excursion_mm: float) -> float:
+def rho_profile_distance_mm(profile: str, excursion_mm: float,
+                            window_start_mm: float = 0.0) -> float:
     if profile in RHO_SEGMENTED_PROFILES:
-        targets = (0.0,) + rho_segment_targets(profile, excursion_mm)
+        targets = (0.0,) + rho_segment_targets(profile, excursion_mm, window_start_mm)
         return sum(abs(end - start) for start, end in zip(targets, targets[1:]))
     return RHO_PROFILE_DISTANCE_MM[profile]
 
@@ -1669,6 +1677,25 @@ def precondition_rho_stealthchop(
     sense_resistor_ohms: float,
     excursion_mm: float = 100.0,
 ) -> dict[str, Any]:
+    """Fail stopped on every calibration error, including transport loss."""
+    if not math.isfinite(excursion_mm) or not 1 <= excursion_mm <= RHO_TEST_MAX_EXCURSION_MM:
+        raise ValueError("Rho calibration excursion must stay within 1..400 mm")
+    if not math.isfinite(velocity_mm_s) or velocity_mm_s <= 0:
+        raise ValueError("Rho calibration velocity must be positive and finite")
+    try:
+        return _precondition_rho_stealthchop(
+            board, velocity_mm_s, driver_settings, sense_resistor_ohms, excursion_mm,
+        )
+    except BaseException:
+        # No return-to-origin command after an uncertain calibration movement.
+        board.recovering_stop()
+        raise
+
+
+def _precondition_rho_stealthchop(
+    board: Board, velocity_mm_s: float, driver_settings: dict[str, Any],
+    sense_resistor_ohms: float, excursion_mm: float,
+) -> dict[str, Any]:
     """Complete excluded AT#2 motion and return to the temporary origin."""
     irun_code, _ = driver_current_quantization(
         int(driver_settings["runCurrent"]),
@@ -1698,6 +1725,12 @@ def precondition_rho_stealthchop(
         )
     deadline_per_leg_s = excursion_mm / max(velocity_mm_s, 0.1) * 1.5 + 10.0
     samples: list[dict[str, Any]] = []
+    guard = CruiseDriverGuard()
+    initial = board.get("/api/motion/telemetry")
+    initial_underruns = initial["planner"]["underruns"]
+    if (abs(float(initial["position"]["rho"])) > RHO_POSITION_TOLERANCE_MM
+            or initial.get("state") != "IDLE"):
+        raise RuntimeError("Rho calibration requires stationary logical zero")
     for target_mm in (excursion_mm, 0.0):
         board.post("/api/tuning/test/rho/segment", {"targetMm": target_mm})
         deadline = time.monotonic() + deadline_per_leg_s
@@ -1706,18 +1739,16 @@ def precondition_rho_stealthchop(
             telemetry = board.get("/api/motion/telemetry")
             position = float(telemetry["position"]["rho"])
             velocity = abs(float(telemetry["velocity"]["rho"]))
-            if position < -RHO_POSITION_TOLERANCE_MM:
-                board.recovering_stop()
-                raise RuntimeError("Rho preconditioning moved inward of temporary zero")
+            if not -RHO_POSITION_TOLERANCE_MM <= position <= excursion_mm + RHO_POSITION_TOLERANCE_MM:
+                raise RuntimeError("Rho preconditioning left its bounded excursion")
+            if (telemetry["planner"]["underruns"] != initial_underruns
+                    or telemetry["planner"]["maxConsecutiveUnderruns"] != 0):
+                raise RuntimeError("Planner underrun during Rho preconditioning")
             motion_seen = motion_seen or velocity >= 0.002
             if velocity >= 0.9 * velocity_mm_s:
                 for role, path in AXES["rho"].driver_dump_paths:
                     diagnostic = board.get(path)
-                    if not driver_is_healthy(diagnostic):
-                        raise RuntimeError(
-                            f"{role} driver faulted during preconditioning"
-                        )
-                    motor_participates(role, diagnostic)
+                    guard.observe(role, diagnostic, "during-cruise")
                     samples.append({
                         "legTargetMm": target_mm,
                         "role": role,
@@ -1728,15 +1759,12 @@ def precondition_rho_stealthchop(
             if (motion_seen and telemetry.get("state") == "IDLE" and velocity < 0.002
                     and abs(position - target_mm) <= RHO_POSITION_TOLERANCE_MM):
                 break
-            time.sleep(0.05)
+            time.sleep(0.25)
         else:
-            board.recovering_stop()
             raise RuntimeError("Rho StealthChop preconditioning did not complete")
         for role, path in AXES["rho"].driver_dump_paths:
             diagnostic = board.get(path)
-            if not driver_is_healthy(diagnostic):
-                raise RuntimeError(f"{role} driver faulted during preconditioning")
-            motor_participates(role, diagnostic)
+            guard.observe(role, diagnostic, "after-preconditioning-leg")
             samples.append({"legTargetMm": target_mm, "role": role,
                             "cruise": False,
                             "positionMm": round(target_mm, 4),
@@ -2153,7 +2181,8 @@ def save_timing_plot(
     )
     spectral_db = 10.0 * np.log10(np.maximum(spectra[:, audible], 1e-20))
     vmax = float(np.percentile(spectral_db, 99.7))
-    fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True,
+                             constrained_layout=True)
     mesh = axes[0].pcolormesh(
         times, frequencies[audible], spectral_db.T, shading="auto",
         cmap="magma", vmin=vmax - 60.0, vmax=vmax,
@@ -2162,7 +2191,9 @@ def save_timing_plot(
     axes[0].set_ylim(HUMAN_AUDIBLE_MIN_HZ, HUMAN_AUDIBLE_MAX_HZ)
     axes[0].set_ylabel("Frequency (Hz)")
     axes[0].set_title("20 Hz–20 kHz short-window spectrogram")
-    fig.colorbar(mesh, ax=axes[0], label="Power (dBFS/bin)")
+    # Reserve colorbar space from every panel. Shrinking only the spectrogram
+    # gives identical times different horizontal positions in the three plots.
+    fig.colorbar(mesh, ax=axes, label="Power (dBFS/bin)")
 
     telemetry_times = [float(sample["hostOffsetS"]) for sample in telemetry]
     velocities = [float(sample["velocity"][axis_config.name]) for sample in telemetry]
@@ -2203,7 +2234,6 @@ def save_timing_plot(
         axis.axvline(metrics.actual_motion_start_s, color="#228b22", linestyle="--")
         axis.axvline(metrics.actual_motion_end_s, color="#b22222", linestyle="--")
     fig.suptitle("ESP32 telemetry-aligned acoustic validation")
-    fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
 
@@ -2218,12 +2248,12 @@ def run_timed_repeat(
 ) -> dict[str, Any]:
     axis = AXES[args.axis]
     rho_envelope_mm = (
-        args.rho_excursion_mm
+        args.rho_window_start_mm + args.rho_excursion_mm
         if profile in RHO_SEGMENTED_PROFILES
         else RHO_TEST_MAX_EXCURSION_MM
     )
     segmented_targets = (
-        rho_segment_targets(profile, args.rho_excursion_mm)
+        rho_segment_targets(profile, args.rho_excursion_mm, args.rho_window_start_mm)
         if axis.name == "rho" and profile in RHO_SEGMENTED_PROFILES
         else theta_segment_targets(profile, args.theta_excursion_deg)
         if axis.name == "theta"
@@ -2574,6 +2604,7 @@ def run_timed_repeat(
         "returnError": round(return_error, 6),
         "initialPlannerUnderruns": start_sample["planner"]["underruns"],
         "rhoExcursionMm": rho_envelope_mm if axis.name == "rho" else None,
+        "rhoWindowStartMm": args.rho_window_start_mm if axis.name == "rho" else None,
         "thetaExcursionDeg": (
             args.theta_excursion_deg if axis.name == "theta" and segmented_targets
             else None
@@ -2706,6 +2737,13 @@ def cmd_trial(args: argparse.Namespace) -> int:
             f"--rho-excursion-mm must be between 1 and "
             f"{RHO_TEST_MAX_EXCURSION_MM:.0f}"
         )
+    if (not math.isfinite(args.rho_window_start_mm)
+            or args.rho_window_start_mm < 0
+            or args.rho_window_start_mm + args.rho_excursion_mm > RHO_TEST_MAX_EXCURSION_MM):
+        raise ValueError("Rho window plus excursion must stay within 0..400 mm")
+    if args.rho_window_start_mm and (
+            axis.name != "rho" or args.profile not in ("verify", "screen", "gated", "ramp")):
+        raise ValueError("Rho offset windows require a rho verify/screen/gated/ramp profile")
     if not 1.0 <= args.theta_excursion_deg <= THETA_TEST_MAX_EXCURSION_DEG:
         raise ValueError(
             f"--theta-excursion-deg must be between 1 and "
@@ -2745,7 +2783,7 @@ def cmd_trial(args: argparse.Namespace) -> int:
             ("continuous", "stress") if args.profile == "both" else (args.profile,)
         )
         minimum_motion_s = max(
-            rho_profile_distance_mm(profile, args.rho_excursion_mm)
+            rho_profile_distance_mm(profile, args.rho_excursion_mm, args.rho_window_start_mm)
             / float(tuning["motion"][axis.motion_velocity_key])
             for profile in requested_profiles
         )
@@ -2756,7 +2794,7 @@ def cmd_trial(args: argparse.Namespace) -> int:
         ]
         if gated_profiles:
             minimum_timeout_s += max(
-                len(rho_segment_targets(profile, args.rho_excursion_mm))
+                len(rho_segment_targets(profile, args.rho_excursion_mm, args.rho_window_start_mm))
                 for profile in gated_profiles
             ) * args.gated_idle
         if args.duration < minimum_timeout_s:
@@ -2844,7 +2882,7 @@ def cmd_trial(args: argparse.Namespace) -> int:
         )
         required_pair_count = (
             len(
-                rho_segment_targets(profile, args.rho_excursion_mm)
+                rho_segment_targets(profile, args.rho_excursion_mm, args.rho_window_start_mm)
                 if axis.name == "rho"
                 else theta_segment_targets(profile, args.theta_excursion_deg)
             )
@@ -3670,6 +3708,10 @@ def build_parser() -> argparse.ArgumentParser:
             "ramp uses 10/20/40/100 percent of this excursion; "
             "range traverses it outward and back in eight equal sections each way"
         ),
+    )
+    trial.add_argument(
+        "--rho-window-start-mm", type=float, default=0.0,
+        help="offset a rho segmented test outward; include travel to the window and back to zero",
     )
     trial.add_argument(
         "--theta-excursion-deg", type=float, default=90.0,

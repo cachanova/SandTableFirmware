@@ -1,14 +1,36 @@
 """Unused CW still needs UART/bridge checks, but has no acoustic target."""
 import copy
+import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch, Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from acoustic_tuner import (motor_participates, interpolation_readback_confirmed,
                             CruiseDriverGuard, planner_repeat_healthy,
                             rho_segment_targets, rho_profile_distance_mm,
-                            repeat_confirmation_satisfied)
+                            repeat_confirmation_satisfied, save_timing_plot, AXES,
+                            precondition_rho_stealthchop)
+
+
+class CalibrationCleanupTest(unittest.TestCase):
+    def test_fault_transport_and_interrupt_always_stop_without_return_motion(self):
+        for failure in (RuntimeError("driver"), OSError("transport"), KeyboardInterrupt()):
+            board = Mock()
+            with patch("acoustic_tuner._precondition_rho_stealthchop", side_effect=failure):
+                with self.assertRaises(type(failure)):
+                    precondition_rho_stealthchop(board, 4, {}, .11)
+            board.recovering_stop.assert_called_once_with()
+            board.post.assert_not_called()
+
+    def test_invalid_geometry_rejected_without_board_access(self):
+        for excursion in (-1, 0, 401, float("nan"), float("inf")):
+            board = Mock()
+            with self.assertRaises(ValueError):
+                precondition_rho_stealthchop(board, 4, {}, .11, excursion)
+            self.assertEqual(board.mock_calls, [])
 
 
 class MotorSelectionTest(unittest.TestCase):
@@ -139,6 +161,15 @@ class CruiseGuardTest(unittest.TestCase):
 
 
 class RhoRampTest(unittest.TestCase):
+    def test_offset_screen_visits_hotspot_and_returns_to_original_zero(self):
+        targets = rho_segment_targets("screen", 50, 50)
+        self.assertEqual(targets, (50, 100, 50, 100, 50, 0))
+        self.assertEqual(rho_profile_distance_mm("screen", 50, 50), 300)
+        self.assertGreaterEqual(min(targets), 0)
+        self.assertEqual(max(targets), 100)
+        with self.assertRaises(ValueError):
+            rho_segment_targets("range", 350, 50)
+
     def test_repeated_verification_is_not_qualification(self):
         summary = {"verify": {"provisionalScreen": False,
                               "qualificationEligible": False,
@@ -170,6 +201,33 @@ class RhoRampTest(unittest.TestCase):
     def test_existing_segment_distances_unchanged(self):
         for profile, distance in (("verify", 100), ("screen", 200), ("gated", 400)):
             self.assertEqual(rho_profile_distance_mm(profile, 50), distance)
+
+
+@unittest.skipUnless(importlib.util.find_spec("matplotlib"), "optional plotting dependency")
+class TimingPlotTest(unittest.TestCase):
+    def test_shared_time_has_same_horizontal_position_in_all_panels(self):
+        import numpy as np
+        from matplotlib.figure import Figure
+        positions = []
+
+        def inspect_layout(figure, *args, **kwargs):
+            figure.canvas.draw()
+            positions.extend(axis.get_position().bounds for axis in figure.axes[:3])
+
+        analysis = {"times": np.array([0., 1., 2.]),
+                    "frequencies": np.array([100., 1000., 10000.]),
+                    "spectra": np.ones((3, 3)) * 1e-8}
+        metrics = SimpleNamespace(sample_rate_hz=48000, timing_locked_tones=[],
+                                  actual_motion_start_s=0.5, actual_motion_end_s=1.5)
+        telemetry = [{"hostOffsetS": t, "velocity": {"rho": v}}
+                     for t, v in ((0, 0), (1, 5), (2, 0))]
+        with patch.object(Figure, "savefig", inspect_layout):
+            save_timing_plot(Path("unused-test-output.png"), analysis, telemetry,
+                             metrics, AXES["rho"])
+        self.assertEqual(len(positions), 3)
+        for position in positions[1:]:
+            self.assertAlmostEqual(position[0], positions[0][0], places=6)
+            self.assertAlmostEqual(position[2], positions[0][2], places=6)
 
 
 if __name__ == "__main__":

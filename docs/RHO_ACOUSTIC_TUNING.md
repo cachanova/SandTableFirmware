@@ -13,11 +13,36 @@ keep the CW driver at `TOFF=0` and theta stationary. Pass
 and the unused bridge, but does not require the unused motor to produce SG,
 match active-motor interpolation, or complete StealthChop calibration.
 
-Recheck the historical fixed-PWM 128/2, u8 interpolated, CoolStep-off family
-first at 200 mA run/hold. The older acoustic winners used 150/75 mA at 4.25,
+Full-stroke qualification invalidated the near-home speed candidates as whole-
+mechanism qualifications. At 5 mm/s, the 100 -> 50 mm return section measured
+-54.26 and -53.89 dBFS upper bounds in two independent range runs, versus
+roughly -60 to -64 elsewhere. Both runs had valid timing/background, full
+cruise, logical returns and healthy drivers/planners. Do not promote 5 mm/s
+at -60, or assume the 3.5 / 2 mm/s near-home screens qualify the whole stroke.
+Retune against this repeatable noisy section, then repeat the range check.
+The bounded post-range home audit passed at 2417, 2391 and 2385 steps; its
+last contact had a 7.77 dB audio rise. This remains SG-based, not camera proof.
+
+The focused 50-100 mm screen also failed at 3.5 mm/s (-55.15 dBFS upper
+bound), so merely promoting the slower near-home tier would be wrong.
+
+Current-setting caveat: with `PWM_AUTOSCALE=0`, IRUN/IHOLD scale PWM voltage;
+they do not enforce the nominal coil current. The fixed-128/0, CS6 profile
+read back `PWM_SCALE_SUM=28`. Its actual current depends on coil resistance,
+supply voltage and back EMF, and has not been measured. Do not treat the
+"200 mA" label or CS14 software cap as a measured/enforced current bound in
+this mode, and do not increase fixed PWM strength on that assumption. The
+next comparison uses regulated current (`PWM_AUTOSCALE=1`) at CS8 / 275 mA
+requested, checking standstill adaptation before motion. This does not alter
+the dedicated homing profile, which already uses automatic current control.
+See the [TMC2209 datasheet, PWMCONF and section 6.4](https://www.analog.com/media/en/technical-documentation/data-sheets/TMC2209_datasheet_rev1.09.pdf).
+
+The initial sweep rechecked the historical fixed-PWM 128/2, u8 interpolated,
+CoolStep-off family at 200 mA requested run/hold. The older acoustic winners used 150/75 mA at 4.25,
 2, and 1 mm/s, acceleration 20 and jerk 100, but later reversal stress lost
-synchronization at 150 mA. Keep 200 mA as the starting reliability baseline;
-consider reducing it only after the loaded main-only mechanism passes.
+synchronization at 150 mA requested. These fixed-PWM current labels are nominal
+register settings, not enforced coil currents; use the regulated comparison above
+for further current exploration.
 Those paired-hardware results are starting points, not current qualifications.
 Keep the dedicated homing profile independent of motion changes and inspect
 the camera after each completed configuration when illuminated. The SG-based
@@ -102,7 +127,7 @@ pending repeated qualification; do not round the 5.5 result into a pass.
 The quieter fixed-128/0 screens passed -63 at 3 mm/s (-64.76 dBFS upper
 bound) and 3.5 mm/s (-63.21). The latter has little margin and particularly
 needs independent repeats; neither is yet a qualified assembled profile.
-At 2 mm/s, fixed 128/0 subsequently screened at -66.66 dBFS upper bound
+At 2 mm/s, fixed 128/0 subsequently screened near home at -66.66 dBFS upper bound
 (-67.94 estimated motor excess), with valid background/timing checks and no
 faults. This is a provisional -66 pass, unlike the earlier floor-limited result.
 
@@ -131,11 +156,25 @@ Every test target is between logical 0 and +400 mm, and every successfully
 completed test returns to logical 0. No test commands an inward-negative rho
 position.
 
+The host calibration helper now stops on every exception, including a failed
+HTTP request or keyboard interrupt, instead of allowing an unobserved AT#2
+segment to finish. It also checks both travel bounds, bridge health, cruise SG
+and planner underruns. Automatic-gradient experiments still use full register
+polls to validate PWM adaptation, so reject any resulting planner underrun;
+do not infer calibration success from a completed command alone. The current
+automatic-current / manual-gradient comparison does not require AT#2 motion.
+
 ## Test trajectories
 
 - Screen: four complete 50 mm legs, `0 -> 50 -> 0 -> 50 -> 0`, with an idle
   gap after each leg. If every leg does not sustain at least 90% of commanded
   velocity for one second, repeat the screen at 100 mm.
+- Offset screen: `--rho-window-start-mm 50 --rho-excursion-mm 50` runs
+  `0 -> 50 -> 100 -> 50 -> 100 -> 50 -> 0` (300 mm total), exposing the noisy
+  return section without a full-range trip for every candidate. Entry and
+  exit legs are also measured, never used to average away a louder gate. The
+  host rejects negative offsets and any window extending beyond 400 mm before
+  contacting the board. Offset windows apply only to verify/screen/gated/ramp.
 - Continuous: `start -> start+400 mm -> start`.
 - Spatial range: `--profile range --rho-excursion-mm 400` travels outward
   in eight 50 mm sections and back over the same sections, pausing after each.
@@ -199,7 +238,8 @@ manufacturer value of 0.11 ohm for its external sense resistors. Firmware sets
 potentiometer does not set running current after configuration. Both rho
 drivers must confirm digital current scaling and external sensing over UART.
 
-The 500 mA motor rating remains a ceiling. Until you measure coil current or
+The 500 mA motor rating remains a ceiling. For regulated-current operation,
+until you measure coil current or
 confirm the shunt tolerance, firmware caps rho at raw current code CS=14. With
 `VSENSE=1`, the useful commissioning points are:
 
@@ -214,6 +254,8 @@ confirm the shunt tolerance, firmware caps rho at raw current code CS=14. With
 CS=14 is the high-current tuning point: about 486 mA after the firmware's 6%
 uncertainty allowance. CS=15 commands about 490 mA nominal and about 519 mA
 with the same allowance, so the API and host tool reject it.
+These register-code checks do not bound coil current in unregulated fixed-PWM
+mode; see the current-setting caveat above.
 
 UART cannot protect the interval before the controller configures the driver
 after a cold power-on. Hold the module's active-low `ENN` pin high during boot,
