@@ -1971,46 +1971,140 @@ def _telemetry_sample(
 def step_motion_intervals(
     telemetry: list[dict[str, Any]],
 ) -> list[dict[str, float | int]]:
-    """Map exact ESP32 STEP-window timestamps onto the host audio clock."""
+    """Map STEP epochs across clock wraps using locally observed boundaries.
+
+    Clock samples must be continuous and agree with host request timing. A
+    discontinuity raises instead of silently falling back to velocity-only
+    timing. Starts and stops are unwrapped when first observed. A lower-RTT
+    observation can refine their host mapping only within the existing 0.5 s
+    telemetry-gap window, never many minutes (or clock wraps) later.
+    """
     if not telemetry:
         return []
-    trace_start_s = min(float(sample["hostOffsetS"]) for sample in telemetry)
-    trace_stop_s = max(float(sample["hostOffsetS"]) for sample in telemetry)
-    by_epoch: dict[int, dict[str, list[tuple[float, float]]]] = {}
+    clock_present = [sample.get("micros") is not None for sample in telemetry]
+    if not any(clock_present):
+        return []  # Legacy telemetry without the microsecond clock.
+    if not all(clock_present):
+        raise ValueError("Partial microsecond telemetry cannot establish clock continuity")
+    wrap = 1 << 32
+    half_wrap_s = (1 << 31) / 1_000_000.0
+    rounding_s = 0.000010
+    clock_rows: list[tuple[dict[str, Any], float, float, int, int]] = []
+    previous_host: float | None = None
+    previous_micros = 0
+    previous_rtt = 0.0
+    unwrapped = 0
     for sample in telemetry:
-        motion = sample.get("stepMotion")
-        sample_micros = sample.get("micros")
-        if not isinstance(motion, dict) or sample_micros is None:
-            continue
-        epoch = int(motion.get("epoch", 0))
-        start_micros = int(motion.get("startMicros", 0))
-        stop_micros = int(motion.get("stopMicros", 0))
-        if epoch <= 0 or start_micros == 0:
-            continue
-        observations = by_epoch.setdefault(epoch, {"start": [], "stop": []})
         sample_host_s = float(sample["hostOffsetS"])
         sample_rtt_s = float(sample.get("hostRequestRttS", 0.0))
+        sample_micros = int(sample["micros"])
+        if (not math.isfinite(sample_host_s) or not math.isfinite(sample_rtt_s)
+                or sample_rtt_s < 0.0 or not 0 <= sample_micros < wrap):
+            raise ValueError("Invalid microsecond telemetry clock sample")
+        if previous_host is None:
+            unwrapped = sample_micros
+        else:
+            host_gap = sample_host_s - previous_host
+            clock_gap = (sample_micros - previous_micros) & 0xFFFFFFFF
+            uncertainty = (sample_rtt_s + previous_rtt) / 2.0 + rounding_s
+            if (host_gap <= 0.0 or host_gap + uncertainty >= half_wrap_s
+                    or abs(clock_gap / 1_000_000.0 - host_gap) > uncertainty):
+                raise ValueError(
+                    "Microsecond telemetry clock discontinuity, reset, or ambiguous gap"
+                )
+            unwrapped += clock_gap
+        clock_rows.append((sample, sample_host_s, sample_rtt_s, sample_micros, unwrapped))
+        previous_host = sample_host_s
+        previous_micros = sample_micros
+        previous_rtt = sample_rtt_s
 
-        def mapped_host_time(event_micros: int) -> float:
-            signed_delta = (
-                (event_micros - int(sample_micros) + (1 << 31))
-                % (1 << 32)
-            ) - (1 << 31)
-            return sample_host_s + signed_delta / 1_000_000.0
-
-        observations["start"].append((sample_rtt_s, mapped_host_time(start_micros)))
-        stop_after_start = (
-            ((stop_micros - start_micros) & 0xFFFFFFFF) < (1 << 31)
-        )
-        if not bool(motion.get("active", False)) and stop_micros and stop_after_start:
-            observations["stop"].append((sample_rtt_s, mapped_host_time(stop_micros)))
-
+    trace_start_s = clock_rows[0][1]
+    trace_stop_s = clock_rows[-1][1]
+    by_epoch: dict[int, dict[str, Any]] = {}
+    previous_epoch: int | None = None
+    previous_motion_clock: tuple[int, float] | None = None
+    for sample, host_s, rtt_s, micros, clock_us in clock_rows:
+        motion = sample.get("stepMotion")
+        if not isinstance(motion, dict):
+            continue
+        if any(key not in motion for key in ("epoch", "startMicros", "stopMicros", "active")):
+            raise ValueError("Incomplete STEP epoch clock fields")
+        epoch = int(motion.get("epoch", 0))
+        if epoch <= 0:
+            if previous_epoch is not None and previous_epoch > 0:
+                raise ValueError("STEP epoch reset during recording")
+            previous_epoch = 0
+            previous_motion_clock = (clock_us, rtt_s)
+            continue
+        start_raw = int(motion.get("startMicros", 0))
+        stop_raw = int(motion.get("stopMicros", 0))
+        if not (0 <= start_raw < wrap and 0 <= stop_raw < wrap):
+            raise ValueError("Invalid STEP epoch timestamp")
+        if previous_epoch is not None and epoch < previous_epoch:
+            raise ValueError("STEP epoch regressed during recording")
+        if epoch not in by_epoch:
+            if previous_epoch is not None and epoch != previous_epoch + 1:
+                raise ValueError("STEP epoch reset or skipped during recording")
+            start_us = clock_us - ((micros - start_raw) & 0xFFFFFFFF)
+            if (previous_motion_clock is not None
+                    and start_us < previous_motion_clock[0]
+                    - (previous_motion_clock[1] + rounding_s) * 1_000_000.0):
+                raise ValueError("New STEP epoch start predates its observed transition")
+            by_epoch[epoch] = {
+                "startRaw": start_raw,
+                "startUs": start_us,
+                "startHostS": host_s - (clock_us - start_us) / 1_000_000.0,
+                "startUncertaintyS": rtt_s / 2.0,
+                "stop": None,
+                "lastActiveLowerUs": None,
+                "sawInactiveAfterActive": False,
+            }
+        elif start_raw != by_epoch[epoch]["startRaw"]:
+            raise ValueError("STEP start timestamp changed within one epoch")
+        previous_epoch = epoch
+        previous_motion_clock = (clock_us, rtt_s)
+        observation = by_epoch[epoch]
+        start_age_s = (clock_us - observation["startUs"]) / 1_000_000.0
+        if (0 <= start_age_s <= TELEMETRY_MAX_GAP_S
+                and rtt_s / 2.0 < observation["startUncertaintyS"]):
+            observation["startHostS"] = host_s - start_age_s
+            observation["startUncertaintyS"] = rtt_s / 2.0
+        if bool(motion.get("active", False)):
+            if observation["stop"] is not None:
+                raise ValueError("Completed STEP epoch became active again")
+            observation["lastActiveLowerUs"] = clock_us - (rtt_s + rounding_s) * 1_000_000.0
+        elif observation["stop"] is None:
+            observation["sawInactiveAfterActive"] = (
+                observation["lastActiveLowerUs"] is not None
+            )
+            stop_us = clock_us - ((micros - stop_raw) & 0xFFFFFFFF)
+            lower_us = observation["lastActiveLowerUs"]
+            # A transient snapshot can contain active=false before the ISR
+            # publishes its new stop timestamp. Ignore that stale old stop.
+            if (stop_us > observation["startUs"]
+                    and (lower_us is None or stop_us >= lower_us)):
+                observation["stop"] = {
+                    "stopRaw": stop_raw,
+                    "stopUs": stop_us,
+                    "stopHostS": host_s - (clock_us - stop_us) / 1_000_000.0,
+                    "stopUncertaintyS": rtt_s / 2.0,
+                }
+        elif observation["stop"]["stopRaw"] != stop_raw:
+            raise ValueError("STEP stop timestamp changed within one completed epoch")
+        elif 0 <= (clock_us - observation["stop"]["stopUs"]) / 1_000_000.0 <= TELEMETRY_MAX_GAP_S:
+            if rtt_s / 2.0 < observation["stop"]["stopUncertaintyS"]:
+                observation["stop"]["stopHostS"] = (
+                    host_s - (clock_us - observation["stop"]["stopUs"]) / 1_000_000.0
+                )
+                observation["stop"]["stopUncertaintyS"] = rtt_s / 2.0
     intervals: list[dict[str, float | int]] = []
     for epoch, observations in sorted(by_epoch.items()):
-        if not observations["start"] or not observations["stop"]:
+        if observations["stop"] is None:
+            if observations["sawInactiveAfterActive"]:
+                raise ValueError("Completed STEP epoch has no consistent stop timestamp")
             continue
-        start_rtt, start_host = min(observations["start"])
-        stop_rtt, stop_host = min(observations["stop"])
+        start_host = observations["startHostS"]
+        stop_host = observations["stop"]["stopHostS"]
         if (stop_host <= start_host or stop_host < trace_start_s
                 or start_host > trace_stop_s):
             continue
@@ -2018,8 +2112,8 @@ def step_motion_intervals(
             "epoch": epoch,
             "startHostS": start_host,
             "stopHostS": stop_host,
-            "startUncertaintyS": start_rtt / 2.0,
-            "stopUncertaintyS": stop_rtt / 2.0,
+            "startUncertaintyS": observations["startUncertaintyS"],
+            "stopUncertaintyS": observations["stop"]["stopUncertaintyS"],
         })
     return intervals
 
@@ -2038,18 +2132,42 @@ def moving_gap_interpolation_safe(
     after_velocity = float(after["velocity"][axis.name])
     before_position = before.get("position", {}).get(axis.name)
     after_position = after.get("position", {}).get(axis.name)
-    before_millis = before.get("millis")
-    after_millis = after.get("millis")
     if (before.get("state") != "RUNNING" or after.get("state") != "RUNNING"
             or abs(before_velocity) < velocity_threshold
             or abs(after_velocity) < velocity_threshold
             or before_velocity * after_velocity <= 0.0
-            or before_position is None or after_position is None
-            or before_millis is None or after_millis is None):
+            or before_position is None or after_position is None):
         return False
-    board_gap_s = (
-        (int(after_millis) - int(before_millis)) & 0xFFFFFFFF
-    ) / 1000.0
+    before_micros = before.get("micros")
+    after_micros = after.get("micros")
+    if before_micros is not None or after_micros is not None:
+        if before_micros is None or after_micros is None:
+            return False
+        if not (0 <= int(before_micros) < (1 << 32)
+                and 0 <= int(after_micros) < (1 << 32)):
+            return False
+        board_gap_s = (
+            (int(after_micros) - int(before_micros)) & 0xFFFFFFFF
+        ) / 1_000_000.0
+        if before.get("hostOffsetS") is None or after.get("hostOffsetS") is None:
+            return False
+        host_gap_s = float(after["hostOffsetS"]) - float(before["hostOffsetS"])
+        before_rtt = float(before.get("hostRequestRttS", 0.0))
+        after_rtt = float(after.get("hostRequestRttS", 0.0))
+        uncertainty_s = (before_rtt + after_rtt) / 2.0 + 0.000010
+        if (not all(math.isfinite(value) for value in (host_gap_s, before_rtt, after_rtt))
+                or min(before_rtt, after_rtt) < 0.0 or host_gap_s <= 0.0
+                or host_gap_s + uncertainty_s >= (1 << 31) / 1_000_000.0
+                or abs(board_gap_s - host_gap_s) > uncertainty_s):
+            return False
+    else:
+        before_millis = before.get("millis")
+        after_millis = after.get("millis")
+        if before_millis is None or after_millis is None:
+            return False
+        board_gap_s = (
+            (int(after_millis) - int(before_millis)) & 0xFFFFFFFF
+        ) / 1000.0
     if board_gap_s <= 0.0:
         return False
     observed_velocity = (
@@ -3187,7 +3305,9 @@ def cmd_trial(args: argparse.Namespace) -> int:
             "nearField": {
                 "microphone": "Antlion close to motor",
                 "acceptedAsMotorNoise": valid_detection,
-                "qualificationMeasurementValid": level_valid,
+                "qualificationMeasurementValid": (
+                    level_valid and (axis.name != "rho" or total_sound["measurementValid"])
+                ),
                 "levelValidForComparison": level_valid,
                 "broadbandMotorNoiseAccepted": valid_broadband,
                 "quietMotorUpperBoundAccepted": valid_quiet_bound,
@@ -3326,6 +3446,8 @@ def cmd_trial(args: argparse.Namespace) -> int:
                 +
                 f">= {args.minimum_gain_db:.1f} dB above both idle windows and "
                 f"repeated within {TONE_MATCH_TOLERANCE_HZ:.1f} Hz"
+                + ("; rho additionally requires every raw motion and adjacent idle "
+                   "upper bound under the tier" if axis.name == "rho" else "")
             ),
         }
 
@@ -3733,21 +3855,31 @@ def cmd_self_test(_: argparse.Namespace) -> int:
             "Exact ESP32 STEP timestamps did not bridge telemetry jitter: "
             f"{exact_quality}"
         )
-    stale_prior_epoch = {
-        **exact_event_telemetry[0],
-        "hostOffsetS": 0.01,
-        "micros": 4_000_000,
-        "stepMotion": {
-            "epoch": 99,
-            "startMicros": 1_000_000,
-            "stopMicros": 2_000_000,
-            "active": False,
-        },
-    }
-    filtered_intervals = step_motion_intervals(
-        [stale_prior_epoch, *exact_event_telemetry]
-    )
-    if len(filtered_intervals) != 1 or filtered_intervals[0]["epoch"] != 1:
+    # Keep the board clock continuous and the epoch counter monotonic. The
+    # old fixture jumped micros backwards by four seconds and epoch 99 -> 0;
+    # that is a reset, not a stale completed epoch, and must now fail closed.
+    stale_epoch_telemetry = []
+    for original in exact_event_telemetry:
+        sample = {**original, "micros": original["micros"] + 4_000_000}
+        original_motion = original["stepMotion"]
+        if original_motion["epoch"] == 0:
+            sample["stepMotion"] = {
+                "epoch": 1, "startMicros": 1_000_000,
+                "stopMicros": 2_000_000, "active": False,
+            }
+        else:
+            sample["stepMotion"] = {
+                **original_motion, "epoch": 2,
+                "startMicros": original_motion["startMicros"] + 4_000_000,
+                "stopMicros": (
+                    original_motion["stopMicros"] + 4_000_000
+                    if not original_motion["active"] else 2_000_000
+                ),
+            }
+        sample["millis"] = sample["micros"] // 1000
+        stale_epoch_telemetry.append(sample)
+    filtered_intervals = step_motion_intervals(stale_epoch_telemetry)
+    if len(filtered_intervals) != 1 or filtered_intervals[0]["epoch"] != 2:
         raise RuntimeError(
             "A STEP epoch from before the audio trace was not filtered: "
             f"{filtered_intervals}"

@@ -43,6 +43,39 @@ is in `idle-frequency-ab/results.jsonl`. Raw-total exceedance alone is not
 proof of motor noise; attribution of the frequency-0/1 hold tones comes from
 the separate stationary A/B experiment.
 
+At frequency 2, reducing requested current from 275 to 200 mA did not improve
+the offset screen: -59.65 dBFS incremental upper bound and -59.01 raw-total
+upper bound, versus the 275 mA replay's -60.47 / -59.67. Both measurements
+were valid and motion healthy. Test shorter blanking and regulator response
+before lowering current again: section 6.3.1 of the datasheet explains that
+blanking time and PWM frequency impose a motor-specific low-current limit.
+The motor winding resistance has not been supplied, so the exact lower limit
+cannot be calculated from the 0.11-ohm sense shunts.
+
+At 200 mA, reducing TBL from 2 to 1 improved the offset screen to -60.49 dBFS
+incremental and -59.70 raw-total bounds. Motion remained healthy, but the
+total-sound ceiling still was not met. This is a tentative improvement, not
+a qualified profile or proof that the requested current equals measured current.
+
+With TBL=1, reducing PWM_REG from 15 to 4 measured -60.75 dBFS incremental
+and -59.88 raw-total upper bounds at 2 mm/s. The 0.18 dB raw change is small;
+do not claim a repeatable improvement without confirmation. All motion checks
+passed. The first 22 bounded endpoint audits in this acoustic session all
+passed (one needed a fourth approach); those are SG-based origin resets, not
+22 independent camera confirmations or a quantified field-failure rate.
+
+Long-test timing: the 5,950 mm stress sequence is one STEP epoch, so at
+2 mm/s it lasts longer than half of the ESP32 microsecond timer's wrap period.
+The host now unwraps successive clock samples and anchors each event locally;
+it does not extrapolate an old start from a lower-latency sample many minutes
+later. Boundary refinement is limited to 0.5 seconds. Resets, ambiguous gaps,
+partial clock fields and epoch regressions fail closed. The sparse-gap check
+also uses microseconds: this firmware's `millis` telemetry is derived from the
+wrapping microsecond snapshot, not an independent 32-bit millisecond counter.
+71 Python tests and the acoustic self-test pass, including 49.6/83.3-minute
+epochs, clock drift, rollover-zero timestamps and stale-epoch filtering. A real
+four-leg replay retained valid timing with changes within measured RTT bounds.
+
 Homing qualification, production boot enable and cleanup merged to main as
 `a558c4e`, including the user-confirmed power-cold boot. Only the main RHO motor is connected;
 keep the CW driver at `TOFF=0` and theta stationary. Pass
