@@ -2548,13 +2548,141 @@ def save_timing_plot(
     plt.close(fig)
 
 
+def _write_failed_timed_repeat(
+    output_dir: Path, prefix: str, profile: str,
+    context: dict[str, Any], error: BaseException,
+) -> None:
+    """Persist evidence only after stop/capture cleanup; never qualify it."""
+    recorder = context.get("recorder")
+    zero = context.get("recordingZeroMonotonic")
+    audio_start = getattr(recorder, "audio_start_monotonic", None)
+    telemetry = context.get("telemetry", [])
+    timeline_path = output_dir / f"{prefix}-{profile}-timeline.json"
+    failed_path = output_dir / f"{prefix}-{profile}-failed.json"
+    payload = {
+        "kind": "failed-timed-acoustic-repeat", "failed": True,
+        "testCompletedNaturally": False, "qualificationEligible": False,
+        "motionSequenceCompletedBeforeFailure": context.get("completedSequence", False),
+        "profile": profile, "axis": context["axis"],
+        "error": {"type": type(error).__name__, "message": str(error)},
+        "failureStage": context.get("stage"),
+        "clock": "host monotonic seconds from capture orchestration start",
+        "recordingZeroMonotonic": zero,
+        "recorderAudioStartMonotonic": audio_start,
+        "recorderAudioEndMonotonic": getattr(recorder, "audio_end_monotonic", None),
+        "recorderLaunchOffsetS": audio_start - zero if audio_start is not None and zero is not None else None,
+        "recorderTimestampUncertaintyS": getattr(recorder, "timestamp_uncertainty_s", None),
+        "audioPrimingBlocksDiscarded": getattr(recorder, "priming_blocks_discarded", None),
+        "audio": str(output_dir / f"{prefix}-{profile}-antlion-near.wav"),
+        "timeline": str(timeline_path),
+        "commandOffsetS": context.get("commandOffsetS"),
+        "commandRequests": context.get("commandRequests", []),
+        "stopRequestOffsetS": context.get("stopRequestOffsetS"),
+        "cleanup": context.get("cleanup", {}),
+        "startSample": context.get("startSample"),
+        "lastObservedSample": telemetry[-1] if telemetry else None,
+        "positionWarning": "Last observed command position is not a post-stop or physical position confirmation",
+        "gainFingerprintBefore": context.get("gainBefore"),
+        "settingsReference": context.get("settingsReference"),
+        "requestedArguments": context.get("requestedArguments"),
+        "expectedMaxVelocity": context.get("expectedMaxVelocity"),
+        "telemetry": telemetry, "driverSamples": context.get("driverSamples", []),
+    }
+
+    def serializable(value: Any) -> Any:
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        if isinstance(value, dict):
+            return {str(k): serializable(v) for k, v in value.items() if not callable(v)}
+        if isinstance(value, (list, tuple)):
+            return [serializable(v) for v in value]
+        if value is None or isinstance(value, (str, bool, int, float)):
+            return value
+        return str(value)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    payload = serializable(payload)
+    # Both files are explicitly failed records, not a normal result/summary.
+    for path in (timeline_path, failed_path):
+        with path.open("w", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2, allow_nan=False)
+    print(f"Failed trial evidence: {failed_path}", file=sys.stderr)
+
+
 def run_timed_repeat(
+    board: Board, args: argparse.Namespace, output_dir: Path,
+    prefix: str, profile: str, expected_max_velocity: float,
+    *, settings_reference: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Preserve failed capture evidence without replacing the original error."""
+    context: dict[str, Any] = {
+        "axis": args.axis, "telemetry": [], "driverSamples": [],
+        "requestedArguments": vars(args), "settingsReference": settings_reference,
+        "expectedMaxVelocity": expected_max_velocity, "stage": "preflight",
+        "commandRequests": [],
+    }
+    cleanup_errors: list[BaseException] = []
+
+    def cleanup() -> list[BaseException]:
+        if context.get("cleanupAttempted"):
+            return cleanup_errors
+        context["cleanupAttempted"] = True
+        status: dict[str, Any] = {"attempted": True, "errors": []}
+        context["cleanup"] = status
+        zero = context.get("recordingZeroMonotonic")
+        if zero is not None and context.get("stopRequestOffsetS") is None:
+            context["stopRequestOffsetS"] = time.monotonic() - zero
+        actions = [("boardStop", board.recovering_stop)]
+        recorder = context.get("recorder")
+        if recorder is not None:
+            actions.append(("recorderStop", recorder.stop))
+        # Preserve the existing theta-only recovery. Never auto-return RHO.
+        if not context.get("completedSequence") and context["axis"] == "theta":
+            recover = context.get("recoverThetaOrigin")
+            if recover is not None:
+                actions.append(("thetaOriginRecovery", recover))
+        for name, action in actions:
+            if name == "thetaOriginRecovery" and cleanup_errors:
+                status[name] = "skipped-after-cleanup-error"
+                continue
+            try:
+                action()
+                status[name] = "completed"
+            except BaseException as cleanup_error:
+                cleanup_errors.append(cleanup_error)
+                status[name] = "failed"
+                status["errors"].append({"action": name,
+                    "type": type(cleanup_error).__name__, "message": str(cleanup_error)})
+        return cleanup_errors
+
+    try:
+        return _run_timed_repeat_impl(
+            board, args, output_dir, prefix, profile, expected_max_velocity,
+            context, cleanup,
+        )
+    except BaseException as error:
+        # Handles startup/preflight exceptions too. Normal capture exceptions
+        # already ran the same idempotent cleanup in the inner finally block.
+        cleanup()
+        try:
+            _write_failed_timed_repeat(output_dir, prefix, profile, context, error)
+        except BaseException as artifact_error:
+            try:
+                print(f"Could not preserve failed trial evidence: {artifact_error}", file=sys.stderr)
+            except BaseException:
+                pass
+        raise
+
+
+def _run_timed_repeat_impl(
     board: Board,
     args: argparse.Namespace,
     output_dir: Path,
     prefix: str,
     profile: str,
     expected_max_velocity: float,
+    failure_context: dict[str, Any],
+    cleanup: Any,
 ) -> dict[str, Any]:
     axis = AXES[args.axis]
     rho_envelope_mm = (
@@ -2573,7 +2701,9 @@ def run_timed_repeat(
     board.recovering_stop()
     time.sleep(args.settle)
     recording_zero = time.monotonic()
+    failure_context["recordingZeroMonotonic"] = recording_zero
     start_sample = _telemetry_sample(board, recording_zero, timeout_s=3.0)
+    failure_context["startSample"] = start_sample
     if not start_sample or start_sample.get("state") != "IDLE":
         raise RuntimeError(f"Board must be IDLE before a {axis.name} repeat")
     start_position = float(start_sample["position"][axis.name])
@@ -2582,10 +2712,13 @@ def run_timed_repeat(
     plot_path = output_dir / f"{prefix}-{profile}-antlion-near-timing.png"
     timeline_path = output_dir / f"{prefix}-{profile}-timeline.json"
     output_dir.mkdir(parents=True, exist_ok=True)
-    telemetry: list[dict[str, Any]] = []
-    driver_samples: list[dict[str, Any]] = []
+    telemetry: list[dict[str, Any]] = failure_context["telemetry"]
+    driver_samples: list[dict[str, Any]] = failure_context["driverSamples"]
     gain_before = microphone_metadata(args.source)
+    failure_context["gainBefore"] = gain_before
     recorder = TimestampedRecorder(audio_path, args.source, args.rate)
+    failure_context["recorder"] = recorder
+    failure_context["stage"] = "recorder-start"
     recorder.start()
     assert recorder.audio_start_monotonic is not None
     recorder_launch_offset = recorder.audio_start_monotonic - recording_zero
@@ -2602,14 +2735,14 @@ def run_timed_repeat(
             request_started = time.monotonic() - recording_zero
             driver = board.get(dump_path + ("?motionHealth=true" if lightweight else ""))
             request_ended = time.monotonic() - recording_zero
-            if lightweight and driver.get("snapshotKind") != "motion-health":
-                raise RuntimeError("Firmware did not provide a motion-health snapshot")
             driver["driverRole"] = driver_role
             driver["samplePhase"] = phase
             driver["hostOffsetS"] = round(request_ended, 6)
             driver["requestStartHostS"] = round(request_started, 6)
             driver["requestEndHostS"] = round(request_ended, 6)
             driver_samples.append(driver)
+            if lightweight and driver.get("snapshotKind") != "motion-health":
+                raise RuntimeError("Firmware did not provide a motion-health snapshot")
             cruise_guard.observe(driver_role, driver, phase)
 
     def collect_for(duration_s: float) -> None:
@@ -2716,6 +2849,12 @@ def run_timed_repeat(
         last_error: Exception | None = None
         for _ in range(3):
             try:
+                requested = time.monotonic() - recording_zero
+                failure_context.setdefault("commandOffsetS", requested)
+                failure_context["commandRequests"].append({
+                    "path": f"{axis.test_path_prefix}/segment", "parameters": parameter,
+                    "requestStartHostS": requested,
+                })
                 board.post(f"{axis.test_path_prefix}/segment", parameter)
                 return
             except (requests.RequestException, RuntimeError) as error:
@@ -2724,6 +2863,8 @@ def run_timed_repeat(
                 # executing the idempotent target. Observe motion before retrying
                 # so a slow network cannot queue an unintended extra segment.
                 sample = _telemetry_sample(board, recording_zero, timeout_s=1.0)
+                if sample:
+                    telemetry.append(sample)
                 if sample and sample.get("state") in ("RUNNING", "STOPPING"):
                     return
                 time.sleep(0.25)
@@ -2764,6 +2905,8 @@ def run_timed_repeat(
         )
 
     completed_sequence = False
+    failure_context["recoverThetaOrigin"] = recover_theta_origin
+    failure_context["stage"] = "capture-motion"
     try:
         sample_drivers("before-motion")
         collect_for(args.pre_idle)
@@ -2787,13 +2930,19 @@ def run_timed_repeat(
                     sample_drivers(f"after-segment-{target:g}{unit}")
                     collect_for(args.gated_idle)
             else:
+                requested = time.monotonic() - recording_zero
+                failure_context["commandOffsetS"] = requested
+                failure_context["commandRequests"].append({
+                    "path": f"{axis.test_path_prefix}/{profile}", "parameters": {},
+                    "requestStartHostS": requested,
+                })
                 board.post(f"{axis.test_path_prefix}/{profile}")
                 command_offset = time.monotonic() - recording_zero
                 wait_for_motion_completion(motion_deadline)
                 sample_drivers("after-motion")
         except TimeoutError:
-            board.stop()
             stop_request_offset = time.monotonic() - recording_zero
+            failure_context["stopRequestOffsetS"] = stop_request_offset
             raise RuntimeError(
                 f"{axis.name.capitalize()} {profile} test did not complete within {args.duration:.1f}s; "
                 "the partial run was stopped and cannot qualify a profile"
@@ -2802,13 +2951,14 @@ def run_timed_repeat(
         sample_drivers("after-post-idle")
         completed_sequence = True
     finally:
-        try:
-            board.recovering_stop()
-        finally:
-            recorder.stop()
-        if not completed_sequence:
-            recover_theta_origin()
+        failure_context["completedSequence"] = completed_sequence
+        errors = cleanup()
+        # A stop/recorder error must never hide a guard failure already being
+        # propagated. On otherwise-successful capture it fails the repeat.
+        if errors and sys.exc_info()[0] is None:
+            raise errors[0]
 
+    failure_context["stage"] = "post-capture-analysis"
     audio, captured_rate = read_wav(audio_path)
     gain_after = microphone_metadata(args.source)
     if captured_rate != args.rate or len(audio) < args.rate * (args.pre_idle + args.post_idle):
@@ -3260,6 +3410,7 @@ def cmd_trial(args: argparse.Namespace) -> int:
             repeat_results.append(run_timed_repeat(
                 board, args, output_dir, prefix, profile,
                 float(tuning["motion"][axis.motion_velocity_key]),
+                settings_reference={"tuning": tuning, "driverSettings": driver_settings},
             ))
 
     profile_summaries: dict[str, dict[str, Any]] = {}

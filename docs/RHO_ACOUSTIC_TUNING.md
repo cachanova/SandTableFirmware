@@ -288,8 +288,14 @@ stationary snapshot. SG can be unreliable at low speed, but the evidence does
 not justify ignoring its guard. The original runner lost in-trial telemetry
 on that exception; only its WAV remains. `failed-trial-review/results.jsonl`
 preserves the subsequent stopped-state observation, explicitly not reconstructed
-motion/audio timing. The host failure path is being corrected to retain future
-failed timelines. When a checked origin is available, a diagnostic 1 -> 11 ->
+motion/audio timing. The corrected host failure path retains future failed
+timelines, driver samples, recorder-clock uncertainty, command/stop attempts and
+settings references after stop/recorder cleanup. Failed records cannot qualify,
+do not trigger an automatic RHO return, and cleanup or disk-write errors cannot
+replace the original guard exception. All 92 Python tests and the acoustic
+self-test pass, including injected guard, wrong-snapshot, recorder-start,
+cleanup and artifact-write failures. This cannot recover the already-lost
+09:39 motion trace. When a checked origin is available, a diagnostic 1 -> 11 ->
 1 mm comparison would test clearance from the noisy near-zero region without
 redefining zero; it would not qualify operation down to 0 mm.
 
