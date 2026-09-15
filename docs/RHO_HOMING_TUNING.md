@@ -2,6 +2,54 @@
 
 ## Current experiment (2026-09-15 UTC)
 
+### Resumed validation, after 04:09 UTC
+
+The user restored illumination and confirmed that the mechanism was homed.
+The lit camera view matched home; the pending 03:55:05 trial was then confirmed
+through the API. Its delayed endpoint verification is recorded separately from
+the original instrument report, which correctly retains `accepted=false` at
+capture time.
+
+Freeze the 6 mm backoff candidate at 500 mA requested, u8 interpolation,
+12 mm/s, 85% / five-of-nine SG votes, 450 ms minimum travel, 8 mm runway,
+and 0.4 mm three-contact span for the next validation set. Keep normal motion
+and the 2 mm per-approach / 5 mm total overrun caps unchanged.
+
+| Validation trial UTC | Known start | Contacts / final span | Endpoint |
+|---|---|---|---|
+| 04:09:52 | 0 mm | 3 / 0.2175 mm | Camera-confirmed home |
+| 04:13:53 | 200 mm | 3 / 0.05 mm | Camera-confirmed home |
+| 04:21:35 | 400 mm | 3 / 0.0925 mm | Camera-confirmed home |
+| 04:23:09 | 10 mm | 3 / 0.06 mm | Camera-confirmed home |
+| 04:24:03 | 25 mm | 3 / 0.09 mm | Camera-aligned with home |
+| 04:25:35 | 0 mm | 3 / 0.0425 mm | Camera-confirmed home |
+
+The 04:24 trial's three command coordinates were slightly early (-0.0475,
+-0.085, -0.1375 mm). The camera cannot resolve that small displacement reliably;
+describe its endpoint as visually aligned, not as proof of exact physical
+hard-stop contact. The next zero-start cycle also passed. Keep the distinction
+between trigger repeatability and absolute mechanical accuracy.
+
+The 400 mm trial had all 10,945 UART reads valid. Coarse contact occurred at
+the expected 163,200-step coordinate; subsequent contacts were -0.0125 and
++0.08 mm relative to it. This is a successful known-position near-full-travel
+trial, not qualification of an unknown boot position.
+
+The 200 mm trial had 5,641 valid UART reads out of 5,641. Its contact
+coordinates were -0.0375, -0.03, and +0.0125 mm relative to the known zero.
+For the 100 and 200 mm coarse approaches, excluding the last millimetre,
+free-travel SG minima were 230 and 228; medians were 272 and 266. The long
+approaches did not reproduce the task-timer's mid-travel false contacts.
+
+After the user repositioned the light, the camera's old high-brightness manual
+settings overexposed the scene. Aperture-priority auto exposure, brightness
+128, contrast 128, and backlight compensation off restored a clear view.
+This changes camera photometry only, not the motor profile or position ledger.
+
+The prior illumination pause below is historical, not the current blocker.
+Unknown-origin boot homing remains disabled pending separate entry-sequence
+qualification.
+
 ### Rolling search and backoff experiment, after 03:20 UTC
 
 The task-timer trials below do not establish an optimal backoff. In particular,

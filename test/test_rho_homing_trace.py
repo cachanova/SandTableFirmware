@@ -233,6 +233,28 @@ class HomingTraceCollectorTest(unittest.TestCase):
         self.assertEqual(validate_trial(good["reports"], 400, 2, .4, 5, 3, (1,), True), [])
         self.assertEqual(contact_scatter(good)["threeContactSpansMm"][-1], .08)
 
+    def test_recorded_long_approaches_preserve_the_known_position_ledger(self) -> None:
+        directory = (Path(__file__).resolve().parents[1] /
+                     "tuning-recordings/rho-main-only-20260915")
+        for filename in (
+            "20260915T035505Z-rho-home-p85-n5-start100mm-result.json",
+            "20260915T041353Z-rho-home-p85-n5-start200mm-result.json",
+            "20260915T042135Z-rho-home-p85-n5-start400mm-result.json",
+        ):
+            with self.subTest(filename=filename):
+                artifact = json.loads((directory / filename).read_text())
+                self.assertEqual(artifact["settings"]["pulseSource"], "hardware-timer")
+                self.assertEqual(artifact["settings"]["backoffMm"], 6)
+                self.assertEqual(validate_trial(
+                    artifact["reports"], 400, 2, .4, 5, 3, (1,), True), [])
+                scatter = contact_scatter(artifact)
+                self.assertEqual(scatter["passes"], [1, 2, 3])
+                self.assertLessEqual(max(abs(value) for value in
+                    scatter["contactCoordinatesMm"]), .4)
+                # These checks concern commands and SG, not camera acceptance.
+                self.assertEqual(scatter["physicalContactLabels"],
+                                 "requires synchronized external observation")
+
     def test_main_only_requires_cw_bridge_off(self) -> None:
         self.assertEqual(configured_motor_axes({"companionMotorEnabled": False}),
                          (1,))
