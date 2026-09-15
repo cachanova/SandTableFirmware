@@ -4060,6 +4060,61 @@ bool PolarControl::testRhoSegment(float targetRhoMm) {
 // ============================================================================
 
 // Helper to dump driver info to JSON
+static void fillMotionHealthJson(uint8_t address, const char* name,
+                                 JsonDocument& doc) {
+    // Full register requests took ~125 ms per driver on the assembled board,
+    // holding the planner mutex through the UART burst. Cruise monitoring
+    // only needs these six registers.
+    // Use checked, single-attempt reads: stale/invalid health must fail closed,
+    // not spend several retry windows starving motion generation.
+    const uint32_t started = micros();
+    uint32_t ioin = 0, gconf = 0, gstat = 0, chopconf = 0, status = 0, sg = 0;
+    const bool healthyRead =
+        readTmcRegisterCheckedOnce(address, 0x06, ioin) &&
+        ((ioin >> 24) & 0xFFU) == 0x21U &&
+        readTmcRegisterCheckedOnce(address, 0x00, gconf) &&
+        readTmcRegisterCheckedOnce(address, 0x01, gstat) &&
+        readTmcRegisterCheckedOnce(address, 0x6C, chopconf) &&
+        readTmcRegisterCheckedOnce(address, 0x6F, status);
+    const bool sgValid = healthyRead &&
+        readTmcRegisterCheckedOnce(address, 0x41, sg);
+    doc["name"] = name;
+    doc["snapshotKind"] = "motion-health";
+    doc["readDurationMicros"] = micros() - started;
+    doc["connected"] = healthyRead;
+    doc["uartResponseValid"] = healthyRead;
+    doc["communicating"] = healthyRead;
+    // UART-configured microsteps, digital current scaling, external sensing.
+    doc["setupOk"] = healthyRead && (gconf & 0xC3U) == 0xC0U;
+    JsonObject settings = doc["settings"].to<JsonObject>();
+    settings["chopconfReadValid"] = healthyRead;
+    settings["softwareEnabled"] = healthyRead && (chopconf & 0x0FU) != 0;
+    settings["chopperOffTime"] = chopconf & 0x0FU;
+    settings["interpolationTo256"] = (chopconf & (1UL << 28)) != 0;
+    settings["chopconfRaw"] = chopconf;
+    JsonObject inputs = doc["inputs"].to<JsonObject>();
+    inputs["enableN"] = (ioin & 1U) != 0;
+    JsonObject global = doc["globalStatus"].to<JsonObject>();
+    global["reset"] = (gstat & 1U) != 0;
+    global["drvErr"] = (gstat & 2U) != 0;
+    global["uvCp"] = (gstat & 4U) != 0;
+    JsonObject state = doc["status"].to<JsonObject>();
+    static const char* const statusBits[] = {
+        "overTempWarning", "overTempShutdown", "shortToGroundA", "shortToGroundB",
+        "lowSideShortA", "lowSideShortB", "openLoadA", "openLoadB",
+        "overTemp120c", "overTemp143c", "overTemp150c", "overTemp157c",
+    };
+    for (uint8_t bit = 0; bit < 12; ++bit) {
+        state[statusBits[bit]] = (status & (1UL << bit)) != 0;
+    }
+    state["currentScaling"] = (status >> 16) & 0x1FU;
+    state["stealthChopMode"] = (status & (1UL << 30)) != 0;
+    state["standstill"] = (status & (1UL << 31)) != 0;
+    JsonObject dynamic = doc["dynamic"].to<JsonObject>();
+    dynamic["stallGuardValid"] = sgValid;
+    if (sgValid) dynamic["stallGuardResult"] = sg & 0x3FFU;
+}
+
 static void fillDriverJson(TMC2209& driver, uint8_t driverAddress,
                            const char* name, JsonDocument& doc) {
     uint32_t ioInput = 0;
@@ -4244,7 +4299,7 @@ void PolarControl::writeThetaDriverSettings(Print& out) {
     xSemaphoreGive(m_mutex);
 }
 
-void PolarControl::writeRhoDriverSettings(Print& out) {
+void PolarControl::writeRhoDriverSettings(Print& out, bool motionHealthOnly) {
     if (!m_driverBusInitialized.load()) {
         out.print("{\"error\":\"Driver UART is not initialized\"}");
         return;
@@ -4259,12 +4314,13 @@ void PolarControl::writeRhoDriverSettings(Print& out) {
     }
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     JsonDocument doc;
-    fillDriverJson(m_rDriver, R_ADDR, "rho", doc);
+    if (motionHealthOnly) fillMotionHealthJson(R_ADDR, "rho", doc);
+    else fillDriverJson(m_rDriver, R_ADDR, "rho", doc);
     serializeJson(doc, out);
     xSemaphoreGive(m_mutex);
 }
 
-void PolarControl::writeRhoCompanionDriverSettings(Print& out) {
+void PolarControl::writeRhoCompanionDriverSettings(Print& out, bool motionHealthOnly) {
     if (!m_driverBusInitialized.load()) {
         out.print("{\"error\":\"Driver UART is not initialized\"}");
         return;
@@ -4280,7 +4336,8 @@ void PolarControl::writeRhoCompanionDriverSettings(Print& out) {
     }
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     JsonDocument doc;
-    fillDriverJson(m_rCDriver, RC_ADDR, "rhoCompanion", doc);
+    if (motionHealthOnly) fillMotionHealthJson(RC_ADDR, "rhoCompanion", doc);
+    else fillDriverJson(m_rCDriver, RC_ADDR, "rhoCompanion", doc);
     doc["motorConfigured"] = Config::kRhoCompanionMotorEnabled;
     serializeJson(doc, out);
     xSemaphoreGive(m_mutex);

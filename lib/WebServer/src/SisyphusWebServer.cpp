@@ -679,14 +679,18 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
     m_server.on("/api/tuning/dump/rho", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
-        m_polarControl->writeRhoDriverSettings(*response);
+        m_polarControl->writeRhoDriverSettings(*response,
+            request->hasParam("motionHealth") &&
+            request->getParam("motionHealth")->value() == "true");
         request->send(response);
     });
 
     m_server.on("/api/tuning/dump/rho-companion", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
-        m_polarControl->writeRhoCompanionDriverSettings(*response);
+        m_polarControl->writeRhoCompanionDriverSettings(*response,
+            request->hasParam("motionHealth") &&
+            request->getParam("motionHealth")->value() == "true");
         request->send(response);
     });
 

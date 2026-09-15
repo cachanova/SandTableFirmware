@@ -66,6 +66,36 @@ is retained. The host now records the underrun count before each repeat and
 requires it to remain unchanged; an increase or reset fails that repeat.
 Historical fault counts do not silently disqualify unrelated later runs.
 
+Changing `PWM_GRAD` from 2 to 0 gave provisional upper bounds of -62.13 dBFS
+at 4.25 mm/s, -61.51 at 5 mm/s and -59.68 at 6 mm/s, all with clean planners.
+The 6 mm/s result is 0.32 dB above the ceiling: retain it for optional listening,
+not automatic acceptance. At 5 mm/s, offset 124 / gradient 0 measured -62.70,
+but another underrun burst invalidated that run. Repeat it before comparison.
+
+Full driver HTTP requests measured roughly 110-125 ms each. They hold the
+planner mutex through a large UART register scan, so in-motion monitoring can
+interfere with queue generation. A new optional `?motionHealth=true` dump
+returns six checked registers (IOIN, GCONF, GSTAT, CHOPCONF, DRV_STATUS,
+SG_RESULT). It measured about 10.3 ms of UART time per driver and 51-54 ms
+median HTTP time at idle. It preserves fault, setup, hardware-enable,
+software-bridge, interpolation and SG checks, including the unused CW bridge.
+All mandatory health reads use CRC/framing validation and fail closed; SG
+retains the three-consecutive-read rule. No homing settings or pulse generation
+changed. Service and production images build, native assertions and 38 Python
+tests pass. A bounded post-upload homing audit also passed.
+
+Use `--lightweight-driver-polling` for subsequent RHO trials. The host verifies
+support before any motion and still takes full register dumps before and after
+segments. Recheck the same acoustic setting with the new polling before
+resuming the sweep; the underrun cause is not considered proven merely by this
+timing improvement.
+
+The first lightweight-polling repeat (200 mA, fixed 124/0, u8, 5 mm/s) had
+zero underruns, valid timing and an upper bound of -60.66 dBFS. It supports
+using the lighter monitor, but does not establish offset 124 as quieter than
+128. Retain 128 while bracketing speed; use repeated qualification to avoid
+choosing a driver setting from one favourable background window.
+
 Retain the -60, -63, and -66 dBFS RHO tiers. Use four-leg 50 mm screens, then
 two independent eight-leg qualifications of finalists. Require each gate to
 sustain commanded speed; enlarge to 100 mm if necessary. Search velocity by

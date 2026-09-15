@@ -287,8 +287,8 @@ public:
 
   // Driver diagnostics
   void writeThetaDriverSettings(Print& out);
-  void writeRhoDriverSettings(Print& out);
-  void writeRhoCompanionDriverSettings(Print& out);
+  void writeRhoDriverSettings(Print& out, bool motionHealthOnly = false);
+  void writeRhoCompanionDriverSettings(Print& out, bool motionHealthOnly = false);
 
 private:
   struct FileCommand {

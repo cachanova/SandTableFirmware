@@ -1389,7 +1389,8 @@ class CruiseDriverGuard:
         settings = driver.get("settings", {})
         if (not settings.get("chopconfReadValid")
                 or settings.get("softwareEnabled") is not True
-                or int(settings.get("chopperOffTime", 0)) <= 0):
+                or int(settings.get("chopperOffTime", 0)) <= 0
+                or driver.get("inputs", {}).get("enableN") is not False):
             raise RuntimeError(f"{role} active bridge is not verified enabled")
         dynamic = driver.get("dynamic", {})
         sg_valid = bool(dynamic.get("stallGuardValid"))
@@ -2244,7 +2245,10 @@ def run_timed_repeat(
     def sample_drivers(phase: str) -> None:
         """Capture driver health and abort sustained-cruise SG collapse."""
         for driver_role, dump_path in axis.driver_dump_paths:
-            driver = board.get(dump_path)
+            lightweight = args.lightweight_driver_polling and phase.startswith("during-")
+            driver = board.get(dump_path + ("?motionHealth=true" if lightweight else ""))
+            if lightweight and driver.get("snapshotKind") != "motion-health":
+                raise RuntimeError("Firmware did not provide a motion-health snapshot")
             driver["driverRole"] = driver_role
             driver["samplePhase"] = phase
             driver["hostOffsetS"] = round(time.monotonic() - recording_zero, 6)
@@ -2693,6 +2697,17 @@ def cmd_trial(args: argparse.Namespace) -> int:
         )
     board = Board(args.board)
     board.recovering_stop()
+    if args.lightweight_driver_polling:
+        if axis.name != "rho":
+            raise ValueError("Lightweight driver polling is currently rho-only")
+        # An older image ignores the query parameter. Reject it before motion.
+        for role, path in axis.driver_dump_paths:
+            diagnostic = board.get(path + "?motionHealth=true")
+            if diagnostic.get("snapshotKind") != "motion-health":
+                raise RuntimeError("Install firmware with motion-health snapshots first")
+            if not driver_is_healthy(diagnostic):
+                raise RuntimeError(f"{role} motion-health preflight failed")
+            motor_participates(role, diagnostic)
     if axis.name == "rho":
         # Check the firmware boundary before changing speed or tuning values.
         preflight_rho_commissioning(board, expected_motors=args.expected_rho_motors)
@@ -3617,6 +3632,8 @@ def build_parser() -> argparse.ArgumentParser:
     trial.add_argument("--axis", choices=sorted(AXES), default="theta")
     trial.add_argument("--expected-rho-motors", choices=["main", "paired"],
                        help="reject a firmware motor configuration mismatch before motion")
+    trial.add_argument("--lightweight-driver-polling", action="store_true",
+                       help="use checked six-register rho health snapshots during motion")
     trial.add_argument("--label", required=True)
     trial.add_argument("--rated-current-ma", type=int, required=True)
     trial.add_argument(

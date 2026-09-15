@@ -57,6 +57,7 @@ class CruiseGuardTest(unittest.TestCase):
             "settings": {"chopconfReadValid": True, "softwareEnabled": True,
                          "chopperOffTime": 3},
             "dynamic": {"stallGuardValid": True, "stallGuardResult": 0},
+            "inputs": {"enableN": False},
         }
 
     def observe(self, phase="during-cruise"):
@@ -98,6 +99,24 @@ class CruiseGuardTest(unittest.TestCase):
         self.driver["settings"]["softwareEnabled"] = True
         with self.assertRaisesRegex(RuntimeError, "Unused CW"):
             self.guard.observe("rhoCompanion", self.driver, "during-cruise")
+
+    def test_hardware_disable_and_missing_enable_readback_fail(self):
+        self.driver["inputs"]["enableN"] = True
+        with self.assertRaisesRegex(RuntimeError, "bridge"):
+            self.observe()
+        self.driver.pop("inputs")
+        with self.assertRaisesRegex(RuntimeError, "bridge"):
+            self.observe()
+
+    def test_crc_or_setup_failure_and_thermal_fault_fail(self):
+        for field in ("uartResponseValid", "setupOk"):
+            self.driver[field] = False
+            with self.assertRaisesRegex(RuntimeError, "fault"):
+                self.observe()
+            self.driver[field] = True
+        self.driver["status"] = {"overTempWarning": True}
+        with self.assertRaisesRegex(RuntimeError, "fault"):
+            self.observe()
 
     def test_planner_uses_repeat_baseline_without_hiding_new_faults_or_reset(self):
         def repeat(counts, baseline=395):
