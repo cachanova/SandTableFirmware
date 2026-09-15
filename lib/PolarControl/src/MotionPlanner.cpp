@@ -4,6 +4,8 @@
 #ifndef NATIVE_BUILD
 #include <Arduino.h>
 #include <esp_timer.h>
+#include <driver/timer.h>
+#include <rom/ets_sys.h>
 #include "Logger.hpp"
 #else
 #include "esp32_mock.hpp"
@@ -58,6 +60,12 @@ MotionPlanner::MotionPlanner()
 
 MotionPlanner::~MotionPlanner() {
     stop();
+#ifndef NATIVE_BUILD
+    if (m_homingHardwareTimerReady) {
+        timer_isr_callback_remove(TIMER_GROUP_1, TIMER_1);
+        timer_deinit(TIMER_GROUP_1, TIMER_1);
+    }
+#endif
 }
 
 void MotionPlanner::init(int stepsPerMmR, int stepsPerRadT, float maxRho,
@@ -940,13 +948,79 @@ bool MotionPlanner::ensureStepTimer() {
                             (esp_timer_handle_t*)&m_timerHandle) == 0;
 }
 
+#ifndef NATIVE_BUILD
+// Reserve TG1/T1 for homing only. Normal motion keeps its existing planner
+// timer. Register from the motor task so UART and Wi-Fi task scheduling do
+// not dispatch these STEP pulses.
+bool MotionPlanner::ensureHomingHardwareTimer() {
+    if (m_homingHardwareTimerReady) return true;
+    timer_config_t config{};
+    config.alarm_en = TIMER_ALARM_DIS;
+    config.counter_en = TIMER_PAUSE;
+    config.intr_type = TIMER_INTR_LEVEL;
+    config.counter_dir = TIMER_COUNT_UP;
+    config.auto_reload = TIMER_AUTORELOAD_EN;
+    config.divider = 80; // 80 MHz APB clock -> 1 microsecond ticks.
+    if (timer_init(TIMER_GROUP_1, TIMER_1, &config) != ESP_OK) return false;
+    if (timer_isr_callback_add(TIMER_GROUP_1, TIMER_1, homingHardwareISR,
+                              this, ESP_INTR_FLAG_IRAM) != ESP_OK) {
+        timer_deinit(TIMER_GROUP_1, TIMER_1);
+        return false;
+    }
+    m_homingHardwareTimerReady = true;
+    return true;
+}
+
+bool MotionPlanner::setHomingHardwareInterval(uint32_t intervalUs) {
+    // Rate changes occur only on the acceleration ramp. Pause/reset prevents
+    // shortening the alarm behind an already advanced counter.
+    if (timer_pause(TIMER_GROUP_1, TIMER_1) != ESP_OK ||
+        timer_set_counter_value(TIMER_GROUP_1, TIMER_1, 0) != ESP_OK ||
+        timer_set_alarm_value(TIMER_GROUP_1, TIMER_1, intervalUs) != ESP_OK ||
+        timer_set_alarm(TIMER_GROUP_1, TIMER_1, TIMER_ALARM_EN) != ESP_OK ||
+        timer_start(TIMER_GROUP_1, TIMER_1) != ESP_OK) {
+        m_homingRhoActive.store(false, std::memory_order_release);
+        m_timerActive.store(false, std::memory_order_release);
+        timer_pause(TIMER_GROUP_1, TIMER_1);
+        return false;
+    }
+    return true;
+}
+
+bool IRAM_ATTR MotionPlanner::homingHardwareISR(void* arg) {
+    auto* planner = static_cast<MotionPlanner*>(arg);
+    if (!planner->m_homingRhoActive.load(std::memory_order_acquire)) {
+        timer_group_set_counter_enable_in_isr(TIMER_GROUP_1, TIMER_1, TIMER_PAUSE);
+        return false;
+    }
+    FastGPIO::setHigh(R_STEP_PIN);
+    // Arduino's delayMicroseconds is in flash in this build. The hardware
+    // ISR must remain executable while the flash cache is unavailable.
+    ets_delay_us(STEP_PULSE_WIDTH_US);
+    FastGPIO::setLow(R_STEP_PIN);
+    const uint32_t count = planner->m_homingRhoStepCount.fetch_add(1,
+        std::memory_order_release) + 1U;
+    const uint32_t limit = planner->m_homingRhoStepLimit.load(std::memory_order_acquire);
+    if (limit > 0 && count >= limit) {
+        planner->m_homingRhoActive.store(false, std::memory_order_release);
+        planner->m_timerActive.store(false, std::memory_order_release);
+        timer_group_set_counter_enable_in_isr(TIMER_GROUP_1, TIMER_1, TIMER_PAUSE);
+    }
+    return false;
+}
+#endif
+
 bool MotionPlanner::startRhoHoming(int8_t direction,
                                    uint32_t stepsPerSecond,
                                    uint32_t maxSteps) {
-    if (direction == 0 || m_running.load() || m_homingRhoActive.load() ||
-        !ensureStepTimer()) {
+    if (direction == 0 || m_running.load() || m_homingRhoActive.load()) {
         return false;
     }
+#ifdef NATIVE_BUILD
+    if (!ensureStepTimer()) return false;
+#else
+    if (!ensureHomingHardwareTimer()) return false;
+#endif
 
     const uint32_t maxRate = 1000000U / STEP_TIMER_PERIOD_US;
     if (stepsPerSecond == 0 || stepsPerSecond > maxRate) return false;
@@ -965,15 +1039,20 @@ bool MotionPlanner::startRhoHoming(int8_t direction,
     m_homingRhoIntervalUs.store(intervalUs, std::memory_order_relaxed);
     m_homingRhoNextStepUs.store(micros() + intervalUs,
                                 std::memory_order_relaxed);
+    m_timerActive.store(true, std::memory_order_release);
     m_homingRhoActive.store(true, std::memory_order_release);
 
+#ifdef NATIVE_BUILD
     if (esp_timer_start_periodic((esp_timer_handle_t)m_timerHandle,
                                  STEP_TIMER_PERIOD_US) != 0) {
+#else
+    if (!setHomingHardwareInterval(intervalUs)) {
+#endif
         m_homingRhoActive.store(false, std::memory_order_release);
+        m_timerActive.store(false, std::memory_order_release);
         FastGPIO::setLow(R_STEP_PIN);
         return false;
     }
-    m_timerActive.store(true, std::memory_order_release);
     return true;
 }
 
@@ -988,12 +1067,18 @@ bool MotionPlanner::setRhoHomingStepRate(uint32_t stepsPerSecond) {
         STEP_TIMER_PERIOD_US,
         (1000000U + stepsPerSecond / 2U) / stepsPerSecond);
     m_homingRhoIntervalUs.store(intervalUs, std::memory_order_release);
+#ifndef NATIVE_BUILD
+    if (!setHomingHardwareInterval(intervalUs)) return false;
+#endif
     return true;
 }
 
 void MotionPlanner::stopRhoHoming() {
     const bool wasHoming = m_homingRhoActive.exchange(
         false, std::memory_order_acq_rel);
+#ifndef NATIVE_BUILD
+    if (m_homingHardwareTimerReady) timer_pause(TIMER_GROUP_1, TIMER_1);
+#endif
     if (wasHoming && m_timerHandle != nullptr) {
         esp_timer_stop((esp_timer_handle_t)m_timerHandle);
     }
@@ -1005,6 +1090,9 @@ void MotionPlanner::stopRhoHoming() {
 
 void MotionPlanner::stop() {
     m_homingRhoActive.store(false, std::memory_order_release);
+#ifndef NATIVE_BUILD
+    if (m_homingHardwareTimerReady) timer_pause(TIMER_GROUP_1, TIMER_1);
+#endif
     if (m_timerHandle != nullptr) {
         esp_timer_stop((esp_timer_handle_t)m_timerHandle);
     }

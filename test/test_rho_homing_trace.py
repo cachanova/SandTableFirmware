@@ -219,6 +219,20 @@ class HomingTraceCollectorTest(unittest.TestCase):
         self.assertEqual(contact_scatter(artifact)["contactCoordinatesMm"],
                          [-4.8275, -1.31, -.17, -.285, .0025])
 
+    def test_recorded_tight_false_consensus_is_not_home(self) -> None:
+        directory = (Path(__file__).resolve().parents[1] /
+                     "tuning-recordings/rho-main-only-20260915")
+        bad = json.loads((directory /
+            "20260915T033455Z-rho-home-p85-n5-start-r25-cw0mm-result.json").read_text())
+        good = json.loads((directory /
+            "20260915T034351Z-rho-home-p85-n5-start-r21.7875-cw0mm-result.json").read_text())
+        self.assertEqual(contact_scatter(bad)["threeContactSpansMm"], [0.36])
+        self.assertTrue(any("short of known home" in error for error in
+                            validate_trial(bad["reports"], 400, 2, .4, 5, 3, (1,), True)))
+        self.assertEqual(good["settings"]["pulseSource"], "hardware-timer")
+        self.assertEqual(validate_trial(good["reports"], 400, 2, .4, 5, 3, (1,), True), [])
+        self.assertEqual(contact_scatter(good)["threeContactSpansMm"][-1], .08)
+
     def test_main_only_requires_cw_bridge_off(self) -> None:
         self.assertEqual(configured_motor_axes({"companionMotorEnabled": False}),
                          (1,))

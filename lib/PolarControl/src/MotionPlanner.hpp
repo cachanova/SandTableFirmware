@@ -279,10 +279,12 @@ private:
 
     // State
     std::atomic<bool> m_running;
-    std::atomic<bool> m_timerActive{false};
+    // Word-sized atomics compile to inline Xtensa loads/stores in the IRAM
+    // homing callback; std::atomic<bool>::load may call a flash-resident helper.
+    std::atomic<uint32_t> m_timerActive{false};
     std::atomic<bool> m_thetaAvailable{true};
     std::atomic<bool> m_rhoAvailable{true};
-    std::atomic<bool> m_homingRhoActive{false};
+    std::atomic<uint32_t> m_homingRhoActive{false};
     std::atomic<uint32_t> m_homingRhoIntervalUs{0};
     std::atomic<uint32_t> m_homingRhoNextStepUs{0};
     std::atomic<uint32_t> m_homingRhoStepCount{0};
@@ -298,6 +300,12 @@ private:
 
     // Timer handle (ESP32 specific)
     void* m_timerHandle;
+#ifndef NATIVE_BUILD
+    bool m_homingHardwareTimerReady = false;
+    bool ensureHomingHardwareTimer();
+    bool setHomingHardwareInterval(uint32_t intervalUs);
+    static bool IRAM_ATTR homingHardwareISR(void* arg);
+#endif
 
     // Internal methods
     void calculateSegmentProfile(Segment& seg);

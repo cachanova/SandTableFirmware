@@ -2695,6 +2695,7 @@ void SisyphusWebServer::handleTuningGet(AsyncWebServerRequest *request) {
     homingObj["traceContactMarkers"] = true;
     homingObj["rollingSearch"] = true;
     homingObj["retryArmingTracksBackoff"] = true;
+    homingObj["pulseSource"] = "hardware-timer";
     homingObj["companionMotorEnabled"] = Config::kRhoCompanionMotorEnabled;
     homingObj["inactiveHoldStrategy"] = Config::kRhoCompanionMotorEnabled
         ? "vactual-u256" : "disabled-bridge";

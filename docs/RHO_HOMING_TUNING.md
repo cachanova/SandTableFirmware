@@ -4,6 +4,45 @@
 
 ### Rolling search and backoff experiment, after 03:20 UTC
 
+The task-timer trials below do not establish an optimal backoff. In particular,
+three agreeing contacts can still be false: the 03:34 trial agreed within
+0.36 mm about 22 mm outward of home. The independent known-home check rejected
+it and the camera showed the mechanism outward. Do not enable unknown-origin
+boot homing based on contact consensus alone.
+
+| Trial UTC | Known start / requested backoff | Outcome |
+|---|---|---|
+| 03:30:25 | 9.0425 / 10 mm | Six contacts; final span 0.36 mm; camera matched home. |
+| 03:32:21 | 25 / 15 mm | Eleven contacts; final span 0.3125 mm; camera matched home. |
+| 03:34:55 | 25 / 25 mm | Three false contacts; final span 0.36 mm, last point 21.7875 mm short. Rejected. Actual backoffs were only 11.355 and 11.5725 mm because early triggers limited outward room. |
+
+A homing-only TG1/T1 hardware-timer experiment follows these trials. Keep the
+same motor profile and detector initially to separate pulse-timing effects
+from parameter changes. Record `pulseSource` in each result. Audit the entire
+ISR call path for IRAM/ROM residency before running: Arduino's microsecond
+delay and the toolchain's out-of-line atomic-bool load are flash-resident in
+this build. Normal planned motion retains its existing timer.
+
+The first hardware-timer trial (03:43:51 UTC) recovered from the recorded
+21.7875 mm outward position with a 10 mm backoff. Contacts relative to known
+zero were -0.1325, +0.24, +0.32, and +0.245 mm; the final three spanned
+0.08 mm. Camera registration matched the home reference (dx=0, dy=0,
+NCC=0.941), and the result was confirmed. In 25..35 ms cruising trace windows,
+the 5th-percentile commanded STEP rate rose from 2,801 steps/s in the preceding
+failed task-timer trial to 4,765 steps/s; target 4,800 steps/s. This is command
+counter evidence, not a logic-analyzer measurement of individual pulse jitter.
+
+| Hardware-timer trial UTC | Known start / backoff | Contacts / final span | Camera |
+|---|---|---|---|
+| 03:43:51 | 21.7875 / 10 mm | 4 / 0.08 mm | Home |
+| 03:45:27 | 25 / 8 mm | 3 / 0.11 mm | Home |
+| 03:46:23 | 25 / 15 mm | 3 / 0.2825 mm | Home |
+| 03:47:23 | 25 / 25 mm | 3 / 0.0825 mm | Home |
+
+These are screening runs. Repeat the leading backoff at distinct starts and
+compare warm/cold runs before calling it reliable. Do not select a larger
+backoff or relax agreement merely to rescue the older task-timer results.
+
 The user requested a rolling buffer of three SG contact points, allowing an
 early candidate to disappear on the next return. Firmware now continues the
 return past that candidate toward the original commissioning bound. It aborts

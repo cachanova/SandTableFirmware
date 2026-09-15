@@ -672,6 +672,7 @@ def run(args: argparse.Namespace) -> int:
             "backoffMm": backoff_mm,
             "rollingSearch": rolling_search,
             "retryArmingTracksBackoff": bool(homing_profile.get("retryArmingTracksBackoff")),
+            "pulseSource": homing_profile.get("pulseSource", "esp-timer-task"),
             "inactiveHoldStrategy": homing_profile.get(
                 "inactiveHoldStrategy", "unknown"
             ),
