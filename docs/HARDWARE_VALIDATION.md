@@ -71,8 +71,11 @@ pio run -e esp32dev -t upload --upload-port /dev/ttyUSB0
    if it slips or stalls. Manually establish physical zero, then select **Set
    current position as home** before any known-origin trial.
 4. Run the bounded trial in the [RHO homing playbook](RHO_HOMING_TUNING.md).
-   Expect an 8 mm outward runway, an inward approach at 6 mm/s, a 4 mm
-   backoff, and a second inward approach at 6 mm/s. Keep hands clear and a
+   For the startup-entry build, expect a capped 1 mm inward probe, a 6 mm
+   outward runway, and 12 mm/s inward approaches with up to 6 mm backoff.
+   Require three consecutive contact coordinates within a 0.4 mm total span.
+   Ordinary service builds retain the historical 8 mm initial runway.
+   Keep hands clear and a
    physical power cutoff within reach.
 5. Compare the final mechanism position with the confirmed zero reference.
    Reject any early stop, missed contact, driver fault, or mismatch. A rejected
@@ -97,5 +100,9 @@ pio run -e esp32dev -t upload --upload-port /dev/ttyUSB0
 5. Only after repeatable homing and clean representative runs should higher
    tuning limits be considered.
 
-Keep automatic boot homing off until cold-start and unknown-origin trials reach
-the real stop across the stiffest theta regions and reject fixed constrictions.
+The main-only production candidate enables boot homing for final power-cold
+qualification. Warm tests cover known starts through 400 mm and production
+boots at zero and 10 mm; the new entry still needs a true power cycle before
+release. See the current evidence and limitations in the homing playbook.
+Recheck after assembly, load, alignment, driver or homing-profile changes.
+Three agreeing SG contacts do not prove that a fixed constriction is absent.

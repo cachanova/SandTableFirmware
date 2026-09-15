@@ -1,11 +1,12 @@
 # RHO sensorless-homing tuning playbook
 
-## Current experiment (2026-09-15 UTC)
+## Main-only startup qualification (2026-09-15 UTC)
 
 ### Unknown-position startup qualification
 
 The user requested qualification and boot enable, followed by cleanup/merge
-and main-only acoustic retuning. The startup trial build keeps automatic boot
+and main-only acoustic retuning. Production now enables automatic startup
+homing; see the production checks below. The startup trial build keeps automatic boot
 motion off while exercising the production entry with an independent known
 position cap. Use `esp32dev_rho_startup_trial_ota`; normal RHO service tests
 retain the previous 8 mm entry.
@@ -77,17 +78,57 @@ Frozen candidate-only-backoff checks:
 | Trial UTC | Start | Contacts / final span | Review |
 |---|---|---|---|
 | 05:18:31 | 0 mm | 4 / 0.2225 mm | Instrument checks passed; camera home; API confirmed |
+| 05:25:50 | 400 mm | 3 / 0.0675 mm | Instrument checks passed; camera home; API confirmed |
+| 05:27:10 | 10 mm | 3 / 0.32 mm | Instrument checks passed; camera home; API confirmed |
+| 05:28:39 | 25 mm | 3 / 0.09 mm | Instrument checks passed; camera home; API confirmed |
+| 05:31:01 | 100 mm | 3 / 0.06 mm | Instrument checks passed; camera home; API confirmed |
 
 The zero-start check rejected its first three-contact cluster and accepted
 the last three. Its deepest command coordinate was 0.8525 mm beyond the
 known post-entry reference, in addition to the separately capped entry probe.
 
+These five interior-start trials qualify the frozen entry for the next
+production boot-path checks, without changing the 0.4 mm span. The current
+evidence does not establish a field failure rate, detect arbitrary repeatable
+obstructions, or prove physical submillimetre travel. The earlier power-cold
+trial used the previous 8 mm entry; the new entry still needs a true power-cold
+repeat. The user authorized SG-based startup with bounded automatic safeguards.
+
+### Production boot-path checks
+
+The normal `esp32dev_ota` build exposes `autoHomeOnBoot=true` and
+`unknownPositionEnabled=true` through `/api/tuning`. It starts homing after
+serving the website and accepts a successful SG consensus without a camera,
+microphone, known-position argument, or confirmation click. The observer script
+only records GET responses; it does not command or confirm motion.
+
+| Observation UTC | Start / action | Contacts / span | Outcome |
+|---|---|---|---|
+| 05:33:45 | Warm boot from camera-confirmed zero | 3 / 0.35 mm | IDLE, logical zero; camera home |
+| 05:34:23 | Explicit Home after late-IDLE abort | 3 / 0.1325 mm | IDLE, logical zero; camera home |
+| 05:36:39 | Warm boot after +10 mm manual jog | 3 / 0.065 mm | IDLE, logical zero; camera home |
+
+The late-IDLE abort changed state to `INITIALIZED` and both RHO bridges to
+`TOFF=0`. A subsequent explicit Home request remained available. After success,
+normal motion read back at 200 mA run/hold, fixed PWM 128/2, u8 interpolation,
+1 mm/s, acceleration 2 and jerk 10. CW stayed disabled. Production also
+reported the theta driver online; no theta movement was commanded.
+
+The mechanism is idle at camera-confirmed home with the production candidate
+installed. The remaining release gate is a user-performed power cycle of VM
+and the ESP32, without repositioning. An OTA reboot does not reset the powered
+drivers. Keep motor tests paused for that check; after it passes, merge the
+cleanup and move directly to main-only acoustic retuning. The power-cycle
+observer is read-only. Do not interpret its capture-time success as a camera
+review or as a quantified reliability guarantee.
+
 ### Website abort and SG-startup authorization
 
-The user approved qualifying SG-based unknown-position startup with automatic
+Earlier, the user approved qualifying SG-based unknown-position startup with automatic
 travel/time limits, accepting that missed detection cannot guarantee a 5 mm
 physical-overrun cap. This resolves the safety-choice question from the prior
-session; it does not qualify the startup algorithm or enable power-on motion.
+session. Permission alone did not qualify the algorithm; the later trials and
+production checks above record the progress since that authorization.
 
 The main page now offers **Abort homing** without a confirmation dialog or a
 dependency on the first status poll. `POST /api/home/abort` uses the emergency
@@ -170,20 +211,20 @@ four approaches, with command coordinates +0.3525, +0.9125, +0.6725, and
 review preceded home confirmation. This is one power-cold known-zero cycle;
 it does not test starting cold at an unknown position or a temperature range.
 
-### Cleanup and remaining startup work
+### Earlier cleanup and startup design requirements
 
-Remove the unused two-pass `RhoHomingBounds.hpp` helpers and the stale compile-time
-backoff constant. Test the live `RhoRollingSearch` implementation across twelve
+The cleanup removed unused two-pass `RhoHomingBounds.hpp` helpers and the stale
+compile-time backoff constant. Native tests exercise `RhoRollingSearch` across twelve
 retries instead, including rejected over-limit commands and no allowance refund
 after backoff. Preserve historical trace replay support and paired-motor safety
 code: both still have callers and regression value. Correct the service-build
 description and trace pass-number comment without changing live motor settings.
 
 The user requested automatic power-on homing and a merge to main after
-qualification, followed by main-only acoustic retuning. Keep the startup flags
-off while designing and testing the unknown-origin entry path. Merely enabling
-both flags cannot work: `homeAxis()` still requires an independent known-home
-coordinate, and successful homing still enters `HOMING_REVIEW`.
+qualification, followed by main-only acoustic retuning. At this earlier stage,
+`homeAxis()` required an independent known-home coordinate and success entered
+`HOMING_REVIEW`; flipping the flags alone would not have enabled startup. The
+implementation and test evidence at the top of this document supersede that state.
 
 Startup qualification must cover both travel extremes and a cold driver:
 

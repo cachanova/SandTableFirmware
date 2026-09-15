@@ -298,6 +298,27 @@ class HomingTraceCollectorTest(unittest.TestCase):
                 for report in artifact["reports"].values():
                     self.assertEqual(report["knownHomeCoordinateSteps"], expected)
 
+    def test_final_startup_batch_preserves_outer_reference_rejection(self) -> None:
+        directory = (Path(__file__).resolve().parents[1] /
+                     "tuning-recordings/rho-startup-20260915")
+        for name in (
+            "20260915T051831Z-rho-home-p85-n5-result.json",
+            "20260915T052550Z-rho-home-p85-n5-start400mm-result.json",
+            "20260915T052710Z-rho-home-p85-n5-start10mm-result.json",
+            "20260915T052839Z-rho-home-p85-n5-start25mm-result.json",
+            "20260915T053101Z-rho-home-p85-n5-start100mm-result.json",
+        ):
+            artifact = json.loads((directory / name).read_text())
+            with self.subTest(name=name):
+                self.assertTrue(artifact["instrumentedPass"])
+                self.assertEqual(validate_trial(
+                    artifact["reports"], 400, 2, .4, 4, 3, (1,), True), [])
+        rejected = json.loads((directory /
+            "20260915T051320Z-rho-home-p85-n5-start425mm-result.json").read_text())
+        self.assertFalse(rejected["instrumentedPass"])
+        self.assertTrue(any("short of known home" in failure for failure in
+            validate_trial(rejected["reports"], 400, 2, .4, 4, 3, (1,), True)))
+
     def test_main_only_requires_cw_bridge_off(self) -> None:
         self.assertEqual(configured_motor_axes({"companionMotorEnabled": False}),
                          (1,))

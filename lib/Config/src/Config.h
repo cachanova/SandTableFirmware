@@ -19,15 +19,12 @@ static constexpr int kWebCore = 0;
 // Config portal timeout for WiFiManager in seconds.
 static constexpr uint32_t kWifiPortalTimeoutSec = 180;
 
-// Keep automatic motion disabled while the assembled homing profile lacks
-// unknown-origin qualification. The operator must establish physical zero
-// before pattern motion.
-static constexpr bool kAutoHomeOnBoot = false;
-// The assembled main-only profile has known-zero warm trials, but no safe
-// unknown-origin qualification. Keep the production /api/home path locked
-// until that gap is closed; the RHO service image still permits bounded
-// confirmed-origin trials.
-static constexpr bool kEnableUnknownPositionRhoHoming = false;
+// Main-only SG startup uses the qualified dedicated profile and bounded
+// retries. Serve the abort endpoint before starting; failures keep zero untrusted.
+// Service builds still boot without motion. See RHO_HOMING_TUNING.md for evidence
+// and SG/command-ledger limitations; these flags do not provide position sensing.
+static constexpr bool kAutoHomeOnBoot = true;
+static constexpr bool kEnableUnknownPositionRhoHoming = true;
 
 // Static IP defaults for STA mode.
 static const IPAddress kStaticIpBase(100, 76, 149, 200);
@@ -84,8 +81,8 @@ static constexpr uint8_t kRhoMaxUnmeasuredCurrentRegister = 14;
 // Dedicated sensorless-homing profile, independent of quiet normal motion.
 // The 150 and 200 mA eight-microstep profiles produced mid-travel SG false
 // triggers. At 350 mA with full steps, SG sometimes missed the physical stop.
-// The current multipass experiment tests rated current at 12 mm/s. These
-// settings remain provisional until full-travel qualification succeeds.
+// The multipass profile uses rated current at 12 mm/s. Preserve these dedicated
+// settings while retuning ordinary motion; changing them requires requalification.
 static constexpr uint16_t kRhoHomingRunCurrentMa = 500;
 static constexpr uint16_t kRhoHomingHoldCurrentMa = 500;
 // Keep eight external microsteps; gate SG sampling by full-step advancement.
@@ -114,13 +111,10 @@ static constexpr uint8_t kRhoHomingMaximumContactAttempts = 12;
 static constexpr uint16_t kThetaCommissioningStartupCurrentMa = 250;
 static constexpr uint16_t kThetaCommissioningStartupHoldCurrentMa = 100;
 
-// Rho-only commissioning also ignores persisted motion/current values on boot.
-// The operator establishes the physical start point before power-up; firmware
-// treats it as a temporary logical zero and only permits outward-positive test
-// trajectories that return to that point.
-// CS=8 is the lowest current code recommended for StealthChop automatic
-// tuning. With VSENSE=1 and the V3.0 module's 0.11 ohm shunts it is about
-// 275 mA RMS.
+// Rho service ignores persisted motion/current values on boot. It starts in
+// unhomed manual mode; an explicit origin confirmation enables bounded tests.
+// The 200 mA fixed-PWM baseline avoids relying on automatic StealthChop
+// calibration below CS8. Homing uses its separate profile above.
 static constexpr uint16_t kRhoCommissioningStartupCurrentMa = 200;
 static constexpr uint16_t kRhoCommissioningStartupHoldCurrentMa = 200;
 }

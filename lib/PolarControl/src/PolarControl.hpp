@@ -40,8 +40,8 @@
 
 // Tuning settings structures
 struct MotionSettings {
-  // Final-load RHO performance profile, qualified at a -60 dBFS conservative
-  // motor-excess ceiling on 2026-09-09.
+  // Historical paired-RHO acoustic speed at a -60 dBFS ceiling (2026-09-09).
+  // Requalify for the assembled main-only hardware before claiming that tier.
   float rMaxVelocity = 4.25f;   // mm/s
   float rMaxAccel = 20.0f;      // mm/s²
   float rMaxJerk = 100.0f;      // mm/s³

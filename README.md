@@ -104,26 +104,33 @@ Loaded theta commissioning, acoustic acceptance, known resonances, selected
 defaults, and the repeatable retuning procedure are documented in the
 [theta acoustic tuning playbook](docs/THETA_ACOUSTIC_TUNING.md).
 
-Paired-rho acoustic commissioning uses an outward-only temporary origin and is
+RHO acoustic commissioning uses an outward-only temporary origin and is
 documented in the [rho acoustic tuning playbook](docs/RHO_ACOUSTIC_TUNING.md).
 
 ## Sensorless Homing
 
 The current assembly has a main RHO motor on UART address 0 and an empty
 counterweight motor socket on address 1. Firmware keeps the empty driver's
-bridge off. Main RHO uses STEP/DIR for an 8 mm outward runway, a constant-speed
-inward StallGuard approach, a 4 mm backoff, and a second inward approach. UART
+bridge off. Main RHO uses STEP/DIR for a pulse-capped 1 mm inward entry,
+6 mm outward runway, and 12 mm/s inward StallGuard approaches with up to
+6 mm backoff between contacts. UART
 configures the drivers and supplies `SG_RESULT`; it does not command homing
-velocity. The two inward triggers must agree within 0.5 mm.
+velocity. Homing requires three consecutive contact coordinates spanning no
+more than 0.4 mm, with a maximum of twelve approaches and a 90-second deadline.
 
-Ten warm, known-zero trials ended at the operator-confirmed camera reference.
-That result does not qualify homing from an unknown position or after a cold
-power start. A fixed tight spot could produce two matching false triggers.
-Automatic boot homing remains off. The service image requires visual
-confirmation before accepting a sensorless result. The production `/api/home`
-path rejects unknown-position attempts while
-`kEnableUnknownPositionRhoHoming` remains false. The 2 mm commanded-overrun
-limit applies to known-origin commissioning trials, not an unknown-origin boot.
+Production enables automatic boot homing after starting the website; use
+**Abort homing** to stop and invalidate zero. The service image still boots
+without motion and requires physical review of test results. Production uses
+SG data alone; neither the microphone nor camera is a runtime dependency.
+
+The startup qualification build passed from known starts at 0, 10, 25, 100
+and 400 mm. Production warm boots passed at zero and 10 mm. The new entry's
+true power-cold repeat remains a release check. A nominal 425 mm start reached
+camera home but failed the independent position veto; retain that rejection.
+SG consensus cannot distinguish every repeatable obstruction from home.
+After the first candidate, retries permit at most 2 mm new inward command
+progress per pass and 4 mm total, separate from the capped entry probe.
+These command limits do not measure physical penetration through a stop.
 See the [RHO homing playbook](docs/RHO_HOMING_TUNING.md) before powered tests.
 The counterweight motor needs its own qualification when reconnected.
 

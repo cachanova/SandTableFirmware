@@ -2694,6 +2694,13 @@ void SisyphusWebServer::handleTuningGet(AsyncWebServerRequest *request) {
     homingObj["microsteps"] = Config::kRhoHomingMicrosteps;
     homingObj["velocityMmS"] = Config::kRhoHomingVelocityMmPerSecond;
     homingObj["startupEntry"] = Config::kRhoStartupEntry;
+#if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
+    homingObj["autoHomeOnBoot"] = false;
+    homingObj["unknownPositionEnabled"] = false;
+#else
+    homingObj["autoHomeOnBoot"] = Config::kAutoHomeOnBoot;
+    homingObj["unknownPositionEnabled"] = Config::kEnableUnknownPositionRhoHoming;
+#endif
     homingObj["knownStartMaximumMm"] = Config::kRhoKnownStartMaximumMm;
     homingObj["startupProbeMm"] = Config::kRhoStartupEntry ? Config::kRhoStartupProbeMm : 0;
     homingObj["runwayMm"] = Config::kRhoStartupEntry
