@@ -100,9 +100,10 @@ pio run -e esp32dev -t upload --upload-port /dev/ttyUSB0
 5. Only after repeatable homing and clean representative runs should higher
    tuning limits be considered.
 
-The main-only production candidate enables boot homing for final power-cold
-qualification. Warm tests cover known starts through 400 mm and production
-boots at zero and 10 mm; the new entry still needs a true power cycle before
-release. See the current evidence and limitations in the homing playbook.
+Main-only production enables boot homing. Warm tests cover known starts
+through 400 mm and production boots at zero and 10 mm. The user confirmed
+the new entry's power-cold boot at zero; firmware reported a power-on reset,
+three contacts spanning 0.300 mm, and 311/311 valid UART reads. See the
+current evidence and limitations in the homing playbook.
 Recheck after assembly, load, alignment, driver or homing-profile changes.
 Three agreeing SG contacts do not prove that a fixed constriction is absent.

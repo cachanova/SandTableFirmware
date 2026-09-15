@@ -91,8 +91,9 @@ These five interior-start trials qualify the frozen entry for the next
 production boot-path checks, without changing the 0.4 mm span. The current
 evidence does not establish a field failure rate, detect arbitrary repeatable
 obstructions, or prove physical submillimetre travel. The earlier power-cold
-trial used the previous 8 mm entry; the new entry still needs a true power-cold
-repeat. The user authorized SG-based startup with bounded automatic safeguards.
+trial used the previous 8 mm entry; the production checks below now include
+the new entry's power-cold repeat. The user authorized SG-based startup with
+bounded automatic safeguards.
 
 ### Production boot-path checks
 
@@ -107,6 +108,7 @@ only records GET responses; it does not command or confirm motion.
 | 05:33:45 | Warm boot from camera-confirmed zero | 3 / 0.35 mm | IDLE, logical zero; camera home |
 | 05:34:23 | Explicit Home after late-IDLE abort | 3 / 0.1325 mm | IDLE, logical zero; camera home |
 | 05:36:39 | Warm boot after +10 mm manual jog | 3 / 0.065 mm | IDLE, logical zero; camera home |
+| 06:30:13 capture | User power cycle at zero | 3 / 0.300 mm | IDLE, logical zero; user confirmed home |
 
 The late-IDLE abort changed state to `INITIALIZED` and both RHO bridges to
 `TOFF=0`. A subsequent explicit Home request remained available. After success,
@@ -114,13 +116,20 @@ normal motion read back at 200 mA run/hold, fixed PWM 128/2, u8 interpolation,
 1 mm/s, acceleration 2 and jerk 10. CW stayed disabled. Production also
 reported the theta driver online; no theta movement was commanded.
 
-The mechanism is idle at camera-confirmed home with the production candidate
-installed. The remaining release gate is a user-performed power cycle of VM
-and the ESP32, without repositioning. An OTA reboot does not reset the powered
-drivers. Keep motor tests paused for that check; after it passes, merge the
-cleanup and move directly to main-only acoustic retuning. The power-cycle
-observer is read-only. Do not interpret its capture-time success as a camera
-review or as a quantified reliability guarantee.
+The user completed the requested power cycle and confirmed physical home.
+The ESP32 reported power-on reset reason 1; both drivers reported reset.
+Firmware accepted contacts at command coordinates 2446, 2477 and 2566 steps
+and returned to IDLE at logical zero, with 311/311 valid UART reads. Main
+restored the 200 mA motion profile and CW remained at `TOFF=0`. This completes
+the agreed release check for the current main-only assembly.
+
+The read-only observer expired before the user rebooted. The post-hoc capture
+retains 256 of 314 trace records, including all three contact markers; it omits
+the first 58 records. Preserve that limitation in the artifact. This is one
+power-cold zero-start result, not a cold-start temperature or full-travel sweep.
+Keep the rejected 425 mm trial and the SG-obstruction caveat in the record.
+Merge the cleanup, then proceed to main-only acoustic tuning without changing
+the dedicated homing profile.
 
 ### Website abort and SG-startup authorization
 

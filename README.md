@@ -124,8 +124,8 @@ without motion and requires physical review of test results. Production uses
 SG data alone; neither the microphone nor camera is a runtime dependency.
 
 The startup qualification build passed from known starts at 0, 10, 25, 100
-and 400 mm. Production warm boots passed at zero and 10 mm. The new entry's
-true power-cold repeat remains a release check. A nominal 425 mm start reached
+and 400 mm. Production warm boots passed at zero and 10 mm; the user also
+confirmed a successful power-cold boot from zero. A nominal 425 mm start reached
 camera home but failed the independent position veto; retain that rejection.
 SG consensus cannot distinguish every repeatable obstruction from home.
 After the first candidate, retries permit at most 2 mm new inward command
