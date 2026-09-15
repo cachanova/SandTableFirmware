@@ -23,6 +23,63 @@ and the 2 mm per-approach / 5 mm total overrun caps unchanged.
 | 04:23:09 | 10 mm | 3 / 0.06 mm | Camera-confirmed home |
 | 04:24:03 | 25 mm | 3 / 0.09 mm | Camera-aligned with home |
 | 04:25:35 | 0 mm | 3 / 0.0425 mm | Camera-confirmed home |
+| 04:28:21 | 100 mm | 4 / 0.355 mm | Camera-confirmed home |
+| 04:31:01 | 10 mm | 3 / 0.15 mm | Camera-confirmed home |
+| 04:32:08 | 25 mm | 3 / 0.23 mm | Camera-confirmed home |
+| 04:33:40 | 0 mm | 3 / 0.13 mm | Camera-aligned with home |
+| 04:36:22, after power cycle | 0 mm | 4 / 0.24 mm | Camera-confirmed home |
+
+The first ten rows complete the warm validation batch: 24,008 of 24,008 UART
+reads were valid. Nine cycles needed three approaches; the second 100 mm cycle
+needed four. Its first three command coordinates spanned 0.6325 mm, so firmware
+continued and accepted the last three, spanning 0.355 mm. Retain the 0.4 mm
+total-span limit; a tighter limit would reject that final cluster. These ten
+cycles support repeatability under the tested conditions, not a quantified
+field failure rate.
+
+The largest inward command high-water mark in the warm batch was 0.7175 mm
+past the known zero, within the 2 mm per-pass and 5 mm cumulative caps. Those
+are command-ledger distances, not displacement through the hard stop. All
+endpoint camera reviews preceded API confirmation. The original instrument
+artifacts retain their capture-time `accepted=false` review state.
+
+The user then performed the requested power cycle without moving the mechanism.
+The ESP32 reported power-on reset reason 1, both drivers reported reset, and
+the camera still matched home. The first homing cycle after that reset needed
+four approaches, with command coordinates +0.3525, +0.9125, +0.6725, and
++0.8575 mm. The final span was 0.24 mm. The host checks passed, and camera
+review preceded home confirmation. This is one power-cold known-zero cycle;
+it does not test starting cold at an unknown position or a temperature range.
+
+### Cleanup and remaining startup work
+
+Remove the unused two-pass `RhoHomingBounds.hpp` helpers and the stale compile-time
+backoff constant. Test the live `RhoRollingSearch` implementation across twelve
+retries instead, including rejected over-limit commands and no allowance refund
+after backoff. Preserve historical trace replay support and paired-motor safety
+code: both still have callers and regression value. Correct the service-build
+description and trace pass-number comment without changing live motor settings.
+
+The user requested automatic power-on homing and a merge to main after
+qualification, followed by main-only acoustic retuning. Keep the startup flags
+off while designing and testing the unknown-origin entry path. Merely enabling
+both flags cannot work: `homeAxis()` still requires an independent known-home
+coordinate, and successful homing still enters `HOMING_REVIEW`.
+
+Startup qualification must cover both travel extremes and a cold driver:
+
+- Do not issue the present 8 mm outward runway from an arbitrary boot position.
+  At the 425 mm outer stop, that command could hit the opposite end stop.
+- Do not replace the known-home coordinate with 425 mm and retain the existing
+  caps. At physical zero that permits a long inward command if SG misses contact.
+- Test the new entry path with an independent commissioning bound that acts
+  only as an emergency veto, keeping its known position out of detector decisions.
+- Retain failure lockout and verify driver restoration before automatic origin
+  assignment. Camera and microphone may validate tests but cannot become boot
+  dependencies.
+
+Until that work passes, do not claim unattended startup readiness or begin the
+user's follow-on acoustic campaign as though the homing milestone were complete.
 
 The 04:24 trial's three command coordinates were slightly early (-0.0475,
 -0.085, -0.1375 mm). The camera cannot resolve that small displacement reliably;

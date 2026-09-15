@@ -92,7 +92,6 @@ static constexpr uint16_t kRhoHomingHoldCurrentMa = 500;
 static constexpr uint16_t kRhoHomingMicrosteps = 8;
 static constexpr float kRhoHomingVelocityMmPerSecond = 12.0f;
 static constexpr float kRhoHomingRunwayMm = 8.0f;
-static constexpr float kRhoHomingVerificationBackoffMm = 8.0f;
 static constexpr float kRhoHomingMaximumOverrunMm = 2.0f;
 static constexpr float kRhoHomingMaximumTotalOverrunMm = 5.0f;
 static constexpr float kRhoHomingCoarseRunwayMarginMm = 1.0f;

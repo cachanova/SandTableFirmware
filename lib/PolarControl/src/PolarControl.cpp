@@ -5,7 +5,6 @@
 #include "Logger.hpp"
 #include "ErrorLog.hpp"
 #include "StallGuardDetector.hpp"
-#include "RhoHomingBounds.hpp"
 #include "RhoContactConsensus.hpp"
 #include "RhoRollingSearch.hpp"
 #include <cmath>

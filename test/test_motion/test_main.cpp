@@ -17,7 +17,6 @@
 #include "StallGuardDetector.hpp"
 #include "RhoContactConsensus.hpp"
 #include "RhoRollingSearch.hpp"
-#include "RhoHomingBounds.hpp"
 
 // Directly include implementations for native build to resolve linker errors
 // This mimics a unity build
@@ -387,13 +386,6 @@ bool testRhoContactConsensus() {
         std::cout << "FAIL: prior stop overrun hid a later early consensus\n";
         return false;
     }
-    if (rhoRetryAllowance(800, 2000, 0) != 800 ||
-        rhoRetryAllowance(800, 2000, 1600) != 400 ||
-        rhoRetryAllowance(800, 2000, 2000) != 0 ||
-        rhoRetryAllowance(800, 2000, 2400) != 0) {
-        std::cout << "FAIL: per-pass overrun was not bounded by total allowance\n";
-        return false;
-    }
     RhoContactConsensus isolated(160); // 0.4 mm at u8
     if (isolated.add(3000) || isolated.add(3200) || isolated.add(3210) ||
         !isolated.add(3195)) {
@@ -684,55 +676,32 @@ bool testBoundedRhoHomingPulses() {
 bool testRhoSharedOverrunBudget() {
     std::cout << "\n=== Test: Rho Shared Homing Overrun Budget ===" << std::endl;
     constexpr uint32_t expected = 3200;  // 8 mm at 400 steps/mm
-    constexpr uint32_t backoff = 1600;
-    constexpr uint32_t tolerance = 400;
-    for (uint32_t coarse : {2800U, 3200U, 3400U, 3600U}) {
-        const RhoBoundedReturn bound = rhoBoundedReturn(
-            expected, coarse, backoff, tolerance);
-        const int64_t finalOffset = static_cast<int64_t>(expected) - coarse +
-            backoff - bound.precisionCapSteps;
-        if (!bound.contactWithinWindow || finalOffset < -400) {
-            std::cout << "FAIL: coarse=" << coarse << ", final="
-                      << finalOffset << std::endl;
-            return false;
+    constexpr uint32_t backoff = 2400;  // 6 mm
+    constexpr uint32_t perPass = 800;   // 2 mm
+    constexpr uint32_t total = 2000;    // 5 mm
+    // Exercise the actual rolling-search implementation, not the obsolete
+    // two-pass equations. Backoff must never refund hard-stop allowance.
+    for (uint32_t coarse : {2800U, 3200U, 3400U, 4000U}) {
+        RhoRollingSearch search(expected, perPass, total);
+        if (!search.inward(coarse)) return false;
+        for (unsigned pass = 0; pass < 12; ++pass) {
+            const uint32_t usedBefore = search.usedOverrun();
+            const uint32_t outward = search.backoffLimit(backoff);
+            if (!search.outward(outward) ||
+                search.usedOverrun() != usedBefore) return false;
+            const uint32_t cap = search.approachLimit();
+            const uint32_t coordinate = search.coordinate();
+            if (search.inward(cap + 1) || search.coordinate() != coordinate ||
+                !search.inward(cap) || search.usedOverrun() > total ||
+                search.usedOverrun() - usedBefore > perPass ||
+                search.coordinate() > expected + total) {
+                std::cout << "FAIL: rolling budget at pass " << pass << std::endl;
+                return false;
+            }
         }
+        if (search.usedOverrun() != total) return false;
     }
-    if (rhoBoundedReturn(expected, 2799, backoff, tolerance)
-            .contactWithinWindow ||
-        rhoBoundedReturn(expected, 3601, backoff, tolerance)
-            .contactWithinWindow ||
-        rhoBoundedReturn(expected, 3600, backoff, tolerance)
-            .precisionCapSteps != backoff) {
-        std::cout << "FAIL: contact window or second-pass cap" << std::endl;
-        return false;
-    }
-    if (!rhoReturnWithinWindow(expected, 3200, backoff, 1600, tolerance) ||
-        rhoReturnWithinWindow(expected, 2800, backoff, 1200, tolerance) ||
-        !rhoReturnWithinWindow(expected, 3000, backoff, 1500, tolerance)) {
-        std::cout << "FAIL: combined return window" << std::endl;
-        return false;
-    }
-    constexpr uint32_t twoMmTolerance = 800;
-    const RhoBoundedReturn wider = rhoBoundedReturn(
-        expected, 3600, backoff, twoMmTolerance);
-    if (!wider.contactWithinWindow ||
-        wider.precisionCapSteps != backoff + 400 ||
-        rhoReturnWithinWindow(expected, 3600, backoff, 2200,
-                              twoMmTolerance)) {
-        std::cout << "FAIL: two-millimetre shared budget" << std::endl;
-        return false;
-    }
-    if (!rhoApproachesAgree(200, 200, 25) ||
-        !rhoApproachesAgree(200, 175, 25) ||
-        !rhoApproachesAgree(200, 225, 25) ||
-        rhoApproachesAgree(200, 174, 25) ||
-        rhoApproachesAgree(200, 226, 25)) {
-        std::cout << "FAIL: independent half-millimetre agreement window"
-                  << std::endl;
-        return false;
-    }
-    std::cout << "PASS: shared contact cap and separate agreement window"
-              << std::endl;
+    std::cout << "PASS: rolling per-pass and cumulative caps" << std::endl;
     return true;
 }
 

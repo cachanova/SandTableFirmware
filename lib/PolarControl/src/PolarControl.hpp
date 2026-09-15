@@ -138,7 +138,7 @@ struct HomingTraceSample {
   uint16_t contactBaseline = 0; // Nonzero only on a detector stop marker.
   uint16_t contactThreshold = 0;
   uint8_t axis = 0;   // 1=rho, 2=rho-companion
-  uint8_t pass = 0;   // 1=coarse, 2..6=verification attempts
+  uint8_t pass = 0;   // 1=coarse, 2..maximumContactAttempts=verification
   uint8_t phase = 0;  // 1=runway, 2=coarse, 3=backoff, 4=precision
   bool valid = false;
 };

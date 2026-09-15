@@ -255,6 +255,31 @@ class HomingTraceCollectorTest(unittest.TestCase):
                 self.assertEqual(scatter["physicalContactLabels"],
                                  "requires synchronized external observation")
 
+    def test_recorded_warm_and_cold_retries_keep_the_rolling_budget(self) -> None:
+        directory = (Path(__file__).resolve().parents[1] /
+                     "tuning-recordings/rho-main-only-20260915")
+        for filename, count in (
+            ("20260915T042821Z-rho-home-p85-n5-start100mm-result.json", 4),
+            ("20260915T043101Z-rho-home-p85-n5-start10mm-result.json", 3),
+            ("20260915T043208Z-rho-home-p85-n5-start25mm-result.json", 3),
+            ("20260915T043340Z-rho-home-p85-n5-result.json", 3),
+            ("20260915T043622Z-rho-home-p85-n5-result.json", 4),
+        ):
+            with self.subTest(filename=filename):
+                artifact = json.loads((directory / filename).read_text())
+                self.assertEqual(validate_trial(
+                    artifact["reports"], 400, 2, .4, 5, 3, (1,), True), [])
+                scatter = contact_scatter(artifact)
+                self.assertEqual(len(scatter["passes"]), count)
+                self.assertLessEqual(scatter["threeContactSpansMm"][-1], .4)
+                if count == 4:
+                    self.assertGreater(scatter["threeContactSpansMm"][0], .4)
+                # Positive command coordinates can accumulate after stop
+                # contact; the 0.4 mm limit applies to span, not absolute zero.
+                self.assertLessEqual(max(scatter["contactCoordinatesMm"]), 5)
+                self.assertFalse(artifact["accepted"])
+                self.assertTrue(artifact["awaitingPhysicalReview"])
+
     def test_main_only_requires_cw_bridge_off(self) -> None:
         self.assertEqual(configured_motor_axes({"companionMotorEnabled": False}),
                          (1,))
