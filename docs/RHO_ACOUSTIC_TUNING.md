@@ -96,6 +96,16 @@ using the lighter monitor, but does not establish offset 124 as quieter than
 128. Retain 128 while bracketing speed; use repeated qualification to avoid
 choosing a driver setting from one favourable background window.
 
+With lightweight polling, fixed 128/0 at 5.5 mm/s had no underruns but missed
+the -60 ceiling at -59.78 dBFS. Keep 5 mm/s as the fastest passing screen,
+pending repeated qualification; do not round the 5.5 result into a pass.
+The quieter fixed-128/0 screens passed -63 at 3 mm/s (-64.76 dBFS upper
+bound) and 3.5 mm/s (-63.21). The latter has little margin and particularly
+needs independent repeats; neither is yet a qualified assembled profile.
+At 2 mm/s, fixed 128/0 subsequently screened at -66.66 dBFS upper bound
+(-67.94 estimated motor excess), with valid background/timing checks and no
+faults. This is a provisional -66 pass, unlike the earlier floor-limited result.
+
 Retain the -60, -63, and -66 dBFS RHO tiers. Use four-leg 50 mm screens, then
 two independent eight-leg qualifications of finalists. Require each gate to
 sustain commanded speed; enlarge to 100 mm if necessary. Search velocity by
@@ -127,11 +137,26 @@ position.
   gap after each leg. If every leg does not sustain at least 90% of commanded
   velocity for one second, repeat the screen at 100 mm.
 - Continuous: `start -> start+400 mm -> start`.
+- Spatial range: `--profile range --rho-excursion-mm 400` travels outward
+  in eight 50 mm sections and back over the same sections, pausing after each.
+  Its 16 adjacent-idle comparisons expose position-dependent noise that a
+  whole-trip median can hide. It totals 800 mm and returns to zero. Require
+  full cruise in every section; two repeats are needed for qualification.
 - Gated qualification: eight complete 50 or 100 mm legs with confirmed idle
   gaps after every leg. This is the primary numeric acoustic trajectory in a
   changing room environment.
 - Stress: reversal-heavy moves through offsets from 0 to +400 mm, followed by
   an explicit return to start.
+- Ramp: with `--rho-excursion-mm 50`, the host runs
+  `0 -> 5 -> 0 -> 10 -> 0 -> 20 -> 0 -> 50 -> 0` mm, with idle gaps.
+  This provisional acceleration/jerk comparison totals 170 mm, always on the
+  outward side. Unlike cruise qualification, short ramp legs need not reach
+  maximum speed. Their metric includes the whole STEP-timed movement window
+  and uses adjacent-idle-subtracted P95 power with its conservative upper
+  bound. It is a separate transient metric, not a substitute for the cruise
+  tier or the final 400 mm / reversal-stress checks. Enlarge the excursion if
+  a faster candidate leaves too few independent audio frames in the shortest
+  gates; insufficient data must not become a quiet pass.
 - Theta remains stationary and its driver is not enabled by rho-commissioning
   firmware.
 

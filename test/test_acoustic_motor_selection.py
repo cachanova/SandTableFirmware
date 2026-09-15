@@ -6,7 +6,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from acoustic_tuner import (motor_participates, interpolation_readback_confirmed,
-                            CruiseDriverGuard, planner_repeat_healthy)
+                            CruiseDriverGuard, planner_repeat_healthy,
+                            rho_segment_targets, rho_profile_distance_mm,
+                            repeat_confirmation_satisfied)
 
 
 class MotorSelectionTest(unittest.TestCase):
@@ -108,6 +110,12 @@ class CruiseGuardTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "bridge"):
             self.observe()
 
+    def test_bridge_checks_also_cover_preflight_and_short_verification(self):
+        self.driver["settings"]["chopperOffTime"] = 0
+        for phase in ("preflight", "before-motion", "during-motion", "after-motion"):
+            with self.assertRaisesRegex(RuntimeError, "bridge"):
+                self.observe(phase)
+
     def test_crc_or_setup_failure_and_thermal_fault_fail(self):
         for field in ("uartResponseValid", "setupOk"):
             self.driver[field] = False
@@ -128,6 +136,40 @@ class CruiseGuardTest(unittest.TestCase):
         self.assertFalse(planner_repeat_healthy(repeat([395, 0])))
         self.assertFalse(planner_repeat_healthy(repeat([])))
         self.assertFalse(planner_repeat_healthy(repeat([0, 395], baseline=0)))
+
+
+class RhoRampTest(unittest.TestCase):
+    def test_repeated_verification_is_not_qualification(self):
+        summary = {"verify": {"provisionalScreen": False,
+                              "qualificationEligible": False,
+                              "nearField": {"qualificationMeasurementValid": True}}}
+        self.assertFalse(repeat_confirmation_satisfied(summary, 2))
+        summary["verify"].pop("qualificationEligible")
+        self.assertFalse(repeat_confirmation_satisfied(summary, 2))
+
+    def test_spatial_range_covers_whole_stroke_and_returns_to_zero(self):
+        targets = rho_segment_targets("range", 400)
+        self.assertEqual(targets, (50, 100, 150, 200, 250, 300, 350, 400,
+                                   350, 300, 250, 200, 150, 100, 50, 0))
+        self.assertEqual(rho_profile_distance_mm("range", 400), 800)
+        for excursion in (1, 50, 100, 400):
+            targets = rho_segment_targets("range", excursion)
+            self.assertEqual(targets[-1], 0)
+            self.assertEqual(max(targets), excursion)
+            self.assertGreaterEqual(min(targets), 0)
+            self.assertEqual(len(targets), 16)
+
+    def test_ramp_returns_each_leg_to_start_within_requested_envelope(self):
+        self.assertEqual(rho_segment_targets("ramp", 50), (5, 0, 10, 0, 20, 0, 50, 0))
+        self.assertEqual(rho_profile_distance_mm("ramp", 50), 170)
+        for excursion in (1, 50, 100, 400):
+            targets = rho_segment_targets("ramp", excursion)
+            self.assertEqual(targets[1::2], (0, 0, 0, 0))
+            self.assertTrue(all(0 <= target <= excursion for target in targets))
+
+    def test_existing_segment_distances_unchanged(self):
+        for profile, distance in (("verify", 100), ("screen", 200), ("gated", 400)):
+            self.assertEqual(rho_profile_distance_mm(profile, 50), distance)
 
 
 if __name__ == "__main__":

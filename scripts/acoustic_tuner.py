@@ -39,6 +39,7 @@ RHO_PROFILE_DISTANCE_MM = {"continuous": 800.0, "stress": 5950.0}
 RHO_SCREEN_GATE_COUNT = 4
 RHO_QUALIFICATION_GATE_COUNT = 8
 RHO_PAIR_VERIFY_GATE_COUNT = 2
+RHO_SEGMENTED_PROFILES = ("verify", "screen", "gated", "ramp", "range")
 MINIMUM_GATE_CRUISE_S = 1.0
 HUMAN_AUDIBLE_MIN_HZ = 20.0
 HUMAN_AUDIBLE_MAX_HZ = 20000.0
@@ -62,6 +63,16 @@ DEFAULT_ACCEPTABLE_NEAR_TONE_CEILING_DBFS = -58.45
 
 
 def rho_segment_targets(profile: str, excursion_mm: float) -> tuple[float, ...]:
+    if profile == "range":
+        return tuple(index * excursion_mm / 8.0
+                     for index in (*range(1, 9), *range(7, -1, -1)))
+    if profile == "ramp":
+        # Short reversals expose acceleration/jerk noise without traversing
+        # the full stress trajectory for every provisional configuration.
+        # At the current ~5 mm/s candidates, a 5 mm minimum leg also leaves
+        # enough non-overlapping audio frames for the transient confidence bound.
+        return tuple(target for fraction in (0.10, 0.20, 0.40, 1.0)
+                     for target in (fraction * excursion_mm, 0.0))
     gate_count = {
         "verify": RHO_PAIR_VERIFY_GATE_COUNT,
         "screen": RHO_SCREEN_GATE_COUNT,
@@ -74,8 +85,9 @@ def rho_segment_targets(profile: str, excursion_mm: float) -> tuple[float, ...]:
 
 
 def rho_profile_distance_mm(profile: str, excursion_mm: float) -> float:
-    if profile in ("verify", "screen", "gated"):
-        return len(rho_segment_targets(profile, excursion_mm)) * excursion_mm
+    if profile in RHO_SEGMENTED_PROFILES:
+        targets = (0.0,) + rho_segment_targets(profile, excursion_mm)
+        return sum(abs(end - start) for start, end in zip(targets, targets[1:]))
     return RHO_PROFILE_DISTANCE_MM[profile]
 
 
@@ -1382,16 +1394,16 @@ class CruiseDriverGuard:
             raise RuntimeError(f"{role} driver reported a fault at {phase}")
         if not motor_participates(role, driver):
             return
-        if phase != "during-cruise":
-            self.low_sg_runs[role] = 0
-            self.invalid_sg_runs[role] = 0
-            return
         settings = driver.get("settings", {})
         if (not settings.get("chopconfReadValid")
                 or settings.get("softwareEnabled") is not True
                 or int(settings.get("chopperOffTime", 0)) <= 0
                 or driver.get("inputs", {}).get("enableN") is not False):
             raise RuntimeError(f"{role} active bridge is not verified enabled")
+        if phase != "during-cruise":
+            self.low_sg_runs[role] = 0
+            self.invalid_sg_runs[role] = 0
+            return
         dynamic = driver.get("dynamic", {})
         sg_valid = bool(dynamic.get("stallGuardValid"))
         sg_result = int(dynamic.get("stallGuardResult", 0))
@@ -1455,6 +1467,7 @@ def preflight_rho_commissioning(
                 raise RuntimeError("Firmware RHO motors do not match --expected-rho-motors")
         if not motor_participates(driver_role, diagnostic):
             continue
+        CruiseDriverGuard().observe(driver_role, diagnostic, "preflight")
         verified_settings = diagnostic.get("settings", {})
         if not verified_settings.get("chopconfReadValid"):
             raise RuntimeError(
@@ -2206,12 +2219,12 @@ def run_timed_repeat(
     axis = AXES[args.axis]
     rho_envelope_mm = (
         args.rho_excursion_mm
-        if profile in ("verify", "screen", "gated")
+        if profile in RHO_SEGMENTED_PROFILES
         else RHO_TEST_MAX_EXCURSION_MM
     )
     segmented_targets = (
         rho_segment_targets(profile, args.rho_excursion_mm)
-        if axis.name == "rho" and profile in ("verify", "screen", "gated")
+        if axis.name == "rho" and profile in RHO_SEGMENTED_PROFILES
         else theta_segment_targets(profile, args.theta_excursion_deg)
         if axis.name == "theta"
         and profile in ("verify", "screen", "gated", "ramp")
@@ -2525,7 +2538,7 @@ def run_timed_repeat(
         audio_epoch_uncertainty_s=recorder.timestamp_uncertainty_s,
         expected_max_velocity=(
             expected_max_velocity
-            if profile in ("verify", "screen", "gated") else None
+            if profile in ("verify", "screen", "gated", "range") else None
         ),
         exact_motion_envelope=profile in ("stress", "ramp"),
     )
@@ -2639,6 +2652,7 @@ def repeat_confirmation_satisfied(
         and bool(profile_summaries)
         and all(
             not summary["provisionalScreen"]
+            and summary.get("qualificationEligible") is True
             and summary["nearField"]["qualificationMeasurementValid"]
             for summary in profile_summaries.values()
         )
@@ -2666,6 +2680,8 @@ def interpolation_readback_confirmed(
 
 def cmd_trial(args: argparse.Namespace) -> int:
     axis = AXES[args.axis]
+    if args.profile == "range" and axis.name != "rho":
+        raise ValueError("The spatial range profile is rho-only")
     if not args.reference_only:
         if axis.name == "rho" and args.acceptable_ceiling_dbfs is None:
             raise ValueError(
@@ -2736,7 +2752,7 @@ def cmd_trial(args: argparse.Namespace) -> int:
         minimum_timeout_s = minimum_motion_s * 1.25 + 10.0
         gated_profiles = [
             profile for profile in requested_profiles
-            if profile in ("verify", "screen", "gated", "ramp")
+            if profile in RHO_SEGMENTED_PROFILES
         ]
         if gated_profiles:
             minimum_timeout_s += max(
@@ -2832,7 +2848,7 @@ def cmd_trial(args: argparse.Namespace) -> int:
                 if axis.name == "rho"
                 else theta_segment_targets(profile, args.theta_excursion_deg)
             )
-            if profile in ("verify", "screen", "gated", "ramp") else 1
+            if profile in RHO_SEGMENTED_PROFILES else 1
         )
         # Qualification is fail-closed on the loudest telemetry-confirmed
         # cruise gate in every repeat. The across-gate median remains a useful
@@ -2929,7 +2945,7 @@ def cmd_trial(args: argparse.Namespace) -> int:
             item["metrics"]["all_gates_sustain_commanded_velocity"] is True
             for item in profile_repeats
         )
-        segmented_profile = profile in ("verify", "screen", "gated", "ramp")
+        segmented_profile = profile in RHO_SEGMENTED_PROFILES
         tone_measurement_valid = (
             all_gain_stable and all_timing_valid
             and all_background_stable and all_unclipped
@@ -3270,18 +3286,21 @@ def cmd_self_test(_: argparse.Namespace) -> int:
     valid_summary = {
         "gated": {
             "provisionalScreen": False,
+            "qualificationEligible": True,
             "nearField": {"qualificationMeasurementValid": True},
         }
     }
     invalid_summary = {
         "gated": {
             "provisionalScreen": False,
+            "qualificationEligible": True,
             "nearField": {"qualificationMeasurementValid": False},
         }
     }
     screen_summary = {
         "screen": {
             "provisionalScreen": True,
+            "qualificationEligible": False,
             "nearField": {"qualificationMeasurementValid": True},
         }
     }
@@ -3639,7 +3658,7 @@ def build_parser() -> argparse.ArgumentParser:
     trial.add_argument(
         "--profile",
         choices=[
-            "continuous", "verify", "screen", "gated", "ramp", "stress", "both",
+            "continuous", "verify", "screen", "gated", "ramp", "range", "stress", "both",
         ],
         default="both",
     )
@@ -3647,7 +3666,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--rho-excursion-mm", type=float, default=50.0,
         help=(
             "outward excursion for rho segmented tests; verify uses one "
-            "out/back pair, screens use two, and qualification uses four"
+            "out/back pair, screens use two, qualification uses four; "
+            "ramp uses 10/20/40/100 percent of this excursion; "
+            "range traverses it outward and back in eight equal sections each way"
         ),
     )
     trial.add_argument(
