@@ -1354,8 +1354,25 @@ def driver_is_healthy(diagnostic: dict[str, Any]) -> bool:
     )
 
 
+def motor_participates(role: str, diagnostic: dict[str, Any]) -> bool:
+    """Exclude only an explicitly unused, UART-verified disabled CW bridge."""
+    if role != "rhoCompanion" or diagnostic.get("motorConfigured") is not False:
+        return True
+    settings = diagnostic.get("settings", {})
+    if not (
+        diagnostic.get("connected") is True
+        and diagnostic.get("uartResponseValid") is True
+        and settings.get("chopconfReadValid") is True
+        and settings.get("softwareEnabled") is False
+        and settings.get("chopperOffTime") == 0
+    ):
+        raise RuntimeError("Unused CW bridge is not verified disabled")
+    return False
+
+
 def preflight_rho_commissioning(
-    board: Board, expected_interpolation: bool | None = None
+    board: Board, expected_interpolation: bool | None = None,
+    expected_motors: str | None = None,
 ) -> dict[str, Any]:
     """Require the guarded image, temporary origin, and both healthy drivers."""
     status = board.get("/api/status")
@@ -1380,6 +1397,11 @@ def preflight_rho_commissioning(
         diagnostic = board.get(dump_path)
         if not driver_is_healthy(diagnostic):
             raise RuntimeError(f"{driver_role} driver failed commissioning preflight")
+        if driver_role == "rhoCompanion" and expected_motors is not None:
+            if diagnostic.get("motorConfigured") is not (expected_motors == "paired"):
+                raise RuntimeError("Firmware RHO motors do not match --expected-rho-motors")
+        if not motor_participates(driver_role, diagnostic):
+            continue
         verified_settings = diagnostic.get("settings", {})
         if not verified_settings.get("chopconfReadValid"):
             raise RuntimeError(
@@ -1629,6 +1651,7 @@ def precondition_rho_stealthchop(
                         raise RuntimeError(
                             f"{role} driver faulted during preconditioning"
                         )
+                    motor_participates(role, diagnostic)
                     samples.append({
                         "legTargetMm": target_mm,
                         "role": role,
@@ -1647,6 +1670,7 @@ def precondition_rho_stealthchop(
             diagnostic = board.get(path)
             if not driver_is_healthy(diagnostic):
                 raise RuntimeError(f"{role} driver faulted during preconditioning")
+            motor_participates(role, diagnostic)
             samples.append({"legTargetMm": target_mm, "role": role,
                             "cruise": False,
                             "positionMm": round(target_mm, 4),
@@ -1656,6 +1680,10 @@ def precondition_rho_stealthchop(
         raise RuntimeError("Rho preconditioning did not return to temporary zero")
     if automatic_stealth:
         for role, _ in AXES["rho"].driver_dump_paths:
+            role_all = [item["diagnostic"] for item in samples if item["role"] == role]
+            if role_all and all(not motor_participates(role, item) for item in role_all):
+                validation["byDriver"][role] = {"required": False, "disabledVerified": True}
+                continue
             role_samples = [
                 item["diagnostic"] for item in samples
                 if item["role"] == role
@@ -2174,6 +2202,8 @@ def run_timed_repeat(
                 raise RuntimeError(
                     f"{driver_role} driver reported a fault at {phase}"
                 )
+            if not motor_participates(driver_role, driver):
+                continue
             if phase == "during-cruise":
                 dynamic = driver.get("dynamic", {})
                 sg_valid = bool(dynamic.get("stallGuardValid"))
@@ -2595,9 +2625,10 @@ def interpolation_readback_confirmed(
         bool(driver_samples)
         and sampled_roles == expected_roles
         and all(
-            sample.get("settings", {}).get("chopconfReadValid", False)
+            not motor_participates(str(sample.get("driverRole")), sample)
+            or (sample.get("settings", {}).get("chopconfReadValid", False)
             and bool(sample.get("settings", {}).get("interpolationTo256"))
-            == expected_enabled
+            == expected_enabled)
             for sample in driver_samples
         )
     )
@@ -2638,7 +2669,7 @@ def cmd_trial(args: argparse.Namespace) -> int:
     board.recovering_stop()
     if axis.name == "rho":
         # Check the firmware boundary before changing speed or tuning values.
-        preflight_rho_commissioning(board)
+        preflight_rho_commissioning(board, expected_motors=args.expected_rho_motors)
     else:
         preflight_theta_commissioning(board)
     board.post("/api/speed", {"speed": 10})
@@ -2651,7 +2682,7 @@ def cmd_trial(args: argparse.Namespace) -> int:
         # Recheck after applying current/microstep settings. In commissioning,
         # a microstep change deliberately re-establishes logical zero.
         preflight_rho_commissioning(
-            board, bool(driver_settings["interpolationEnabled"])
+            board, bool(driver_settings["interpolationEnabled"]), args.expected_rho_motors
         )
         requested_profiles = (
             ("continuous", "stress") if args.profile == "both" else (args.profile,)
@@ -3088,6 +3119,8 @@ def cmd_trial(args: argparse.Namespace) -> int:
         "recordedAt": stamp,
         "microphone": microphone_metadata(args.source),
         "settings": {"motion": tuning["motion"], axis.driver_key: driver_settings},
+        "activeMotorRoles": [role for role, diagnostic in driver_diagnostics.items()
+                             if motor_participates(role, diagnostic)],
         "preconditioning": preconditioning,
         "summary": {
             "referenceOnly": args.reference_only,
@@ -3560,6 +3593,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_capture_options(trial)
     trial.set_defaults(duration=300.0)
     trial.add_argument("--axis", choices=sorted(AXES), default="theta")
+    trial.add_argument("--expected-rho-motors", choices=["main", "paired"],
+                       help="reject a firmware motor configuration mismatch before motion")
     trial.add_argument("--label", required=True)
     trial.add_argument("--rated-current-ma", type=int, required=True)
     trial.add_argument(

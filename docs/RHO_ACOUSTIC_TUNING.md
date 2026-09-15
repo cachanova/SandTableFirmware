@@ -1,8 +1,41 @@
 # Rho commissioning and acoustic tuning playbook
 
-Use this playbook to select quiet, reliable settings for the paired rho motors
-before tuning sensorless homing. It uses the same Antlion USB microphone and
+Use this playbook to select quiet, reliable settings for the configured rho motors.
+It uses the same Antlion USB microphone and
 the telemetry-aligned analysis in `scripts/acoustic_tuner.py`.
+
+## Current assembled main-only retune (2026-09-15)
+
+Finish homing qualification, enable production boot homing, and merge the
+cleanup before starting acoustic motion. Only the main RHO motor is connected;
+keep the CW driver at `TOFF=0` and theta stationary. Pass
+`--expected-rho-motors main` to the acoustic tool. It checks both UART devices
+and the unused bridge, but does not require the unused motor to produce SG,
+match active-motor interpolation, or complete StealthChop calibration.
+
+Recheck the historical fixed-PWM 128/2, u8 interpolated, CoolStep-off family
+first at 200 mA run/hold. The older acoustic winners used 150/75 mA at 4.25,
+2, and 1 mm/s, acceleration 20 and jerk 100, but later reversal stress lost
+synchronization at 150 mA. Keep 200 mA as the starting reliability baseline;
+consider reducing it only after the loaded main-only mechanism passes.
+Those paired-hardware results are starting points, not current qualifications.
+Keep the dedicated homing profile independent of motion changes and inspect
+the camera after each completed configuration.
+
+Retain the -60, -63, and -66 dBFS RHO tiers. Use four-leg 50 mm screens, then
+two independent eight-leg qualifications of finalists. Require each gate to
+sustain commanded speed; enlarge to 100 mm if necessary. Search velocity by
+bracketing/bisection within a stable driver family, and compare discrete PWM,
+interpolation, and chopper variants separately because resonances need not be
+monotonic. Validate the chosen profile over 400 mm and reversal stress before
+promotion. Record a noise-floor-limited tier as inconclusive, not inaudible.
+
+The main-only service boot baseline is 200 mA run/hold, u8 interpolated,
+fixed PWM 128/2, 1 mm/s, acceleration 2, and jerk 10. Normal motion tuning
+retains its conservative CS14 cap; the user separately authorized the dedicated
+homing profile near the 500 mA rating. The 425 mm travel is nominal: an outer
+stop contact invalidated a submillimetre command-ledger reference during homing
+qualification. Keep acoustic targets at or below 400 mm.
 
 The acoustic procedure deliberately does **not** home rho. The operator places
 the mechanism at a known, marked physical start, then explicitly switches the
@@ -41,20 +74,19 @@ Use only `esp32dev_rho_commissioning` or
   relative RHO jogs for setup;
 - switches to bounded commissioning only after explicit physical-origin
   confirmation, so no reflash is needed between manual and test control;
-- allows only confirmed-origin, runway-plus-1-mm bounded homing while in RHO
-  Commissioning mode; unknown-position production homing remains unavailable;
+- allows independently capped known-position homing in RHO Commissioning mode;
+  see `RHO_HOMING_TUNING.md` for current bounds and production startup status;
 - disables manual moves, patterns, clearing, and theta tuning tests;
 - explicitly disables the theta driver and verifies `TOFF=0` over UART, which
   also makes warm OTA transitions safe;
-- enables only the paired rho drivers;
-- boots with `VSENSE=1`, `IRUN=8`, about 275 mA RMS run current, 100 mA hold,
-  2 external microsteps,
+- enables only the configured rho motor drivers and verifies unused bridges off;
+- boots with `VSENSE=1`, 200 mA requested run/hold current, 8 external microsteps,
   StealthChop, CoolStep off, 1 mm/s velocity, 2 mm/s² acceleration, and
   10 mm/s³ jerk;
 - resets the full chopper, PWM, interpolation, hold-delay, and standstill
   profile to its checked baseline on every commissioning boot instead of
   inheriting the previous trial;
-- uses the measured 425 mm usable RHO travel limit;
+- uses the nominal 425 mm RHO travel limit;
 - permits only bounded rho continuous/stress generators and commissioning-only
   absolute segment targets from logical 0 through +400 mm.
 
