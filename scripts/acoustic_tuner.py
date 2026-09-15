@@ -223,6 +223,7 @@ class TimedAcousticMetrics:
     raw_gate_p95_upper_95_a_weighted_dbfs: list[float | None]
     raw_gate_pre_idle_median_upper_95_a_weighted_dbfs: list[float | None]
     raw_gate_post_idle_median_upper_95_a_weighted_dbfs: list[float | None]
+    whole_step_transient: dict[str, Any]
     transient_p95_excess_a_weighted_dbfs: float | None
     transient_p95_excess_upper_95_a_weighted_dbfs: float | None
     transient_gate_p95_excess_a_weighted_dbfs: list[float]
@@ -259,6 +260,103 @@ class TimedAcousticMetrics:
 
 def db(value: float, power: bool = False) -> float:
     return (10.0 if power else 20.0) * math.log10(max(float(value), 1e-20))
+
+
+def whole_step_transient_metrics(
+    host_times: np.ndarray, frame_power: np.ndarray,
+    intervals: list[dict[str, float | int]], frame_half_width_s: float,
+    audio_epoch_uncertainty_s: float,
+) -> dict[str, Any]:
+    """Screen every STEP gate with its worst ~100 ms mean FFT-frame power.
+
+    This engineering screening window is not a validated audibility limit or
+    a confidence bound. FFT frames already overlap: the actual signal support
+    is longer than 100 ms. Include windows touching either STEP boundary plus
+    clock uncertainty, independently of the old coarse motion envelope.
+    Raw exceedance is inconclusive about motor versus external room noise.
+    Adjacent energized idle is reported for comparison, never subtracted.
+    """
+    result: dict[str, Any] = {
+        "valid": False, "invalidReasons": [], "requestedWindowS": 0.1,
+        "gates": [],
+        "limitation": "Conservative ~100 ms FFT-power screening, not a validated audibility guarantee; raw noise does not establish motor attribution",
+    }
+    times = np.asarray(host_times, dtype=float)
+    power = np.asarray(frame_power, dtype=float)
+    if (times.ndim != 1 or power.shape != times.shape or len(times) < 6
+            or not np.all(np.isfinite(times)) or not np.all(np.isfinite(power))
+            or np.any(power < 0) or not math.isfinite(frame_half_width_s)
+            or frame_half_width_s <= 0 or not math.isfinite(audio_epoch_uncertainty_s)
+            or audio_epoch_uncertainty_s < 0):
+        result["invalidReasons"].append("invalid FFT power/time/uncertainty data")
+        return result
+    period = float(np.median(np.diff(times)))
+    if period <= 0 or not np.allclose(np.diff(times), period, rtol=1e-5, atol=1e-8):
+        result["invalidReasons"].append("FFT frame clock is not continuous")
+        return result
+    count = max(2, int(math.ceil(0.1 / period - 1e-9)))
+    if len(times) < count or not intervals:
+        result["invalidReasons"].append("missing exact STEP intervals or insufficient FFT frames")
+        return result
+    means = np.convolve(power, np.ones(count) / count, mode="valid")
+    centers = times[:len(means)] + (count - 1) * period / 2
+    support = frame_half_width_s + (count - 1) * period / 2
+    result.update(windowFrames=count, windowS=round(count * period, 6),
+                  signalSupportS=round(2 * support, 6))
+    expanded: list[tuple[float, float]] = []
+    previous_stop = -math.inf
+    previous_epoch = -1
+    for interval in intervals:
+        try:
+            start, stop = float(interval["startHostS"]), float(interval["stopHostS"])
+            start_unc = float(interval["startUncertaintyS"]) + audio_epoch_uncertainty_s
+            stop_unc = float(interval["stopUncertaintyS"]) + audio_epoch_uncertainty_s
+            epoch = int(interval["epoch"])
+            if (not all(math.isfinite(v) for v in (start, stop, start_unc, stop_unc))
+                    or start >= stop or start < previous_stop or epoch <= previous_epoch
+                    or min(start_unc, stop_unc) < 0):
+                raise ValueError
+        except (KeyError, TypeError, ValueError, OverflowError):
+            result["invalidReasons"].append("invalid or unordered exact STEP intervals")
+            return result
+        previous_stop, previous_epoch = stop, epoch
+        expanded.append((start - start_unc, stop + stop_unc))
+    potentially_moving = np.zeros(len(means), dtype=bool)
+    for start, stop in expanded:
+        potentially_moving |= (centers + support >= start) & (centers - support <= stop)
+    level = lambda value: round(db(float(value), power=True), 6)
+    for interval, (start, stop) in zip(intervals, expanded, strict=True):
+        selected = (centers + support >= start) & (centers - support <= stop)
+        before = (~potentially_moving & (centers - support >= start - 3)
+                  & (centers + support < start))
+        after = (~potentially_moving & (centers - support > stop)
+                 & (centers + support <= stop + 3))
+        # No clipping/padding of a gate at the recording edge; every required
+        # near-boundary screening window and both idle references must exist.
+        valid = bool(centers[0] <= start - support and centers[-1] >= stop + support
+                     and np.any(selected) and np.sum(before) >= 5 and np.sum(after) >= 5)
+        gate: dict[str, Any] = {"epoch": int(interval["epoch"]), "valid": valid,
+                              "startHostS": float(interval["startHostS"]),
+                              "stopHostS": float(interval["stopHostS"])}
+        if valid:
+            indexes = np.flatnonzero(selected)
+            peak = int(indexes[np.argmax(means[selected])])
+            idle_max = max(float(np.max(means[before])), float(np.max(means[after])))
+            gate.update(
+                max100msAWeightedDbfs=level(means[peak]),
+                max100msHostS=round(float(centers[peak]), 6),
+                preIdle100msMedianAWeightedDbfs=level(np.median(means[before])),
+                postIdle100msMedianAWeightedDbfs=level(np.median(means[after])),
+                preIdle100msMaxAWeightedDbfs=level(np.max(means[before])),
+                postIdle100msMaxAWeightedDbfs=level(np.max(means[after])),
+                max100msGainOverAdjacentIdleMaxDb=round(db(
+                    float(means[peak]) / max(idle_max, 1e-20), power=True), 6),
+            )
+        else:
+            result["invalidReasons"].append(f"STEP epoch {interval['epoch']} lacks complete edge/adjacent-idle coverage")
+        result["gates"].append(gate)
+    result["valid"] = bool(result["gates"] and not result["invalidReasons"])
+    return result
 
 
 def raw_percentile_upper_95(
@@ -972,6 +1070,10 @@ def analyze_timed(
         raw_gate_post_idle_median_upper_95_a_weighted_dbfs=[
             raw_bound_db(value) for value in raw_gate_post_idle_bounds
         ],
+        whole_step_transient=whole_step_transient_metrics(
+            times + recorder_launch_offset_s, frame_a_power, exact_intervals,
+            4096.0 / (2.0 * rate), audio_epoch_uncertainty_s,
+        ),
         transient_p95_excess_a_weighted_dbfs=(
             round(db(transient_p95_excess_power, power=True), 2)
             if transient_p95_excess_power > 0.0 else None
@@ -2890,7 +2992,8 @@ def confirmed_tones(repeats: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def total_sound_check(repeats: list[dict[str, Any]], profile: str,
-                      required_pairs: int, ceiling_dbfs: float | None) -> dict[str, Any]:
+                      required_pairs: int, ceiling_dbfs: float | None,
+                      *, require_whole_step: bool = False) -> dict[str, Any]:
     """Do not subtract persistent driver hold noise and call it inaudible.
 
     A raw-total exceedance alone cannot distinguish room noise from motor noise.
@@ -2898,9 +3001,23 @@ def total_sound_check(repeats: list[dict[str, Any]], profile: str,
     """
     motion_levels: list[float] = []
     idle_levels: list[float] = []
+    transient_levels: list[float] = []
+    transient_valid = bool(repeats)
     valid = bool(repeats)
     for repeat in repeats:
         metrics = repeat["metrics"]
+        if require_whole_step:
+            whole = metrics.get("whole_step_transient", {})
+            gates = whole.get("gates", [])
+            transient_valid = transient_valid and whole.get("valid") is True and bool(gates)
+            if required_pairs:
+                transient_valid = transient_valid and len(gates) == required_pairs
+            for gate in gates:
+                peak = gate.get("max100msAWeightedDbfs")
+                if gate.get("valid") is not True or peak is None or not math.isfinite(float(peak)):
+                    transient_valid = False
+                else:
+                    transient_levels.append(float(peak))
         valid = valid and bool(
             repeat.get("timingQuality", {}).get("valid")
             and repeat.get("gainFingerprintStable")
@@ -2930,9 +3047,10 @@ def total_sound_check(repeats: list[dict[str, Any]], profile: str,
                     valid = False
                 else:
                     destination.append(float(value))
-    valid = bool(valid and motion_levels and idle_levels)
+    valid = bool(valid and motion_levels and idle_levels
+                 and (not require_whole_step or (transient_valid and transient_levels)))
     within = bool(valid and ceiling_dbfs is not None
-                  and max(motion_levels + idle_levels) <= ceiling_dbfs)
+                  and max(motion_levels + idle_levels + transient_levels) <= ceiling_dbfs)
     return {
         "measurementValid": valid,
         "withinTier": within,
@@ -2941,9 +3059,12 @@ def total_sound_check(repeats: list[dict[str, Any]], profile: str,
                    else "inconclusive-total-above-tier"),
         "loudestRawMotionUpper95AWeightedDbfs": max(motion_levels) if motion_levels else None,
         "loudestRawIdleUpper95AWeightedDbfs": max(idle_levels) if idle_levels else None,
+        "wholeStepTransientRequired": require_whole_step,
+        "wholeStepTransientMeasurementValid": bool(transient_valid and transient_levels) if require_whole_step else None,
+        "loudestWholeStep100msAWeightedDbfs": max(transient_levels) if transient_levels else None,
         "ceilingAWeightedDbfs": ceiling_dbfs,
-        "confidenceScope": "per-window 95%; not simultaneous whole-profile coverage",
-        "limitation": "A raw exceedance does not identify room versus motor noise",
+        "confidenceScope": "median/p95 bounds are per-window 95%, not simultaneous profile coverage; whole-STEP maximum is a screening statistic, not a confidence bound",
+        "limitation": "A raw exceedance does not identify room versus motor noise; whole-STEP ~100 ms screening is not a validated audibility guarantee",
     }
 
 
@@ -3311,6 +3432,7 @@ def cmd_trial(args: argparse.Namespace) -> int:
         total_sound = total_sound_check(
             profile_repeats, profile, required_pair_count,
             None if args.reference_only else args.acceptable_ceiling_dbfs,
+            require_whole_step=axis.name == "rho",
         )
         excess_within_tier = (
             level_valid and bool(acceptance_levels)
@@ -3465,7 +3587,8 @@ def cmd_trial(args: argparse.Namespace) -> int:
                 f">= {args.minimum_gain_db:.1f} dB above both idle windows and "
                 f"repeated within {TONE_MATCH_TOLERANCE_HZ:.1f} Hz"
                 + ("; rho additionally requires every raw motion and adjacent idle "
-                   "upper bound under the tier" if axis.name == "rho" else "")
+                   "upper bound and whole-STEP ~100 ms maximum under the tier"
+                   if axis.name == "rho" else "")
             ),
         }
 

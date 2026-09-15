@@ -230,7 +230,35 @@ noise, but one occurrence cannot establish its source. More importantly, the
 old transient mask clipped the exact STEP interval using an earlier coarse
 end estimate and a 150 ms margin, excluding the peak. Existing p95 summaries
 are therefore incomplete endpoint evidence; retain them but do not use them
-alone to qualify inaudibility. A full-STEP short-window check is being added.
+alone to qualify inaudibility.
+
+The new `whole_step_transient` check uses each exact STEP interval, not the
+coarse motion envelope. It takes the worst approximately 100 ms mean of
+A-weighted FFT-frame powers, including windows whose signal support touches
+either boundary plus clock uncertainty. At 48 kHz this is five frames
+(106.7 ms of frame cadence, 170.7 ms actual signal support). This is a
+conservative engineering screen, not a confidence bound or validated human
+audibility test. Adjacent energized idle is reported separately, never
+subtracted. Every RHO gate must be present and under the tier; missing data
+blocks qualification and raw exceedance remains inconclusive about noise
+source. Existing cruise/p95 metrics and theta acceptance are unchanged.
+All 85 Python tests and the acoustic self-test pass, including endpoint-mask
+clipping and a sparse burst that occupies less than 5% of a long movement.
+
+Offline replay of the short spaced-marker run measures -65.47 dBFS outward
+and -49.11 on return using this check. The same-settings 0 -> 50 -> 100 ->
+50 -> 0 run measures -65.16 / -64.08 / -64.23 / -50.01. The final-home event
+repeats; it is not a general noisy-cruise section anymore. This longer run
+completed all 20,000 pulses with three new >100 us timing outliers, maximum
+boot lateness still 112 us, and maximum observed queue depth 208. Its frozen
+post-home audit passed. Replay data is in `whole-step-review/results.jsonl`.
+
+At 8 external microsteps with interpolation, the next short run had no new
+timing outliers across 8,000 pulses, -67.06 dBFS raw cruise upper bound and
+-66.43 outward whole-STEP maximum. The return maximum remained -49.59; finer
+microstepping alone did not solve the near-home event. Its frozen post-home
+audit passed (contacts 2493 / 2513 / 2493, 0.05 mm span). The audit count is
+34 through 09:36 UTC; these are still SG-based origin checks.
 
 Homing qualification, production boot enable and cleanup merged to main as
 `a558c4e`, including the user-confirmed power-cold boot. Only the main RHO motor is connected;
