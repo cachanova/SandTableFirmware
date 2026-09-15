@@ -637,8 +637,15 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
         document.getElementById('btn-test-rho-continuous').addEventListener('click', () => testMotor('rho', 'continuous'));
         document.getElementById('btn-test-rho-stress').addEventListener('click', () => testMotor('rho', 'stress'));
         document.getElementById('btn-stop-motion').addEventListener('click', async () => {
-            const response = await fetch('/api/motion/stop', { method: 'POST' });
-            if (!response.ok) alert('Motion could not be stopped');
+            const request = new AbortController();
+            const timeout = setTimeout(() => request.abort(), 2500);
+            try {
+                const response = await fetch('/api/home/abort', { method: 'POST', signal: request.signal });
+                const result = await response.json();
+                if (!response.ok || !result.success) throw new Error('Abort failed');
+            } catch (error) {
+                alert('No abort acknowledgement. Switch off motor power if motion continues; retry Stop.');
+            } finally { clearTimeout(timeout); }
         });
         document.getElementById('btn-dump-theta').addEventListener('click', () => dumpDriver('theta'));
         document.getElementById('btn-dump-rho').addEventListener('click', () => dumpDriver('rho'));

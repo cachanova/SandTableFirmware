@@ -2,6 +2,86 @@
 
 ## Current experiment (2026-09-15 UTC)
 
+### Unknown-position startup qualification
+
+The user requested qualification and boot enable, followed by cleanup/merge
+and main-only acoustic retuning. The startup trial build keeps automatic boot
+motion off while exercising the production entry with an independent known
+position cap. Use `esp32dev_rho_startup_trial_ota`; normal RHO service tests
+retain the previous 8 mm entry.
+
+Startup entry commands 1 mm inward, then 6 mm outward. Assuming commanded
+free travel occurs, entry can command at most 1 mm into the inner stop or
+5 mm into the outer stop. From a known start S, the test guard uses
+`min(425, max(0, S - 1) + 6)` as remaining inward distance. Production does
+not receive S. It searches for the first SG trigger with a full-travel pulse
+cap, then allows up to 2 mm new inward progress per retry and 4 mm beyond
+that candidate in total. Reserve 1 mm for the entry probe. A distant false
+candidate can cause a safe failure instead of authorizing another full-travel
+search through the stop.
+
+Keep the dedicated 500 mA / 12 mm/s / u8 interpolated profile, 85% five-of-nine
+detector, 6 mm backoff, 450 ms gate, and 0.4 mm three-contact span. Startup
+coarse arming uses 5.6 mm, matching the tested short-return gate. The entry
+can reach the outer stop, so startup does not require the outward leg's SG
+load-recovery test before beginning the inward search. UART validation and
+pulse caps still apply.
+
+A separate watchdog aborts (never accepts home) after a full 32-sample fresh
+window with at least 24 SG values below 200, or eight below 100. This protects
+against starting with an already-stalled baseline; qualify these absolute
+thresholds only for the fixed homing profile. The whole cycle has a 90-second
+deadline. These limits do not guarantee physical overrun when SG detection or
+free-motion assumptions fail. The user has accepted SG-based startup with
+that limitation; the website abort remains a backup.
+
+| Startup trial UTC | Known start | Contacts / span | Physical review |
+|---|---|---|---|
+| 04:58:27 | 0 mm | 3 / 0.285 mm | Camera aligned; API confirmed |
+| 04:59:45 | 10 mm | 3 / 0.1125 mm | Camera aligned; API confirmed |
+| 05:02:36 | 100 mm | 3 / 0.1575 mm | Camera aligned; API confirmed |
+
+These are initial startup-entry tests, not completed qualification. The first
+trial clamped its final backoff to 5.78 mm after an early candidate; its final
+return still agreed. Preserve the full traces under `tuning-recordings/rho-startup-20260915`.
+During review, the independent known-position guard could shorten that return
+by the first contact's commanded overrun. Remove that influence for subsequent
+startup trials: the candidate ledger determines the return length; the test
+guard retains only its inward cap and final physical-reference veto. Repeat
+the frozen qualification batch after this change. The three rows above are
+entry screening, not the final qualification set.
+
+The first candidate-only-backoff trial started at a commanded 425 mm
+(05:13:20). Its three contacts spanned 0.1325 mm, but ended 0.835 mm
+short of the nominal home coordinate. The independent guard rejected it
+with failure 4. Camera review matched the established home reference;
+the first and third contacts also had microphone rises above 6 dB.
+Keep this as a rejected instrumented trial, not a pass. Contact with the
+outer stop can invalidate the staged command position, and the nominal
+425 mm travel has no independent submillimetre measurement. Do not infer
+an exact travel calibration from these SG contacts or widen the 0.4 mm
+agreement setting. Repeat interior-start tests without outer contact.
+
+After the next trial-image upload, an active-probe abort test observed
+136 of the 400 entry pulses before requesting abort. The HTTP reply arrived
+in 65.5 ms; the final count was 231, the pulse timer stopped, both RHO
+drivers read back `TOFF=0`, and the state remained `INITIALIZED`. The camera
+matched home. This checks cancellation during the pulse-capped inward
+probe, not cruise stopping distance or operation with failed UART.
+The abort endpoint now also invalidates an already-IDLE home, and latches
+cancellation of a pending automatic boot home. Explicit later homing remains
+available. Manual and tuning page buttons use this dedicated endpoint.
+
+Frozen candidate-only-backoff checks:
+
+| Trial UTC | Start | Contacts / final span | Review |
+|---|---|---|---|
+| 05:18:31 | 0 mm | 4 / 0.2225 mm | Instrument checks passed; camera home; API confirmed |
+
+The zero-start check rejected its first three-contact cluster and accepted
+the last three. Its deepest command coordinate was 0.8525 mm beyond the
+known post-entry reference, in addition to the separately capped entry probe.
+
 ### Website abort and SG-startup authorization
 
 The user approved qualifying SG-based unknown-position startup with automatic

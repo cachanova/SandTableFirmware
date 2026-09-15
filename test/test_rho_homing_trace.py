@@ -280,6 +280,24 @@ class HomingTraceCollectorTest(unittest.TestCase):
                 self.assertFalse(artifact["accepted"])
                 self.assertTrue(artifact["awaitingPhysicalReview"])
 
+    def test_startup_screen_uses_post_entry_known_reference(self) -> None:
+        directory = (Path(__file__).resolve().parents[1] /
+                     "tuning-recordings/rho-startup-20260915")
+        for filename, expected in (
+            ("20260915T045827Z-rho-home-p85-n5-result.json", 2400),
+            ("20260915T045945Z-rho-home-p85-n5-start10mm-result.json", 6000),
+            ("20260915T050236Z-rho-home-p85-n5-start100mm-result.json", 42000),
+        ):
+            with self.subTest(filename=filename):
+                artifact = json.loads((directory / filename).read_text())
+                self.assertTrue(artifact["settings"]["startupEntry"])
+                self.assertEqual(artifact["settings"]["startupProbeMm"], 1)
+                self.assertEqual(artifact["settings"]["runwayMm"], 6)
+                self.assertEqual(validate_trial(
+                    artifact["reports"], 400, 2, .4, 4, 3, (1,), True), [])
+                for report in artifact["reports"].values():
+                    self.assertEqual(report["knownHomeCoordinateSteps"], expected)
+
     def test_main_only_requires_cw_bridge_off(self) -> None:
         self.assertEqual(configured_motor_axes({"companionMotorEnabled": False}),
                          (1,))

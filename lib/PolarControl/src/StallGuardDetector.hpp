@@ -5,6 +5,24 @@
 #include <cstddef>
 #include <cstdint>
 
+// Fail-closed backup for a detector that started with an already-stalled
+// baseline. Calibrated only for the fixed 500 mA / 12 mm/s homing profile.
+// This never declares home; it aborts when sustained low SG persists.
+class StallGuardStallWatchdog {
+public:
+    bool update(uint16_t sg) {
+        m_low = (m_low << 1) | (sg < 200U);
+        m_deep = (m_deep << 1) | (sg < 100U);
+        if (m_count < 32U) ++m_count;
+        return m_count == 32U &&
+            (__builtin_popcount(m_low) >= 24 || __builtin_popcount(m_deep) >= 8);
+    }
+private:
+    uint32_t m_low = 0;
+    uint32_t m_deep = 0;
+    uint8_t m_count = 0;
+};
+
 // Filters the TMC2209 SG_RESULT stream for sensorless homing. SG_RESULT has a
 // large electrical-phase ripple on this mechanism, so an upper-envelope EMA
 // makes ordinary low phases look like a stall. Use the median of the 48 fresh

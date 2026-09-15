@@ -7,6 +7,7 @@
 #include "StallGuardDetector.hpp"
 #include "RhoContactConsensus.hpp"
 #include "RhoRollingSearch.hpp"
+#include "RhoStartupEntry.hpp"
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
@@ -663,7 +664,11 @@ bool PolarControl::setupDrivers() {
     return true;
 }
 
-bool PolarControl::home(bool confirmedOriginBounded) {
+bool PolarControl::home(bool confirmedOriginBounded, bool automaticBoot) {
+    if (Config::kRhoStartupEntry && Config::kRhoCompanionMotorEnabled) {
+        LOG("Startup homing supports main RHO only\r\n");
+        return false;
+    }
 #if defined(SISYPHUS_THETA_COMMISSIONING)
     LOG("COMMISSIONING: physical homing rejected\r\n");
     return false;
@@ -695,16 +700,16 @@ bool PolarControl::home(bool confirmedOriginBounded) {
     }
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     State_t state = m_state.load();
-    if ((state != IDLE && state != INITIALIZED && state != HOMING_FAILED) ||
+    if ((automaticBoot && m_bootHomingCancelled.load()) ||
+        (state != IDLE && state != INITIALIZED && state != HOMING_FAILED) ||
         m_homingTaskHandle != NULL) {
         LOG("Cannot home: system is busy\r\n");
         xSemaphoreGive(m_mutex);
         return false;
     }
 
-    // A previous logical position cannot be trusted once separately controlled
-    // homing motion begins. Keep pattern execution locked out until a person
-    // confirms the resulting physical position.
+    // Separate homing motion invalidates the old logical position. Production
+    // restores zero only on success; service trials also require physical review.
     m_planner.stop();
     m_homingFailure.store(0);
     m_homingStepsPerMm.store(static_cast<uint16_t>(getStepsPerMm()));
@@ -776,6 +781,11 @@ void PolarControl::homingTask(void* arg) {
     PolarControl* self = static_cast<PolarControl*>(arg);
 
     bool success = self->homeDrivers();
+    if (millis() - self->m_homingTraceStartedAtMs.load() >=
+        Config::kRhoHomingCycleTimeoutMs) {
+        success = false;
+        self->m_homingFailure.store(10);
+    }
     self->m_confirmedOriginBoundedHoming.store(false);
 #ifdef SISYPHUS_RHO_COMMISSIONING
     self->m_knownPositionHomingActive.store(false);
@@ -784,15 +794,25 @@ void PolarControl::homingTask(void* arg) {
 #endif
     xSemaphoreTake(self->m_mutex, portMAX_DELAY);
     self->m_homingTaskHandle = NULL;
+    if (!success) self->disableRhoDriversLocked();
+    State_t successState = HOMING_REVIEW;
+#if !defined(SISYPHUS_RHO_COMMISSIONING) && !defined(SISYPHUS_THETA_COMMISSIONING)
+    if (Config::kEnableUnknownPositionRhoHoming) successState = IDLE;
+#endif
     State_t expected = HOMING;
     const bool completedNormally = self->m_state.compare_exchange_strong(
-        expected, success ? HOMING_REVIEW : HOMING_FAILED);
+        expected, success ? successState : HOMING_FAILED);
+    if (completedNormally && success && successState == IDLE) {
+        self->m_planner.resetPosition(0.0f, 0.0f);
+        self->m_homingFailure.store(0);
+    }
     xSemaphoreGive(self->m_mutex);
 
     if (!completedNormally) {
         LOG("Homing cancelled by emergency stop\r\n");
     } else if (success) {
-        LOG("Automatic homing pass complete; waiting for visual confirmation\r\n");
+        LOG("Homing complete: %s\r\n", successState == IDLE
+            ? "logical zero established" : "waiting for commissioning review");
     } else {
         LOG("Homing failed; motors stopped\r\n");
     }
@@ -885,8 +905,8 @@ void PolarControl::enterRhoManualServiceMode() {
 bool PolarControl::homeFromKnownRhoPositions(float rhoStartMm,
                                              float companionStartMm) {
     if (!std::isfinite(rhoStartMm) || !std::isfinite(companionStartMm) ||
-        rhoStartMm < -1.0f || rhoStartMm > 400.0f ||
-        companionStartMm < -1.0f || companionStartMm > 400.0f) {
+        rhoStartMm < -1.0f || rhoStartMm > Config::kRhoKnownStartMaximumMm ||
+        companionStartMm < -1.0f || companionStartMm > Config::kRhoKnownStartMaximumMm) {
         return false;
     }
     const uint32_t stepsPerMm = static_cast<uint32_t>(getStepsPerMm());
@@ -907,6 +927,8 @@ HomingStatus PolarControl::getHomingStatus() const {
     HomingStatus status;
     status.cycle = m_homingCycle.load();
     status.stepsPerMm = m_homingStepsPerMm.load();
+    status.phase = m_homingTracePhase.load();
+    status.phasePulseCount = m_planner.getRhoHomingStepCount();
     status.fastApproachMs = m_homingFastApproachMs.load();
     status.slowApproachMs = m_homingSlowApproachMs.load();
     status.fastApproachSteps = m_homingFastApproachSteps.load();
@@ -1316,6 +1338,8 @@ bool PolarControl::startInactiveRhoHoldLocked(uint8_t driverAddress,
 }
 
 bool PolarControl::serviceInactiveRhoHoldLocked() {
+    if (millis() - m_homingTraceStartedAtMs.load() >=
+        Config::kRhoHomingCycleTimeoutMs) return false;
     constexpr uint32_t kCheckIntervalMs = 250;
     constexpr uint32_t kVactualPositiveOne = 1U;
     constexpr uint32_t kVactualNegativeOne = 0x00FFFFFFU;
@@ -1533,6 +1557,7 @@ PolarControl::HomingAttempt PolarControl::approachHome(
          stepsPerSecond - 1U) / stepsPerSecond);
     const uint32_t detectorStartedAt = millis();
     StallGuardDetector detector(ignoreMs, requiredSamples, triggerRatio);
+    StallGuardStallWatchdog watchdog;
     uint8_t consecutiveUartErrors = 0;
     uint32_t lastDetectorSampleSteps = 0;
     bool haveDetectorSample = false;
@@ -1610,6 +1635,14 @@ PolarControl::HomingAttempt PolarControl::approachHome(
             result.baseline = detector.baseline();
             result.trigger = sample;
             result.threshold = detector.threshold();
+            return result;
+        }
+        if (Config::kRhoStartupEntry && watchdog.update(sample)) {
+            m_planner.stopRhoHoming();
+            result.steps = m_planner.getRhoHomingStepCount();
+            result.elapsedMs = millis() - startedAt;
+            m_homingFailure.store(11);
+            xSemaphoreGive(m_mutex);
             return result;
         }
         xSemaphoreGive(m_mutex);
@@ -1795,7 +1828,9 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
         Config::kRhoHomingVelocityMmPerSecond;
     constexpr float kPrecisionMmPerSecond =
         Config::kRhoHomingVelocityMmPerSecond;
-    constexpr float kRunwayMm = Config::kRhoHomingRunwayMm;
+    constexpr bool startup = Config::kRhoStartupEntry;
+    constexpr float kRunwayMm = startup ? Config::kRhoStartupRunwayMm
+                                       : Config::kRhoHomingRunwayMm;
     const float kVerificationBackoffMm = m_homingSettings.verificationBackoffMm;
     constexpr float kVerificationToleranceMm =
         Config::kRhoHomingMaximumOverrunMm;
@@ -1829,8 +1864,10 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
         std::lround(kVerificationToleranceMm * stepsPerMm));
     const uint32_t agreementSteps = static_cast<uint32_t>(
         std::lround(kVerificationAgreementMm * stepsPerMm));
+    // Reserve the initial inward probe's full allowance even if it moved.
     const uint32_t totalToleranceSteps = static_cast<uint32_t>(std::lround(
-        Config::kRhoHomingMaximumTotalOverrunMm * stepsPerMm));
+        (Config::kRhoHomingMaximumTotalOverrunMm -
+         (startup ? Config::kRhoStartupProbeMm : 0.0f)) * stepsPerMm));
     uint32_t maximumTravelSteps = static_cast<uint32_t>(
         std::lround(R_MAX * stepsPerMm));
     uint32_t expectedContactSteps = 0;
@@ -1847,9 +1884,11 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
             const int32_t knownStartSteps = static_cast<int32_t>(std::lround(
                 static_cast<double>(knownStartNormalSteps) * stepsPerMm /
                 getStepsPerMm()));
-            const int64_t boundedTravel =
-                static_cast<int64_t>(knownStartSteps) + runwaySteps +
-                toleranceSteps;
+            const int64_t boundedTravel = (startup
+                ? rhoStartupHomeCoordinate(knownStartSteps,
+                    std::lround(Config::kRhoStartupProbeMm * stepsPerMm),
+                    runwaySteps, std::lround(R_MAX * stepsPerMm))
+                : static_cast<int64_t>(knownStartSteps) + runwaySteps) + toleranceSteps;
             expectedContactSteps = static_cast<uint32_t>(
                 std::max<int64_t>(1, boundedTravel - toleranceSteps));
             maximumTravelSteps = static_cast<uint32_t>(
@@ -1858,7 +1897,8 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
     }
 #endif
     const float triggerRatio = m_homingSettings.triggerPercent / 100.0f;
-    const uint32_t coarseMinimumTravelSteps = runwaySteps >
+    const uint32_t coarseMinimumTravelSteps = startup
+        ? runwaySteps - agreementSteps : runwaySteps >
         static_cast<uint32_t>(std::lround(kCoarseRunwayMarginMm * stepsPerMm))
         ? runwaySteps - static_cast<uint32_t>(
             std::lround(kCoarseRunwayMarginMm * stepsPerMm))
@@ -1868,14 +1908,17 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
     uint32_t inactivePhaseRegister = 0;
     uint16_t recoveryThreshold = 0;
     RhoContactConsensus consensus(agreementSteps);
-    // Unknown-origin production homing remains locked until independently
-    // qualified. Never substitute a candidate for the commissioning bound.
-    if (expectedContactSteps == 0 ||
+    // Legacy entry requires a known reference. Startup uses a separate,
+    // untrusted candidate ledger; never substitute it for the test guard.
+    if ((!startup && expectedContactSteps == 0) ||
         expectedContactSteps > static_cast<uint32_t>(std::lround(R_MAX * stepsPerMm))) {
         m_homingFailure.store(4);
         return false;
     }
     RhoRollingSearch search(expectedContactSteps, toleranceSteps, totalToleranceSteps);
+    RhoRollingSearch guard(expectedContactSteps, toleranceSteps, totalToleranceSteps, !startup);
+    const bool guarded = expectedContactSteps != 0;
+    if (!guarded) maximumTravelSteps += toleranceSteps;
     const bool holdInactiveMotor =
         companionAxis || Config::kRhoCompanionMotorEnabled;
 
@@ -1960,11 +2003,25 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
     vTaskDelay(pdMS_TO_TICKS(kSettleMs));
 
     bool axisSuccess = false;
+    HomingMove runway;
     m_homingTraceAxis.store(companionAxis ? 2 : 1);
+    if (startup) {
+        // At the inner stop this pulse-capped probe can compress by at most
+        // 1 mm. It buys outward room when starting at the outer stop: the
+        // following 6 mm leg then has at most 5 mm commanded outer overrun.
+        m_homingTracePass.store(0);
+        m_homingTracePhase.store(5);
+        const HomingMove probe = moveRhoBySteps(activeAddress, -1, coarseRate,
+            std::lround(Config::kRhoStartupProbeMm * stepsPerMm));
+        if (!probe.success) {
+            m_homingFailure.store(probe.communicationError ? 7 : 8);
+            goto axis_cleanup;
+        }
+    }
     m_homingTracePass.store(1);
     m_homingTracePhase.store(1);
     m_homingTraceLegOrigin.store(static_cast<int32_t>(runwaySteps));
-    HomingMove runway = moveRhoBySteps(
+    runway = moveRhoBySteps(
         activeAddress, +1, coarseRate, runwaySteps);
     if (!runway.success) {
         m_homingFailure.store(runway.communicationError ? 7 : 8);
@@ -1976,7 +2033,7 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
     // A disconnected or jammed motor can consume the outward STEP budget
     // without moving the carriage. Do not issue the inward command unless
     // StallGuard showed sustained healthy load at cruising speed.
-    if (runway.healthySecondHalfSamples < 8U) {
+    if (!startup && runway.healthySecondHalfSamples < 8U) {
         m_homingFailure.store(4);
         ErrorLog::instance().log("ERROR", "HOME", "RUNWAY_LOAD_INVALID",
                                  "Outward motion lacked healthy SG_RESULT samples",
@@ -2004,13 +2061,21 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
             m_homingFastTrigger.store(coarse.trigger);
         }
         if (!coarse.success) {
-            m_homingFailure.store(coarse.communicationError ? 7 : 2);
+            if (m_homingFailure.load() != 11)
+                m_homingFailure.store(coarse.communicationError ? 7 : 2);
             ErrorLog::instance().log("ERROR", "HOME", "COARSE_FAILED",
                                      "Coarse approach did not find a sustained stall",
                                      activeName);
             goto axis_cleanup;
         }
-        if (!search.inward(coarse.steps)) {
+        if (startup) {
+            // A candidate is an uncertain reference, never a measured zero.
+            // Bound further search to 2 mm/pass and 4 mm beyond this first
+            // contact; a distant false candidate fails safely rather than
+            // permitting another full-travel push into the stop.
+            search = RhoRollingSearch(coarse.steps, toleranceSteps, totalToleranceSteps);
+        }
+        if (!search.inward(coarse.steps) || (guarded && !guard.inward(coarse.steps))) {
             m_homingFailure.store(4);
             goto axis_cleanup;
         }
@@ -2026,11 +2091,12 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
         m_homingTracePass.store(attempt);
         m_homingTracePhase.store(3);
         m_homingTraceLegOrigin.store(search.coordinate());
-        const uint32_t actualBackoffSteps = search.backoffLimit(backoffSteps);
+        const uint32_t actualBackoffSteps = std::min(search.backoffLimit(backoffSteps),
+            guarded ? guard.backoffLimit(backoffSteps) : backoffSteps);
         HomingMove backoff = moveRhoBySteps(
             activeAddress, +1, coarseRate, actualBackoffSteps, recoveryThreshold);
         if (!backoff.success || !backoff.loadRecovered ||
-            !search.outward(backoff.steps)) {
+            !search.outward(backoff.steps) || (guarded && !guard.outward(backoff.steps))) {
             m_homingFailure.store(backoff.communicationError ? 7 : 4);
             ErrorLog::instance().log("ERROR", "HOME", "LOAD_NOT_RECOVERED",
                                      "StallGuard did not recover during verification backoff",
@@ -2049,7 +2115,9 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
         const uint32_t retryMinimumSteps = std::max(configuredMinimumSteps,
             actualBackoffSteps > agreementSteps ? actualBackoffSteps - agreementSteps : 0U);
         HomingAttempt precision = approachHome(
-            activeAddress, precisionRate, search.approachLimit(),
+            activeAddress, precisionRate, guarded
+                ? std::min(search.approachLimit(), guard.approachLimit())
+                : search.approachLimit(),
             retryMinimumSteps,
             m_homingSettings.consecutiveSamples, triggerRatio,
             homingSettings.microsteps);
@@ -2065,14 +2133,15 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
             m_homingTrigger.store(precision.trigger);
         }
         if (!precision.success) {
-            m_homingFailure.store(precision.communicationError ? 7 : 3);
+            if (m_homingFailure.load() != 11)
+                m_homingFailure.store(precision.communicationError ? 7 : 3);
             ErrorLog::instance().log("ERROR", "HOME", "PRECISION_FAILED",
                                      "Precision return did not reproduce the stall",
                                      activeName);
             goto axis_cleanup;
         }
 
-        if (!search.inward(precision.steps)) {
+        if (!search.inward(precision.steps) || (guarded && !guard.inward(precision.steps))) {
             m_homingFailure.store(4);
             ErrorLog::instance().log("ERROR", "HOME",
                                      "FINAL_OUTSIDE_KNOWN_WINDOW",
@@ -2089,7 +2158,7 @@ bool PolarControl::homeAxis(TMC2209& activeDriver, uint8_t activeAddress,
         if (consensus.add(search.coordinate())) {
             // An independently known zero may veto a repeatable obstruction,
             // but a single early candidate must not abort the rolling search.
-            if (!search.nearKnownHome(agreementSteps)) {
+            if (guarded && !guard.nearKnownHome(agreementSteps)) {
                 m_homingFailure.store(4);
                 ErrorLog::instance().log("ERROR", "HOME", "FALSE_CONSENSUS",
                     "Three SG contacts agreed away from the known home", activeName);
@@ -2777,11 +2846,15 @@ int PolarControl::getProgressPercent() const {
     return progress;
 }
 
-void PolarControl::emergencyStop() {
+void PolarControl::emergencyStop(bool disableRho) {
     // Publish cancellation before waiting for the UART/motion lock. The homing
     // task checks this state while holding the same lock before every command.
+    m_bootHomingCancelled.store(true);
     const State_t previousState = m_state.exchange(INITIALIZED);
     xSemaphoreTake(m_mutex, portMAX_DELAY);
+    // A concurrent start may have held this lock when cancellation was
+    // published. Abort wins even if that start subsequently wrote HOMING.
+    m_state.store(INITIALIZED);
     // Stop STEP generation before potentially slow UART transactions.
     m_planner.stop();
     if (m_driverBusInitialized.load()) {
@@ -2790,7 +2863,7 @@ void PolarControl::emergencyStop() {
             m_rDriver.moveAtVelocity(0);
         }
         if (m_rhoCompanionDriverConnected.load()) m_rCDriver.moveAtVelocity(0);
-        if (previousState == HOMING || previousState == HOMING_REVIEW ||
+        if (disableRho || previousState == HOMING || previousState == HOMING_REVIEW ||
             m_homingTaskHandle != NULL) {
             if (!disableRhoDriversLocked()) {
                 ErrorLog::instance().log("ERROR", "HOME", "ABORT_DISABLE_FAILED",
@@ -3967,12 +4040,12 @@ bool PolarControl::testRhoSegment(float targetRhoMm) {
         (Config::kRhoCompanionMotorEnabled &&
          !m_rhoCompanionDriverConnected.load()) ||
         !std::isfinite(targetRhoMm) ||
-        targetRhoMm < 0.0f || targetRhoMm > RhoAcousticProfile::kExcursionMm) {
+        targetRhoMm < 0.0f || targetRhoMm > Config::kRhoKnownStartMaximumMm) {
         return false;
     }
     const PolarCord_t current = getCurrentPosition();
     if (current.rho < 0.0f ||
-        current.rho > RhoAcousticProfile::kExcursionMm) {
+        current.rho > Config::kRhoKnownStartMaximumMm) {
         return false;
     }
     LOG("Starting bounded rho segment to %.2fmm...\r\n", targetRhoMm);

@@ -92,6 +92,17 @@ static constexpr uint16_t kRhoHomingHoldCurrentMa = 500;
 static constexpr uint16_t kRhoHomingMicrosteps = 8;
 static constexpr float kRhoHomingVelocityMmPerSecond = 12.0f;
 static constexpr float kRhoHomingRunwayMm = 8.0f;
+// Qualification build exercises production entry with an independent known
+// position cap. Ordinary service tests retain the earlier bounded entry.
+#if defined(SISYPHUS_RHO_COMMISSIONING) && !defined(SISYPHUS_RHO_STARTUP_TRIAL)
+static constexpr bool kRhoStartupEntry = false;
+#else
+static constexpr bool kRhoStartupEntry = true;
+#endif
+static constexpr float kRhoStartupProbeMm = 1.0f;
+static constexpr float kRhoStartupRunwayMm = 6.0f;
+static constexpr float kRhoKnownStartMaximumMm = kRhoStartupEntry ? 425.0f : 400.0f;
+static constexpr uint32_t kRhoHomingCycleTimeoutMs = 90000;
 static constexpr float kRhoHomingMaximumOverrunMm = 2.0f;
 static constexpr float kRhoHomingMaximumTotalOverrunMm = 5.0f;
 static constexpr float kRhoHomingCoarseRunwayMarginMm = 1.0f;

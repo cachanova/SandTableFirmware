@@ -389,6 +389,8 @@ def run(args: argparse.Namespace) -> int:
     post_form(board, "/api/tuning/homing", homing_update)
     tuning = board.get("/api/tuning")
     homing_profile = tuning.get("homing", {})
+    if max(rho_start_mm, companion_start_mm) > float(homing_profile.get("knownStartMaximumMm", 400)):
+        raise RuntimeError("Requested start exceeds this firmware's qualification limit")
     max_overrun_mm = float(homing_profile.get("maximumOverrunMm", MAX_OVERRUN_MM))
     if not 0.0 < max_overrun_mm <= 5.0:
         raise RuntimeError("Firmware overrun cap is outside the approved 0..5 mm range")
@@ -545,12 +547,15 @@ def run(args: argparse.Namespace) -> int:
         pass_numbers = sorted({int(sample.get("n", 1 if int(sample["p"]) == 2 else 2))
                                for sample in trace.get("samples", [])
                                if int(sample["a"]) == axis and int(sample["p"]) in (2, 4)})
-        home_coordinate = round((axis_start_mm + runway_mm) * homing_steps_per_mm)
+        probe_mm = float(homing_profile.get("startupProbeMm", 0.0))
+        expected_home_mm = (min(425.0, max(0.0, axis_start_mm - probe_mm) + runway_mm)
+                            if probe_mm > 0 else axis_start_mm + runway_mm)
+        home_coordinate = round(expected_home_mm * homing_steps_per_mm)
         furthest_coordinate = home_coordinate
         previous_contact_coordinate = 0
         for pass_number in pass_numbers:
             phase = 2 if pass_number == 1 else 4
-            expected_mm = axis_start_mm + runway_mm if phase == 2 else backoff_mm
+            expected_mm = expected_home_mm if phase == 2 else backoff_mm
             if rolling_search:
                 selected = [sample for sample in trace["samples"]
                             if int(sample["a"]) == axis and int(sample["p"]) == phase
@@ -669,6 +674,9 @@ def run(args: argparse.Namespace) -> int:
             "coarseVelocityMmS": homing_velocity_mm_s,
             "precisionVelocityMmS": homing_velocity_mm_s,
             "runwayMm": runway_mm,
+            "startupEntry": bool(homing_profile.get("startupEntry")),
+            "startupProbeMm": float(homing_profile.get("startupProbeMm", 0)),
+            "cycleTimeoutMs": homing_profile.get("cycleTimeoutMs"),
             "backoffMm": backoff_mm,
             "rollingSearch": rolling_search,
             "retryArmingTracksBackoff": bool(homing_profile.get("retryArmingTracksBackoff")),
@@ -730,9 +738,9 @@ def main() -> int:
     parser.add_argument("--source", default=DEFAULT_SOURCE)
     parser.add_argument("--rate", type=int, default=DEFAULT_RATE)
     parser.add_argument("--output-dir", default="acoustic-results/rho-homing")
-    parser.add_argument("--trigger-percent", type=int, default=75)
+    parser.add_argument("--trigger-percent", type=int, default=85)
     parser.add_argument("--consecutive-samples", type=int, default=5)
-    parser.add_argument("--minimum-travel-ms", type=int, default=600)
+    parser.add_argument("--minimum-travel-ms", type=int, default=450)
     parser.add_argument("--backoff-mm", type=int, help="retry backoff, clamped by safe outward room (6..50)")
     parser.add_argument(
         "--known-start-mm", type=float, default=0.0,
@@ -765,8 +773,8 @@ def main() -> int:
         parser.error("--consecutive-samples must be 5..50")
     if not 100 <= args.minimum_travel_ms <= 2500:
         parser.error("--minimum-travel-ms must be 100..2500")
-    if args.known_start_mm < 0.0 or args.known_start_mm > 400.0:
-        parser.error("--known-start-mm must be within 0..400")
+    if args.known_start_mm < 0.0 or args.known_start_mm > 425.0:
+        parser.error("--known-start-mm must be within 0..425 (firmware must support it)")
     if 0.0 < args.known_start_mm < 10.0:
         parser.error("--known-start-mm must be zero or at least 10 mm")
     if (args.rho_start_mm is None) != (args.companion_start_mm is None):
@@ -775,8 +783,8 @@ def main() -> int:
         ("--rho-start-mm", args.rho_start_mm),
         ("--companion-start-mm", args.companion_start_mm),
     ):
-        if value is not None and not -1.0 <= value <= 400.0:
-            parser.error(f"{name} must be within -1..400")
+        if value is not None and not -1.0 <= value <= 425.0:
+            parser.error(f"{name} must be within -1..425 (firmware must support it)")
     return run(args)
 
 

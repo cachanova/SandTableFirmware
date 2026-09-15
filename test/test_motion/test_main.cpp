@@ -16,6 +16,7 @@
 #include "RhoAcousticProfile.hpp"
 #include "StallGuardDetector.hpp"
 #include "RhoContactConsensus.hpp"
+#include "RhoStartupEntry.hpp"
 #include "RhoRollingSearch.hpp"
 
 // Directly include implementations for native build to resolve linker errors
@@ -356,6 +357,32 @@ bool testStallGuardFiltering() {
 
 
 bool testRhoContactConsensus() {
+    RhoRollingSearch productionCandidate(2421, 800, 1600);
+    RhoRollingSearch independentVeto(2400, 800, 1600, false);
+    for (auto* ledger : {&productionCandidate, &independentVeto}) {
+        if (!ledger->inward(2421) || !ledger->outward(2400) || !ledger->inward(2312)) return false;
+    }
+    if (independentVeto.backoffLimit(2400) < productionCandidate.backoffLimit(2400)) return false;
+    if (rhoStartupHomeCoordinate(0, 400, 2400, 170000) != 2400 ||
+        rhoStartupHomeCoordinate(4000, 400, 2400, 170000) != 6000 ||
+        rhoStartupHomeCoordinate(170000, 400, 2400, 170000) != 170000) return false;
+    for (int32_t start = 0; start <= 170000; ++start) {
+        const int32_t afterProbe = std::max<int32_t>(0, start - 400);
+        const int32_t outerOverrun = std::max<int32_t>(0, afterProbe + 2400 - 170000);
+        const uint32_t reference = rhoStartupHomeCoordinate(start, 400, 2400, 170000);
+        if (outerOverrun > 2000 || reference < 2400 || reference > 170000) return false;
+    }
+    StallGuardStallWatchdog low, alternating, healthy;
+    for (unsigned index = 0; index < 31; ++index) {
+        if (low.update(150) || alternating.update(index % 2 ? 280 : 0)) return false;
+    }
+    if (!low.update(150) || !alternating.update(0)) return false;
+    for (unsigned index = 0; index < 1000; ++index) {
+        if (healthy.update(index % 16 == 0 ? 0 : 240)) {
+            std::cout << "FAIL: isolated SG dip tripped watchdog\n";
+            return false;
+        }
+    }
     RhoRollingSearch search(1000, 20, 50);
     if (!search.inward(200) || search.usedOverrun() != 0 ||
         search.backoffLimit(500) != 200 || !search.outward(100) ||

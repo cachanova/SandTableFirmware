@@ -337,9 +337,10 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
     document.getElementById('stop').addEventListener('click', async () => {
         commandGeneration++; queued=null; clearTimeout(sendTimer); dragging=false; stopInProgress=true; enabled=false; jogEnabled=false; updateControls();
         if (sendController) sendController.abort();
-        try { const r=await fetch('/api/motion/stop',{method:'POST'}); const data=await r.json().catch(()=>({})); if(!r.ok) throw new Error(data.message || 'Stop request failed'); errorEl.textContent=''; sendEl.textContent=data.requiresHoming?'Emergency stopped · home required':'Already stopped'; }
-        catch(err) { errorEl.textContent=err.message; }
-        finally { stopInProgress=false; refreshStatus(); }
+        const stopRequest=new AbortController(); const stopTimeout=setTimeout(()=>stopRequest.abort(),2500);
+        try { const r=await fetch('/api/home/abort',{method:'POST',signal:stopRequest.signal}); const data=await r.json(); if(!r.ok || !data.success) throw new Error('Stop request failed'); errorEl.textContent=''; sendEl.textContent='Abort acknowledged · home required'; }
+        catch(err) { errorEl.textContent='No abort acknowledgement. Switch off motor power if motion continues; retry Stop.'; }
+        finally { clearTimeout(stopTimeout); stopInProgress=false; refreshStatus(); }
     });
     function updatePosition(p) {
         if (!p) return;

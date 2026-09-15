@@ -3,6 +3,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+for (const name of ['WebUI.h', 'ManualUI.h', 'TuningUI.h']) {
+    const html = fs.readFileSync(path.join(__dirname, '../lib/WebServer/src', name), 'utf8');
+    for (const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) new vm.Script(match[1]);
+    assert.ok(html.includes('/home/abort'), `${name} must use the homing-aware abort route`);
+}
 const source = fs.readFileSync(path.join(__dirname, '../lib/WebServer/src/WebUI.h'), 'utf8');
 const script = source.split('<script>')[1].split('</script>')[0]
     .replace('const controller = new SisyphusController();', 'globalThis.Controller = SisyphusController;');

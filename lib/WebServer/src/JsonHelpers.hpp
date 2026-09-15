@@ -57,6 +57,10 @@ public:
         out.print(homing.cycle);
         out.print(",\"stepsPerMm\":");
         out.print(homing.stepsPerMm);
+        out.print(",\"phase\":");
+        out.print(homing.phase);
+        out.print(",\"phasePulseCount\":");
+        out.print(homing.phasePulseCount);
         out.print(",\"fastApproachMs\":");
         out.print(homing.fastApproachMs);
         out.print(",\"slowApproachMs\":");

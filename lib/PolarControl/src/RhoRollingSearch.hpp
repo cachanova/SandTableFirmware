@@ -4,20 +4,23 @@
 #include <cstdint>
 
 // Inward-positive command coordinates, zero at the first approach's start.
-// Outward STEP commands must actually move. knownHome is an independent
-// commissioning reference, never an SG candidate.
+// Outward STEP commands must actually move. The reference is either an
+// independent commissioning home or an explicitly untrusted startup candidate.
+// A candidate-relative budget does not prove the physical home coordinate.
 class RhoRollingSearch {
 public:
-    RhoRollingSearch(uint32_t knownHome, uint32_t perPass, uint32_t total)
-        : m_home(knownHome), m_furthest(knownHome),
-          m_perPass(perPass), m_total(total) {}
+    RhoRollingSearch(uint32_t reference, uint32_t perPass, uint32_t total,
+                     bool constrainOutward = true)
+        : m_home(reference), m_furthest(reference),
+          m_perPass(perPass), m_total(total), m_constrainOutward(constrainOutward) {}
 
     uint32_t approachLimit() const {
         const uint32_t remaining = m_total - usedOverrun();
         return m_furthest + std::min(m_perPass, remaining) - m_coordinate;
     }
     uint32_t backoffLimit(uint32_t requested) const {
-        return std::min(requested, m_coordinate - usedOverrun());
+        return std::min(requested, m_coordinate -
+            (m_constrainOutward ? usedOverrun() : 0U));
     }
     bool inward(uint32_t steps) {
         if (steps > approachLimit()) return false;
@@ -44,4 +47,8 @@ private:
     uint32_t m_furthest;
     uint32_t m_perPass;
     uint32_t m_total;
+    // An independent startup test veto must not tune the detector's return
+    // length using known position. Its inward cap and final veto still apply;
+    // the production candidate ledger alone constrains outward commands.
+    bool m_constrainOutward;
 };

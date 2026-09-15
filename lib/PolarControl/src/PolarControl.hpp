@@ -98,6 +98,8 @@ struct DriverSettings {
 struct HomingStatus {
   uint32_t cycle = 0;
   uint16_t stepsPerMm = 0;
+  uint8_t phase = 0; // 5=entry probe; 1=outward; 2=coarse; 3=backoff; 4=return
+  uint32_t phasePulseCount = 0; // Diagnostic command count, not physical position
   // Primary rho results (legacy field names retained for API compatibility).
   uint32_t fastApproachMs = 0;
   uint32_t slowApproachMs = 0;
@@ -123,11 +125,11 @@ struct HomingStatus {
 
 struct HomingSettings {
   // Lower percentages require a larger SG_RESULT drop and are less sensitive.
-  uint8_t triggerPercent = 75;
+  uint8_t triggerPercent = 85;
   // Number of low SG_RESULT votes required in a 2*N-1 fresh-full-step window.
   uint8_t consecutiveSamples = 5;
-  uint16_t minimumTravelMs = 600;
-  uint16_t verificationBackoffMm = 10;
+  uint16_t minimumTravelMs = 450;
+  uint16_t verificationBackoffMm = 6;
 };
 
 struct HomingTraceSample {
@@ -182,9 +184,9 @@ public:
   bool begin();
   bool setupDrivers();
   // confirmedOriginBounded is commissioning-only. It limits each approach to
-  // the known outward runway plus 1 mm, so a missed SG trigger cannot grind
+  // the known outward runway plus the configured per-pass allowance, so a missed SG trigger cannot grind
   // against the stop for an entire unknown-position travel span.
-  bool home(bool confirmedOriginBounded = false);
+  bool home(bool confirmedOriginBounded = false, bool automaticBoot = false);
   bool confirmHome(bool successful);
   // Accept the current physical location as theta=0, rho=0 without moving.
   // The caller must require explicit operator confirmation first.
@@ -223,7 +225,7 @@ public:
   bool pause();
   bool resume();
   bool stop();
-  void emergencyStop();
+  void emergencyStop(bool disableRho = false);
 
   // Main processing loop - call from motor task
   bool processNextMove();
@@ -374,6 +376,7 @@ private:
   std::atomic<uint8_t> m_homingTracePass{0};
   std::atomic<int32_t> m_homingTraceLegOrigin{0};
   std::atomic<bool> m_confirmedOriginBoundedHoming{false};
+  std::atomic<bool> m_bootHomingCancelled{false};
 #ifdef SISYPHUS_RHO_COMMISSIONING
   std::atomic<bool> m_knownPositionHomingActive{false};
   std::atomic<int32_t> m_knownRhoStartSteps{0};

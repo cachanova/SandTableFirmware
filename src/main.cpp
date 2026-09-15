@@ -273,7 +273,7 @@ void setup() {
         LOG("WARNING: RHO SERVICE firmware is active in manual mode; theta and patterns remain locked out.\r\n");
 #else
         if (Config::kAutoHomeOnBoot) {
-            polarControl.home();
+            LOG("Automatic homing scheduled after web server startup.\r\n");
         } else {
             LOG("Automatic homing disabled; use the UI to home and confirm position.\r\n");
         }
@@ -287,6 +287,12 @@ void setup() {
     // Start web server
     LOG("Starting web server...\r\n");
     webServer.begin(&polarControl, &ledController);
+
+#if !defined(SISYPHUS_BENCH_MOTION_TEST) && !defined(SISYPHUS_THETA_COMMISSIONING) && !defined(SISYPHUS_RHO_COMMISSIONING)
+    // Serve the abort endpoint before allowing startup motion. The website
+    // is a secondary control; pulse, SG and time guards remain in firmware.
+    if (motorSubsystemReady && Config::kAutoHomeOnBoot) polarControl.home(false, true);
+#endif
 
     LOG("\n=== System Ready ===\r\n");
     LOG("Access web interface at: http://%s\r\n", WiFi.localIP().toString().c_str());

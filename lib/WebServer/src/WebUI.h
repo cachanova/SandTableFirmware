@@ -1166,7 +1166,9 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                         6: 'The observed home position was rejected.',
                         7: 'TMC2209 UART replies failed validation during homing.',
                         8: 'The bounded outward runway move did not complete.',
-                        9: 'A disabled driver electrical phase could not be restored safely.'
+                        9: 'A disabled driver electrical phase could not be restored safely.',
+                        10: 'Homing exceeded its whole-cycle time limit.',
+                        11: 'Sustained low StallGuard readings triggered the stall watchdog.'
                     };
                     const homing = status.homing || {};
                     const failedAxis = homing.failedAxis === 1 ? 'Rho: '

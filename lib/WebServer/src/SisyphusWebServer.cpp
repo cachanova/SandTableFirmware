@@ -336,7 +336,14 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
     m_server.on(AsyncURIMatcher::exact("/api/home/abort"), HTTP_POST,
         [this](AsyncWebServerRequest *request) {
             noteRequest(request);
-            handleMotionStop(request);
+            SemaphoreGuard stateLock(m_stateMutex);
+            clearPlaybackLocked();
+            m_activeMotion = MotionOwner::NONE;
+            // An abort arriving just after automatic success must still
+            // invalidate zero and disable rho, even if state is already IDLE.
+            m_polarControl->emergencyStop(true);
+            request->send(200, "application/json",
+                "{\"success\":true,\"emergency\":true,\"requiresHoming\":true}");
         });
 
     m_server.on("/api/motion/telemetry", HTTP_GET, [this](AsyncWebServerRequest *request) {
@@ -1738,10 +1745,10 @@ void SisyphusWebServer::handleKnownPositionHome(
         !parseStrictBool(
             request->getParam("confirmKnownPositions", true)->value(),
             confirmed) ||
-        !confirmed || rhoStartMm < -1.0f || rhoStartMm > 400.0f ||
-        companionStartMm < -1.0f || companionStartMm > 400.0f) {
+        !confirmed || rhoStartMm < -1.0f || rhoStartMm > Config::kRhoKnownStartMaximumMm ||
+        companionStartMm < -1.0f || companionStartMm > Config::kRhoKnownStartMaximumMm) {
         request->send(400, "application/json",
-            "{\"success\":false,\"message\":\"Explicit known RHO positions within -1..400 mm are required\"}");
+            "{\"success\":false,\"message\":\"Explicit known RHO positions within the qualification travel limit are required\"}");
         return;
     }
 
@@ -2686,17 +2693,25 @@ void SisyphusWebServer::handleTuningGet(AsyncWebServerRequest *request) {
     homingObj["holdCurrent"] = Config::kRhoHomingHoldCurrentMa;
     homingObj["microsteps"] = Config::kRhoHomingMicrosteps;
     homingObj["velocityMmS"] = Config::kRhoHomingVelocityMmPerSecond;
-    homingObj["runwayMm"] = Config::kRhoHomingRunwayMm;
+    homingObj["startupEntry"] = Config::kRhoStartupEntry;
+    homingObj["knownStartMaximumMm"] = Config::kRhoKnownStartMaximumMm;
+    homingObj["startupProbeMm"] = Config::kRhoStartupEntry ? Config::kRhoStartupProbeMm : 0;
+    homingObj["runwayMm"] = Config::kRhoStartupEntry
+        ? Config::kRhoStartupRunwayMm : Config::kRhoHomingRunwayMm;
+    homingObj["cycleTimeoutMs"] = Config::kRhoHomingCycleTimeoutMs;
     homingObj["verificationBackoffMm"] =
         homing.verificationBackoffMm;
     homingObj["maximumOverrunMm"] = Config::kRhoHomingMaximumOverrunMm;
     homingObj["coarseMinimumTravelMm"] =
-        Config::kRhoHomingRunwayMm - Config::kRhoHomingCoarseRunwayMarginMm;
+        Config::kRhoStartupEntry
+            ? Config::kRhoStartupRunwayMm - Config::kRhoHomingApproachAgreementMm
+            : Config::kRhoHomingRunwayMm - Config::kRhoHomingCoarseRunwayMarginMm;
     homingObj["approachAgreementMm"] =
         Config::kRhoHomingApproachAgreementMm;
     homingObj["requiredConsecutiveContacts"] = 3;
     homingObj["maximumContactAttempts"] = Config::kRhoHomingMaximumContactAttempts;
-    homingObj["maximumTotalOverrunMm"] = Config::kRhoHomingMaximumTotalOverrunMm;
+    homingObj["maximumTotalOverrunMm"] = Config::kRhoHomingMaximumTotalOverrunMm -
+        (Config::kRhoStartupEntry ? Config::kRhoStartupProbeMm : 0);
     homingObj["candidateStrategy"] = "clustered-soft-votes";
     homingObj["traceContactMarkers"] = true;
     homingObj["rollingSearch"] = true;
@@ -2884,9 +2899,9 @@ void SisyphusWebServer::handleTuningTestRhoSegment(AsyncWebServerRequest *reques
     }
     float target = 0.0f;
     if (!parseStrictFloat(request->getParam("targetMm", true)->value(), target) ||
-        target < 0.0f || target > RhoAcousticProfile::kExcursionMm) {
+        target < 0.0f || target > Config::kRhoKnownStartMaximumMm) {
         request->send(400, "application/json",
-            "{\"success\":false,\"message\":\"targetMm must be within 0..400\"}");
+            "{\"success\":false,\"message\":\"targetMm exceeds the qualification travel limit\"}");
         return;
     }
     SemaphoreGuard stateLock(m_stateMutex);
