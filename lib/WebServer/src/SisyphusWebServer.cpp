@@ -1771,7 +1771,10 @@ void SisyphusWebServer::handleKnownPositionHome(
 
 void SisyphusWebServer::handleHomingTrace(
         AsyncWebServerRequest *request) {
-    constexpr size_t kTraceCapacity = 768;
+    // The host polls at 4 Hz and deduplicates by total sample index. A smaller
+    // response avoids retaining a 49 KB stream plus a full ring copy while
+    // asynchronous responses or normal-motion queue allocations remain live.
+    constexpr size_t kTraceCapacity = 256;
     std::unique_ptr<HomingTraceSample[]> samples(
         new (std::nothrow) HomingTraceSample[kTraceCapacity]);
     if (!samples) {
@@ -1784,7 +1787,7 @@ void SisyphusWebServer::handleHomingTrace(
         samples.get(), kTraceCapacity, &total);
     const HomingStatus status = m_polarControl->getHomingStatus();
     AsyncResponseStream *response = request->beginResponseStream(
-        "application/json", 49152);
+        "application/json", 256 + count * 128);
     response->printf("{\"cycle\":%lu,\"count\":%u,\"total\":%lu,\"samples\":[",
         static_cast<unsigned long>(status.cycle), static_cast<unsigned>(count),
         static_cast<unsigned long>(total));
@@ -1792,11 +1795,17 @@ void SisyphusWebServer::handleHomingTrace(
         const HomingTraceSample& sample = samples[index];
         if (index != 0) response->print(',');
         response->printf(
-            "{\"a\":%u,\"p\":%u,\"t\":%lu,\"s\":%lu,\"g\":%u,\"v\":%s}",
-            sample.axis, sample.phase,
+            "{\"a\":%u,\"p\":%u,\"n\":%u,\"t\":%lu,\"s\":%lu,\"o\":%ld,\"g\":%u,\"v\":%s",
+            sample.axis, sample.phase, sample.pass,
             static_cast<unsigned long>(sample.elapsedMs),
-            static_cast<unsigned long>(sample.steps), sample.stallGuard,
+            static_cast<unsigned long>(sample.steps),
+            static_cast<long>(sample.legOriginSteps), sample.stallGuard,
             sample.valid ? "true" : "false");
+        if (sample.contactBaseline != 0) {
+            response->printf(",\"b\":%u,\"h\":%u",
+                sample.contactBaseline, sample.contactThreshold);
+        }
+        response->print('}');
     }
     response->print("]}");
     request->send(response);
@@ -2673,12 +2682,19 @@ void SisyphusWebServer::handleTuningGet(AsyncWebServerRequest *request) {
     homingObj["velocityMmS"] = Config::kRhoHomingVelocityMmPerSecond;
     homingObj["runwayMm"] = Config::kRhoHomingRunwayMm;
     homingObj["verificationBackoffMm"] =
-        Config::kRhoHomingVerificationBackoffMm;
+        homing.verificationBackoffMm;
     homingObj["maximumOverrunMm"] = Config::kRhoHomingMaximumOverrunMm;
     homingObj["coarseMinimumTravelMm"] =
         Config::kRhoHomingRunwayMm - Config::kRhoHomingCoarseRunwayMarginMm;
     homingObj["approachAgreementMm"] =
         Config::kRhoHomingApproachAgreementMm;
+    homingObj["requiredConsecutiveContacts"] = 3;
+    homingObj["maximumContactAttempts"] = Config::kRhoHomingMaximumContactAttempts;
+    homingObj["maximumTotalOverrunMm"] = Config::kRhoHomingMaximumTotalOverrunMm;
+    homingObj["candidateStrategy"] = "clustered-soft-votes";
+    homingObj["traceContactMarkers"] = true;
+    homingObj["rollingSearch"] = true;
+    homingObj["retryArmingTracksBackoff"] = true;
     homingObj["companionMotorEnabled"] = Config::kRhoCompanionMotorEnabled;
     homingObj["inactiveHoldStrategy"] = Config::kRhoCompanionMotorEnabled
         ? "vactual-u256" : "disabled-bridge";
@@ -2743,9 +2759,11 @@ void SisyphusWebServer::handleTuningHomingSet(AsyncWebServerRequest *request) {
     uint32_t triggerPercent = settings.triggerPercent;
     uint32_t consecutiveSamples = settings.consecutiveSamples;
     uint32_t minimumTravelMs = settings.minimumTravelMs;
+    uint32_t verificationBackoffMm = settings.verificationBackoffMm;
     if (!parseUnsignedParam(request, "triggerPercent", triggerPercent) || triggerPercent > UINT8_MAX ||
         !parseUnsignedParam(request, "consecutiveSamples", consecutiveSamples) || consecutiveSamples > UINT8_MAX ||
-        !parseUnsignedParam(request, "minimumTravelMs", minimumTravelMs) || minimumTravelMs > UINT16_MAX) {
+        !parseUnsignedParam(request, "minimumTravelMs", minimumTravelMs) || minimumTravelMs > UINT16_MAX ||
+        !parseUnsignedParam(request, "verificationBackoffMm", verificationBackoffMm) || verificationBackoffMm > UINT16_MAX) {
         request->send(400, "application/json",
             "{\"success\":false,\"message\":\"Malformed homing setting\"}");
         return;
@@ -2753,6 +2771,7 @@ void SisyphusWebServer::handleTuningHomingSet(AsyncWebServerRequest *request) {
     settings.triggerPercent = static_cast<uint8_t>(triggerPercent);
     settings.consecutiveSamples = static_cast<uint8_t>(consecutiveSamples);
     settings.minimumTravelMs = static_cast<uint16_t>(minimumTravelMs);
+    settings.verificationBackoffMm = static_cast<uint16_t>(verificationBackoffMm);
     sendTuningUpdateResult(request,
         m_polarControl->saveHomingSettings(settings));
 }

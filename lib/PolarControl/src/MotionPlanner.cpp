@@ -956,7 +956,9 @@ bool MotionPlanner::startRhoHoming(int8_t direction,
         (1000000U + stepsPerSecond / 2U) / stepsPerSecond);
     FastGPIO::setLow(R_STEP_PIN);
     FastGPIO::write(R_DIR_PIN, direction > 0);
-    for (volatile int i = 0; i < 10; i++) {}
+#ifndef NATIVE_BUILD
+    delayMicroseconds(DIR_SETUP_TIME_US);
+#endif
 
     m_homingRhoStepCount.store(0, std::memory_order_relaxed);
     m_homingRhoStepLimit.store(maxSteps, std::memory_order_relaxed);
@@ -1630,7 +1632,11 @@ void IRAM_ATTR MotionPlanner::handleStepTimer() {
             m_homingRhoNextStepUs.load(std::memory_order_relaxed);
         if (static_cast<int32_t>(now - nextStep) >= 0) {
             FastGPIO::setHigh(R_STEP_PIN);
-            for (volatile int i = 0; i < 20; i++) {}
+            // Homing needs the same guaranteed pulse width as normal motion.
+            // An instruction loop is not a calibrated time delay.
+#ifndef NATIVE_BUILD
+            delayMicroseconds(STEP_PULSE_WIDTH_US);
+#endif
             FastGPIO::setLow(R_STEP_PIN);
             const uint32_t stepCount =
                 m_homingRhoStepCount.fetch_add(

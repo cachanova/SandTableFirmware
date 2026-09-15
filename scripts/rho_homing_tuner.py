@@ -164,10 +164,12 @@ def phase_report(
     samples: list[dict[str, Any]], axis: int, phase: int,
     expected_steps: float, audio_times: np.ndarray, audio_levels: np.ndarray,
     audio_home_start_s: float, steps_per_mm: float,
+    pass_number: int | None = None,
 ) -> dict[str, Any]:
     selected = [
         sample for sample in samples
         if int(sample["a"]) == axis and int(sample["p"]) == phase
+        and (pass_number is None or int(sample.get("n", 1 if phase == 2 else 2)) == pass_number)
     ]
     valid = [sample for sample in selected if bool(sample["v"])]
     if not valid:
@@ -176,6 +178,8 @@ def phase_report(
     early_count = max(3, len(sg) // 2)
     baseline = float(np.median(sg[:early_count]))
     terminal = valid[-1]
+    detector_baseline = terminal.get("b")
+    decision_baseline = float(detector_baseline) if detector_baseline else baseline
     terminal_steps = int(terminal["s"])
     overrun_mm = max(0.0, (terminal_steps - expected_steps) / steps_per_mm)
     contact_sample = next(
@@ -200,6 +204,8 @@ def phase_report(
         "validSampleCount": len(valid),
         "uartValidFraction": round(len(valid) / len(selected), 4),
         "baselineMedianSg": round(baseline, 2),
+        "detectorBaselineSg": detector_baseline,
+        "detectorThresholdSg": terminal.get("h"),
         "minimumSg": int(np.min(sg)),
         "terminalSg": int(terminal["g"]),
         "terminalSteps": terminal_steps,
@@ -208,7 +214,7 @@ def phase_report(
         "contactAudioOffsetS": round(contact_start_s, 4),
         "terminalAudioOffsetS": round(terminal_s, 4),
         "terminalToBaselineRatio": (
-            round(int(terminal["g"]) / baseline, 4) if baseline > 0 else None
+            round(int(terminal["g"]) / decision_baseline, 4) if decision_baseline > 0 else None
         ),
         "audioEventAWeightedDbfs": (
             round(event_level, 2) if event_level is not None else None
@@ -231,12 +237,20 @@ def validate_trial(
     reports: dict[str, dict[str, Any]], steps_per_mm: float,
     max_overrun_mm: float = MAX_OVERRUN_MM,
     agreement_mm: float = MAX_AGREEMENT_MM,
+    total_overrun_mm: float | None = None,
+    required_contacts: int = 2,
+    active_axes: tuple[int, ...] = (1,),
+    rolling_search: bool = False,
 ) -> list[str]:
     failures: list[str] = []
+    if total_overrun_mm is None:
+        total_overrun_mm = max_overrun_mm
     for name, report in reports.items():
         if not report.get("valid"):
             failures.append(f"{name}: {report.get('reason', 'invalid')}")
             continue
+        if report.get("contactDetected") is False:
+            failures.append(f"{name}: approach stopped without a contact marker")
         if float(report["uartValidFraction"]) < 0.95:
             failures.append(f"{name}: UART validity below 95%")
         if float(report["overrunMm"]) > max_overrun_mm + 0.05:
@@ -247,14 +261,56 @@ def validate_trial(
         step_error_mm = abs(
             int(report["terminalSteps"]) - int(report["expectedContactSteps"])
         ) / steps_per_mm
-        if step_error_mm > max_overrun_mm + 0.05:
+        if not rolling_search and step_error_mm > max_overrun_mm + 0.05:
             failures.append(
                 f"{name}: trigger was more than {max_overrun_mm:g} mm "
                 "from expected contact"
             )
-    for axis in TRACE_AXES.values():
+    for axis_number in active_axes:
+        axis = TRACE_AXES[axis_number]
+        axis_reports = [report for name, report in reports.items()
+                        if name == f"{axis}-coarse" or name == f"{axis}-precision"
+                        or name.startswith(f"{axis}-precision-")]
+        if not axis_reports:
+            failures.append(f"{axis}: missing approach reports")
+            continue
+        if required_contacts > 2:
+            contacts = [report for report in axis_reports if report.get("valid")
+                        and report.get("contactDetected") is not False]
+            if not contacts:
+                failures.append(f"{axis}: no detected contacts")
+                continue
+            if rolling_search:
+                if any("ledgerCoordinateSteps" not in report for report in contacts):
+                    failures.append(f"{axis}: missing rolling-search ledger")
+                    continue
+                coordinates = np.asarray([
+                    int(report["ledgerCoordinateSteps"]) - int(report["knownHomeCoordinateSteps"])
+                    for report in contacts]) / steps_per_mm
+                overrun = max(0.0, float(np.max(coordinates)))
+                if overrun - coordinates[-1] > agreement_mm:
+                    failures.append(f"{axis}: final consensus is short of known home")
+            else:
+                coordinates = np.cumsum([
+                    int(report["terminalSteps"]) - int(report["expectedContactSteps"])
+                    for report in contacts
+                ]) / steps_per_mm
+                overrun = sum(float(report["overrunMm"]) for report in contacts)
+            if overrun > total_overrun_mm + 0.05:
+                failures.append(f"{axis}: retries exceeded shared {total_overrun_mm:g} mm overrun")
+            if abs(float(coordinates[-1])) > total_overrun_mm + 0.05:
+                failures.append(f"{axis}: combined return exceeded origin window")
+            if len(coordinates) < required_contacts:
+                failures.append(f"{axis}: fewer than {required_contacts} contacts")
+            else:
+                span = float(np.ptp(coordinates[-required_contacts:]))
+                if span > agreement_mm:
+                    failures.append(f"{axis}: final contact span {span:.4f} mm exceeds {agreement_mm:g} mm")
+            continue
         coarse = reports.get(f"{axis}-coarse", {})
         precision = reports.get(f"{axis}-precision", {})
+        if not coarse.get("valid") or not precision.get("valid"):
+            failures.append(f"{axis}: missing valid coarse/precision pair")
         if coarse.get("valid") and precision.get("valid"):
             separation_mm = abs(
                 int(precision["terminalSteps"]) -
@@ -323,16 +379,23 @@ def run(args: argparse.Namespace) -> int:
             "Current logical position is neither zero nor the requested known start"
         )
 
-    post_form(board, "/api/tuning/homing", {
+    homing_update = {
         "triggerPercent": args.trigger_percent,
         "consecutiveSamples": args.consecutive_samples,
         "minimumTravelMs": args.minimum_travel_ms,
-    })
+    }
+    if args.backoff_mm is not None:
+        homing_update["verificationBackoffMm"] = args.backoff_mm
+    post_form(board, "/api/tuning/homing", homing_update)
     tuning = board.get("/api/tuning")
     homing_profile = tuning.get("homing", {})
     max_overrun_mm = float(homing_profile.get("maximumOverrunMm", MAX_OVERRUN_MM))
     if not 0.0 < max_overrun_mm <= 5.0:
         raise RuntimeError("Firmware overrun cap is outside the approved 0..5 mm range")
+    total_overrun_mm = float(homing_profile.get("maximumTotalOverrunMm", max_overrun_mm))
+    if not max_overrun_mm <= total_overrun_mm <= 5.0:
+        raise RuntimeError("Firmware total overrun cap is outside the approved range")
+    required_contacts = int(homing_profile.get("requiredConsecutiveContacts", 2))
     agreement_mm = float(homing_profile.get("approachAgreementMm", MAX_AGREEMENT_MM))
     if not 0.0 < agreement_mm <= max_overrun_mm:
         raise RuntimeError("Firmware approach agreement is outside the overrun cap")
@@ -347,6 +410,9 @@ def run(args: argparse.Namespace) -> int:
     backoff_mm = float(
         homing_profile.get("verificationBackoffMm", BACKOFF_MM)
     )
+    rolling_search = bool(homing_profile.get("rollingSearch"))
+    if args.backoff_mm is not None and backoff_mm != args.backoff_mm:
+        raise RuntimeError("Firmware did not apply requested backoff")
     homing_velocity_mm_s = float(
         homing_profile.get("velocityMmS", 6.0)
     )
@@ -428,12 +494,13 @@ def run(args: argparse.Namespace) -> int:
     )
     deadline = time.monotonic() + max(args.timeout, full_travel_timeout)
     trace_collector = HomingTraceCollector()
+    latest_trace: dict[str, Any] | None = None
+    status: dict[str, Any] | None = None
     try:
         while time.monotonic() < deadline:
             status = board.get("/api/status")
-            trace_collector.add(board.get(
-                "/api/tuning/homing/trace", timeout_s=5.0
-            ))
+            latest_trace = board.get("/api/tuning/homing/trace", timeout_s=5.0)
+            trace_collector.add(latest_trace)
             if status.get("state") in {"HOMING_REVIEW", "HOMING_FAILED"}:
                 terminal_status = status
                 break
@@ -445,8 +512,19 @@ def run(args: argparse.Namespace) -> int:
         trace_collector.add(board.get(
             "/api/tuning/homing/trace", timeout_s=5.0
         ))
-    except BaseException:
+    except BaseException as exc:
         board.recovering_stop()
+        aborted = {
+            "kind": "rho-homing-aborted", "error": str(exc),
+            "audio": str(audio_path), "lastStatus": status,
+            "lastTraceResponse": latest_trace,
+            "collectedTrace": trace_collector.samples,
+            "tuningBefore": tuning,
+            "knownRhoStartMm": rho_start_mm,
+            "knownCompanionStartMm": companion_start_mm,
+        }
+        (output_dir / f"{prefix}-aborted.json").write_text(json.dumps(aborted, indent=2))
+        save_result(output_dir, aborted)
         raise
     finally:
         recorder.stop()
@@ -464,19 +542,51 @@ def run(args: argparse.Namespace) -> int:
     reports: dict[str, dict[str, Any]] = {}
     for axis in active_axes:
         axis_start_mm = rho_start_mm if axis == 1 else companion_start_mm
-        for phase, expected_mm in (
-            (2, axis_start_mm + runway_mm), (4, backoff_mm)
-        ):
+        pass_numbers = sorted({int(sample.get("n", 1 if int(sample["p"]) == 2 else 2))
+                               for sample in trace.get("samples", [])
+                               if int(sample["a"]) == axis and int(sample["p"]) in (2, 4)})
+        home_coordinate = round((axis_start_mm + runway_mm) * homing_steps_per_mm)
+        furthest_coordinate = home_coordinate
+        previous_contact_coordinate = 0
+        for pass_number in pass_numbers:
+            phase = 2 if pass_number == 1 else 4
+            expected_mm = axis_start_mm + runway_mm if phase == 2 else backoff_mm
+            if rolling_search:
+                selected = [sample for sample in trace["samples"]
+                            if int(sample["a"]) == axis and int(sample["p"]) == phase
+                            and int(sample["n"]) == pass_number]
+                expected_mm = (furthest_coordinate - int(selected[0]["o"])) / homing_steps_per_mm
             key = f"{TRACE_AXES[axis]}-{TRACE_PHASES[phase]}"
+            if pass_number > 2:
+                key += f"-{pass_number}"
             reports[key] = phase_report(
                 trace.get("samples", []), axis, phase,
                 expected_mm * homing_steps_per_mm,
                 audio_times, audio_levels, audio_home_start_s,
-                homing_steps_per_mm,
+                homing_steps_per_mm, pass_number,
             )
+            if homing_profile.get("traceContactMarkers"):
+                reports[key]["contactDetected"] = bool(reports[key].get("detectorBaselineSg"))
+            if rolling_search and reports[key].get("valid"):
+                selected = [sample for sample in trace["samples"]
+                            if int(sample["a"]) == axis and int(sample["p"]) == phase
+                            and int(sample["n"]) == pass_number]
+                terminal = selected[-1]
+                coordinate = int(terminal["o"]) + int(terminal["s"])
+                reports[key].update({
+                    "passNumber": pass_number,
+                    "ledgerCoordinateSteps": coordinate,
+                    "knownHomeCoordinateSteps": home_coordinate,
+                    "expectedContactSteps": furthest_coordinate - int(terminal["o"]),
+                    "overrunMm": max(0, coordinate - furthest_coordinate) / homing_steps_per_mm,
+                    "actualBackoffMm": (previous_contact_coordinate - int(terminal["o"])) / homing_steps_per_mm if pass_number > 1 else None,
+                })
+                furthest_coordinate = max(furthest_coordinate, coordinate)
+                previous_contact_coordinate = coordinate
 
     failures = validate_trial(
-        reports, homing_steps_per_mm, max_overrun_mm, agreement_mm)
+        reports, homing_steps_per_mm, max_overrun_mm, agreement_mm,
+        total_overrun_mm, required_contacts, active_axes, rolling_search)
     if not companion_enabled and any(
         int(sample["a"]) == 2 for sample in trace.get("samples", [])
     ):
@@ -560,6 +670,8 @@ def run(args: argparse.Namespace) -> int:
             "precisionVelocityMmS": homing_velocity_mm_s,
             "runwayMm": runway_mm,
             "backoffMm": backoff_mm,
+            "rollingSearch": rolling_search,
+            "retryArmingTracksBackoff": bool(homing_profile.get("retryArmingTracksBackoff")),
             "inactiveHoldStrategy": homing_profile.get(
                 "inactiveHoldStrategy", "unknown"
             ),
@@ -568,6 +680,11 @@ def run(args: argparse.Namespace) -> int:
             "knownRhoStartMm": rho_start_mm,
             "knownCompanionStartMm": companion_start_mm,
             "maximumCommissioningOverrunMm": max_overrun_mm,
+            "maximumTotalOverrunMm": total_overrun_mm,
+            "requiredConsecutiveContacts": required_contacts,
+            "maximumContactAttempts": homing_profile.get("maximumContactAttempts", 2),
+            "candidateStrategy": homing_profile.get("candidateStrategy", "deep-collapse"),
+            "traceContactMarkers": bool(homing_profile.get("traceContactMarkers")),
             "coarseMinimumTravelMm": float(homing_profile.get(
                 "coarseMinimumTravelMm", 3.0)),
             "approachAgreementMm": agreement_mm,
@@ -615,6 +732,7 @@ def main() -> int:
     parser.add_argument("--trigger-percent", type=int, default=75)
     parser.add_argument("--consecutive-samples", type=int, default=5)
     parser.add_argument("--minimum-travel-ms", type=int, default=600)
+    parser.add_argument("--backoff-mm", type=int, help="retry backoff, clamped by safe outward room (8..50)")
     parser.add_argument(
         "--known-start-mm", type=float, default=0.0,
         help=(
@@ -632,12 +750,14 @@ def main() -> int:
     )
     parser.add_argument("--pre-idle", type=float, default=2.0)
     parser.add_argument("--post-idle", type=float, default=2.0)
-    parser.add_argument("--timeout", type=float, default=45.0)
+    parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument(
         "--expected-motors", choices=("main", "paired"), default="main",
         help="refuse to start if firmware would home a different motor set",
     )
     args = parser.parse_args()
+    if args.backoff_mm is not None and not 8 <= args.backoff_mm <= 50:
+        parser.error("--backoff-mm must be 8..50")
     if not 40 <= args.trigger_percent <= 85:
         parser.error("--trigger-percent must be 40..85")
     if not 5 <= args.consecutive_samples <= 50:

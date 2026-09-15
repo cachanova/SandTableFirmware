@@ -127,13 +127,18 @@ struct HomingSettings {
   // Number of low SG_RESULT votes required in a 2*N-1 fresh-full-step window.
   uint8_t consecutiveSamples = 5;
   uint16_t minimumTravelMs = 600;
+  uint16_t verificationBackoffMm = 10;
 };
 
 struct HomingTraceSample {
   uint32_t elapsedMs = 0;
   uint32_t steps = 0;
+  int32_t legOriginSteps = 0; // Inward-positive ledger origin for this leg.
   uint16_t stallGuard = 0;
+  uint16_t contactBaseline = 0; // Nonzero only on a detector stop marker.
+  uint16_t contactThreshold = 0;
   uint8_t axis = 0;   // 1=rho, 2=rho-companion
+  uint8_t pass = 0;   // 1=coarse, 2..6=verification attempts
   uint8_t phase = 0;  // 1=runway, 2=coarse, 3=backoff, 4=precision
   bool valid = false;
 };
@@ -366,6 +371,8 @@ private:
   std::atomic<uint32_t> m_homingTraceStartedAtMs{0};
   std::atomic<uint8_t> m_homingTraceAxis{0};
   std::atomic<uint8_t> m_homingTracePhase{0};
+  std::atomic<uint8_t> m_homingTracePass{0};
+  std::atomic<int32_t> m_homingTraceLegOrigin{0};
   std::atomic<bool> m_confirmedOriginBoundedHoming{false};
 #ifdef SISYPHUS_RHO_COMMISSIONING
   std::atomic<bool> m_knownPositionHomingActive{false};
@@ -400,13 +407,18 @@ private:
   // driver that still answers on UART. A false result is still fail-closed to
   // the extent allowed by the available UART links.
   bool disableRhoDriversLocked();
+  // Requires m_mutex. Restores the normal profile after fail-closed homing or
+  // an emergency stop, and verifies fitted bridges before a manual jog.
+  bool prepareRhoDriversForManualJogLocked();
   // Requires m_mutex. A non-zero VACTUAL makes the addressed TMC2209 ignore
   // shared STEP/DIR pulses while its energized bridge holds the mechanism.
   bool startInactiveRhoHoldLocked(uint8_t driverAddress,
                                   uint16_t targetPhase);
   bool serviceInactiveRhoHoldLocked();
   void clearInactiveRhoHoldLocked();
-  void recordHomingSample(bool valid, uint16_t stallGuard);
+  void recordHomingSample(bool valid, uint16_t stallGuard,
+                         uint16_t contactBaseline = 0,
+                         uint16_t contactThreshold = 0);
   struct HomingAttempt {
     bool success = false;
     bool communicationError = false;

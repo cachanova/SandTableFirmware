@@ -78,14 +78,11 @@ public:
             if (value <= deepPulseThreshold) ++deepPulseCount;
         }
 
-        // A relative majority alone is insufficient: the normal trace can
-        // supply four low electrical phases and a tight section can supply the
-        // fifth. Require both the soft vote and a deeper collapse signature.
-        // The nine-sample window at 50 full steps/mm spans about 0.18 mm, well
-        // inside the commissioning allowance for confirming a hard stop.
-        const bool clusteredCollapse =
-            maximumConsecutiveSoftLow >= 3 &&
-            minimum <= m_baseline * kClusteredCollapseRatio;
+        // A relative majority alone can mistake alternating electrical phases
+        // for contact. Require a cluster or deep collapse. This proposes a
+        // contact; the caller requires agreement across independent approaches.
+        // UART cadence determines the distance spanned by this sample window.
+        const bool clusteredCollapse = maximumConsecutiveSoftLow >= 3;
         const bool deepCollapse =
             confirmedLowCount >= m_requiredSamples && minimum <= hardThreshold;
         // At a hard stop, this motor can alternate near-zero SG_RESULT with
@@ -111,12 +108,11 @@ private:
     static constexpr uint8_t kMaximumRequiredSamples = 50;
     static constexpr size_t kMaximumDecisionWindow =
         2U * kMaximumRequiredSamples - 1U;
-    // Forty-eight fresh samples span about 2 mm at the measured UART cadence.
-    // Recorded-trace replay showed no false-trigger regression versus 64,
-    // while it leaves enough observations to arm a bounded near-home pass.
+    // Keep the baseline separate from the decision window. The distance
+    // covered by these samples depends on velocity and actual UART cadence;
+    // it is not a fixed physical length.
     static constexpr size_t kBaselineSamples = 48;
     static constexpr float kConfirmedCollapseRatio = 0.70f;
-    static constexpr float kClusteredCollapseRatio = 0.58f;
     // CW's bounded real-stop trace reached 0.307 of its lagged median while
     // supplying six soft-low votes. Every recorded non-stop constriction was
     // rejected by the independent five-of-nine soft vote even at 0.50 here.

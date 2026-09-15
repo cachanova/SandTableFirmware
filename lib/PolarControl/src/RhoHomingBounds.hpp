@@ -1,6 +1,14 @@
 #pragma once
 
 #include <cstdint>
+#include <algorithm>
+
+inline uint32_t rhoRetryAllowance(uint32_t perPassSteps,
+                                  uint32_t totalSteps,
+                                  uint32_t usedSteps) {
+    return usedSteps >= totalSteps ? 0 :
+        std::min(perPassSteps, totalSteps - usedSteps);
+}
 
 struct RhoBoundedReturn {
     bool contactWithinWindow;

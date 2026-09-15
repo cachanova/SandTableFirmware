@@ -18,6 +18,7 @@ from rho_homing_tuner import (  # noqa: E402
     validate_trial,
 )
 from rho_homing_replay import replay_artifact, replay_phase  # noqa: E402
+from rho_homing_consensus import contact_scatter  # noqa: E402
 
 
 def snapshot(cycle: int, total: int, first: int) -> dict:
@@ -97,6 +98,126 @@ class HomingTraceCollectorTest(unittest.TestCase):
                               "expectedContactSteps": 1600},
         }
         self.assertEqual(validate_trial(reports, 400.0), [])
+
+    def test_three_contacts_tolerate_one_prior_outlier(self) -> None:
+        def reports_for(errors):
+            return {f"rho-{'coarse' if index == 0 else 'precision-' + str(index+1)}": {
+                "valid": True, "uartValidFraction": 1.0,
+                "terminalToBaselineRatio": 0.5,
+                "terminalSteps": 3200 + round(error * 400),
+                "expectedContactSteps": 3200,
+                "overrunMm": max(0, error),
+            } for index, error in enumerate(errors)}
+        self.assertEqual(validate_trial(
+            reports_for([-0.6, 0.6, 0.02, -0.01]), 400, 2, 0.4, 5, 3), [])
+        self.assertTrue(any("span" in failure for failure in validate_trial(
+            reports_for([0, 0.3, 0.3]), 400, 2, 0.4, 5, 3)))
+        self.assertTrue(any("shared" in failure for failure in validate_trial(
+            reports_for([1.5, 1.5, 1.5, 1.5]), 400, 2, 0.4, 5, 3)))
+
+    def test_phase_report_separates_repeated_precision_passes(self) -> None:
+        samples = [
+            {"a": 1, "p": 4, "n": 2, "t": 1000, "s": 3200, "g": 100, "v": True},
+            {"a": 1, "p": 4, "n": 3, "t": 2000, "s": 3300, "g": 80, "v": True},
+        ]
+        report = phase_report(samples, 1, 4, 3200, np.array([]), np.array([]), 0, 400, 2)
+        self.assertEqual(report["terminalSteps"], 3200)
+        self.assertEqual(report["sampleCount"], 1)
+
+    def test_missing_contacts_cannot_pass_validation(self) -> None:
+        self.assertTrue(validate_trial({}, 400, 2, 0.4, 5, 3))
+        report = {
+            "valid": True, "uartValidFraction": 1.0,
+            "terminalToBaselineRatio": 0.5,
+            "terminalSteps": 3200, "expectedContactSteps": 3200,
+            "overrunMm": 0.0, "contactDetected": False,
+        }
+        reports = {f"rho-{suffix}": report for suffix in
+                   ("coarse", "precision", "precision-3")}
+        self.assertTrue(any("no detected contacts" in error for error in
+                            validate_trial(reports, 400, 2, 0.4, 5, 3)))
+        companion = {name.replace("rho-", "rho-companion-", 1): {
+            **report, "contactDetected": True} for name in reports}
+        self.assertTrue(any("rho: missing" in error for error in
+                            validate_trial(companion, 400, 2, 0.4, 5, 3, (1, 2))))
+
+    def test_rolling_search_discards_early_candidate_without_spending_overrun(self) -> None:
+        reports = {}
+        home = furthest = 7200
+        for n, coordinate in enumerate([2868, 7240, 7260, 7250], 1):
+            suffix = "coarse" if n == 1 else "precision" if n == 2 else f"precision-{n}"
+            reports[f"rho-{suffix}"] = {
+                "valid": True, "contactDetected": True, "uartValidFraction": 1,
+                "terminalToBaselineRatio": 0.5,
+                "terminalSteps": coordinate, "expectedContactSteps": furthest,
+                "ledgerCoordinateSteps": coordinate, "knownHomeCoordinateSteps": home,
+                "overrunMm": max(0, coordinate - furthest) / 400,
+            }
+            furthest = max(furthest, coordinate)
+        self.assertEqual(validate_trial(reports, 400, 2, .4, 5, 3, (1,), True), [])
+        for report in reports.values():
+            report["ledgerCoordinateSteps"] -= 2000
+        self.assertTrue(any("short of known home" in error for error in
+                            validate_trial(reports, 400, 2, .4, 5, 3, (1,), True)))
+
+    def test_phase_report_uses_actual_detector_baseline(self) -> None:
+        samples = [{"a": 1, "p": 4, "n": 2, "t": index * 10,
+                    "s": index * 8, "g": 258, "v": True}
+                   for index in range(10)]
+        samples.append({"a": 1, "p": 4, "n": 2, "t": 100,
+                        "s": 3200, "g": 224, "v": True, "b": 270, "h": 229})
+        report = phase_report(samples, 1, 4, 3200, np.array([]), np.array([]), 0, 400, 2)
+        self.assertEqual(report["baselineMedianSg"], 258)
+        self.assertLess(report["terminalToBaselineRatio"], 0.85)
+
+    def test_replay_does_not_join_distinct_precision_passes(self) -> None:
+        samples = []
+        for pass_number, values in ((2, [200] * 60 + [40] * 9),
+                                    (3, [200] * 69)):
+            samples.extend({"a": 1, "p": 4, "n": pass_number,
+                            "t": pass_number * 1000 + index * 10,
+                            "s": index * 8, "g": value, "v": True}
+                           for index, value in enumerate(values))
+        report = replay_artifact({"settings": {
+            "homingStepsPerMm": 400, "coarseVelocityMmS": 2,
+            "minimumTravelMs": 0, "homingMicrosteps": 8,
+        }, "trace": samples}, 0.85, 5)
+        self.assertIsNotNone(report["precision"])
+        self.assertIsNone(report["precision-3"])
+
+    def test_scatter_requires_marked_consecutive_contacts(self) -> None:
+        artifact = {"settings": {
+            "traceContactMarkers": True, "homingStepsPerMm": 400,
+            "knownRhoStartMm": 0, "runwayMm": 8, "backoffMm": 8,
+        }, "trace": [], "terminalStatus": {"state": "HOMING_FAILED"},
+            "instrumentedPass": False}
+        self.assertFalse(contact_scatter(artifact)["usable"])
+        artifact["trace"] = [{"a": 1, "n": n, "b": 200, "s": s}
+                             for n, s in ((1, 3220), (2, 3240), (3, 3180))]
+        self.assertEqual(contact_scatter(artifact)["threeContactSpansMm"], [0.1])
+        artifact["trace"][1]["n"] = 3
+        self.assertFalse(contact_scatter(artifact)["usable"])
+
+    def test_recorded_near_zero_pass_does_not_qualify_false_contact(self) -> None:
+        directory = (Path(__file__).resolve().parents[1] /
+                     "tuning-recordings/rho-main-only-20260915")
+        good = json.loads((directory /
+            "20260915T024400Z-rho-home-p85-n5-start-r0-cw0mm-result.json").read_text())
+        bad = json.loads((directory /
+            "20260915T025442Z-rho-home-p85-n5-start-r10-cw0mm-result.json").read_text())
+        self.assertEqual(validate_trial(good["reports"], 400, 2, 0.4, 5, 3), [])
+        self.assertTrue(validate_trial(bad["reports"], 400, 2, 0.4, 5, 3))
+        self.assertEqual(contact_scatter(good)["threeContactSpansMm"], [0.1625])
+        self.assertEqual(contact_scatter(bad)["contactCoordinatesMm"], [-10.83])
+
+    def test_recorded_rolling_search_recovers_from_two_early_contacts(self) -> None:
+        path = (Path(__file__).resolve().parents[1] /
+                "tuning-recordings/rho-main-only-20260915/"
+                "20260915T032402Z-rho-home-p85-n5-start-r7.2075-cw0mm-result.json")
+        artifact = json.loads(path.read_text())
+        self.assertEqual(validate_trial(artifact["reports"], 400, 2, .4, 5, 3, (1,), True), [])
+        self.assertEqual(contact_scatter(artifact)["contactCoordinatesMm"],
+                         [-4.8275, -1.31, -.17, -.285, .0025])
 
     def test_main_only_requires_cw_bridge_off(self) -> None:
         self.assertEqual(configured_motor_axes({"companionMotorEnabled": False}),

@@ -38,6 +38,8 @@ public:
         out.print(heap);
         out.print(",\"uptime\":");
         out.print(uptime);
+        out.print(",\"resetReason\":");
+        out.print(static_cast<int>(esp_reset_reason()));
         out.print(",\"storageAvailable\":");
         out.print(isSDCardReady() ? "true" : "false");
         out.print(",\"drivers\":{\"theta\":");

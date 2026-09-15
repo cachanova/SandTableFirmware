@@ -25,6 +25,8 @@ def replay_phase(
     samples: list[dict[str, Any]], *, ratio: float, votes: int,
     minimum_steps: int, steps_per_second: int,
     external_steps_per_full_step: int = 8,
+    confirmation_steps: int = 0,
+    clustered_soft_votes: bool = False,
 ) -> dict[str, Any] | None:
     """Mirror StallGuardDetector with the firmware's fresh-full-step gate."""
     if not samples or votes < 1 or steps_per_second < 1:
@@ -37,6 +39,9 @@ def replay_phase(
     ignore_ms = math.ceil(
         max(0, minimum_steps - first_steps) * 1000 / steps_per_second
     )
+    candidate: dict[str, Any] | None = None
+    persistence_values: list[int] = []
+    rejected_candidates = 0
 
     for sample in samples:
         if not sample["v"]:
@@ -46,6 +51,32 @@ def replay_phase(
                 steps - last_sample_steps < external_steps_per_full_step):
             continue
         last_sample_steps = steps
+        if candidate is not None:
+            persistence_values.append(int(sample["g"]))
+            if (steps - candidate["steps"] < confirmation_steps
+                    or len(persistence_values) < 5):
+                continue
+            threshold = max(int(candidate["baseline"] * ratio),
+                            int(candidate["baseline"] * 0.85))
+            deep_threshold = int(candidate["baseline"] * 0.10)
+            soft = sum(value <= threshold for value in persistence_values)
+            deep = sum(value <= deep_threshold for value in persistence_values)
+            recent = persistence_values[-5:]
+            sustained_soft = (soft * 5 >= len(persistence_values) * 3
+                              and sum(value <= threshold for value in recent) >= 3)
+            sustained_deep = (deep >= 3 and
+                              any(value <= deep_threshold for value in recent))
+            if sustained_soft or sustained_deep:
+                return {**candidate, "candidateSteps": candidate["steps"],
+                        "steps": steps, "sg": int(sample["g"]),
+                        "confirmationSamples": len(persistence_values),
+                        "rejectedCandidates": rejected_candidates}
+            candidate = None
+            persistence_values = []
+            history = []
+            ignore_ms = 0
+            rejected_candidates += 1
+            continue
         history.append(int(sample["g"]))
         history = history[-(BASELINE_SAMPLES + decision_size):]
         if len(history) < BASELINE_SAMPLES + decision_size:
@@ -71,7 +102,8 @@ def replay_phase(
             maximum_consecutive = max(maximum_consecutive, consecutive)
         clustered = (
             maximum_consecutive >= 3
-            and min(decision) <= baseline * CLUSTERED_COLLAPSE_RATIO
+            and (clustered_soft_votes or
+                 min(decision) <= baseline * CLUSTERED_COLLAPSE_RATIO)
         )
         deep = (
             confirmed_count >= votes
@@ -86,8 +118,11 @@ def replay_phase(
             and soft_count >= votes
             and (clustered or deep)
         ):
-            return {"steps": steps, "sg": int(sample["g"]),
-                    "baseline": baseline}
+            result = {"steps": steps, "sg": int(sample["g"]),
+                      "baseline": baseline}
+            if confirmation_steps <= 0:
+                return result
+            candidate = {**result, "baseline": int(baseline)}
     return None
 
 
@@ -95,6 +130,7 @@ def replay_artifact(
     artifact: dict[str, Any], ratio: float, votes: int,
     minimum_travel_ms: int | None = None,
     coarse_minimum_mm: float | None = None,
+    confirmation_mm: float = 0.0,
 ) -> dict[str, Any]:
     settings = artifact["settings"]
     if coarse_minimum_mm is None:
@@ -111,11 +147,31 @@ def replay_artifact(
     ):
         selected = [sample for sample in artifact["trace"]
                     if int(sample["a"]) == 1 and int(sample["p"]) == phase]
-        reports[label] = replay_phase(
-            selected, ratio=ratio, votes=required_votes,
-            minimum_steps=minimum_steps, steps_per_second=rate,
-            external_steps_per_full_step=int(settings["homingMicrosteps"]),
-        )
+        default_pass = 1 if phase == 2 else 2
+        passes = sorted({int(sample.get("n", default_pass)) for sample in selected})
+        reports[label] = None
+        for pass_number in passes:
+            key = label if pass_number <= 2 else f"{label}-{pass_number}"
+            pass_samples = [sample for sample in selected
+                            if int(sample.get("n", default_pass)) == pass_number]
+            pass_minimum = minimum_steps
+            if phase == 4 and settings.get("retryArmingTracksBackoff"):
+                backoff = [sample for sample in artifact["trace"]
+                           if int(sample["a"]) == 1 and int(sample["p"]) == 3
+                           and int(sample["n"]) == pass_number]
+                if not backoff:
+                    raise ValueError("Missing backoff origin for rolling replay")
+                actual_backoff_steps = int(backoff[0]["o"]) - int(pass_samples[0]["o"])
+                pass_minimum = max(minimum_steps, actual_backoff_steps -
+                    round(float(settings["approachAgreementMm"]) * steps_per_mm))
+            reports[key] = replay_phase(
+                pass_samples,
+                ratio=ratio, votes=required_votes,
+                minimum_steps=pass_minimum, steps_per_second=rate,
+                external_steps_per_full_step=int(settings["homingMicrosteps"]),
+                confirmation_steps=round(confirmation_mm * steps_per_mm),
+                clustered_soft_votes=settings.get("candidateStrategy") == "clustered-soft-votes",
+            )
     return reports
 
 
@@ -129,6 +185,8 @@ def main() -> None:
                         help="override precision minimum travel for replay")
     parser.add_argument("--coarse-minimum-mm", type=float,
                         help="override coarse detector arming distance")
+    parser.add_argument("--confirmation-mm", type=float, default=0.0,
+                        help="replay the additional persistence filter at this distance")
     args = parser.parse_args()
     if args.coarse_minimum_mm is not None and args.coarse_minimum_mm < 0:
         parser.error("--coarse-minimum-mm must be nonnegative")
@@ -139,10 +197,8 @@ def main() -> None:
             for votes in args.votes:
                 result = replay_artifact(
                     artifact, percent / 100, votes, args.minimum_travel_ms,
-                    args.coarse_minimum_mm)
-                print(json.dumps({"percent": percent, "votes": votes,
-                                  "coarse": result["coarse"],
-                                  "precision": result["precision"]}))
+                    args.coarse_minimum_mm, args.confirmation_mm)
+                print(json.dumps({"percent": percent, "votes": votes, **result}))
 
 
 if __name__ == "__main__":

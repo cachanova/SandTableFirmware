@@ -1,6 +1,142 @@
 # RHO sensorless-homing tuning playbook
 
-## Current checkpoint (2026-09-14 18:18 UTC)
+## Current experiment (2026-09-15 UTC)
+
+### Rolling search and backoff experiment, after 03:20 UTC
+
+The user requested a rolling buffer of three SG contact points, allowing an
+early candidate to disappear on the next return. Firmware now continues the
+return past that candidate toward the original commissioning bound. It aborts
+on a missing contact at that bound, communication failure, or twelve attempts
+without agreement. Three agreeing contacts away from the known zero still
+fail the commissioning check.
+
+Use `--backoff-mm` with the host script, or `verificationBackoffMm` on
+`POST /api/tuning/homing`, to select 8..50 mm without reflashing. Start the
+comparison with 8, 10, 15, and 25 mm. Firmware clamps each backoff to the
+available outward distance from the first inward approach's starting point,
+accounting for previously consumed overrun. Start comparison trials at least
+25 mm out so the travel clamp does not erase the differences between choices.
+
+The command ledger increases inward from the first approach's start. Trace
+field `o` records each leg's starting coordinate; `o+s` gives an inward
+candidate's coordinate. Record the three-point span in that common frame.
+An arbitrary label such as 425 mm changes the offset and sign, not agreement.
+Keep the camera-checked physical starting distance separate from this label.
+
+For commissioning, keep a high-water mark of commanded inward progress beyond
+the known zero. Each approach may extend that mark by at most 2 mm, with at
+most 5 mm total extension. Returning farther than a false candidate spends
+remaining search distance; it does not spend end-stop overrun before reaching
+the known zero. Backing out cannot refund the high-water mark. These limits
+still assume the motor executes the outward movement and does not lose steps
+before contact. Unknown-origin boot homing remains disabled.
+
+Compare backoffs by camera-verified returns, false consensus, cap failures,
+approach count, commanded overrun, and cycle time. Record actual backoff from
+successive leg origins, since a requested 25 mm can be clamped. Check the
+return's cruising STEP rate and SG baseline before changing the tolerance.
+Keep 0.4 mm provisional and validate the chosen profile on separate starts.
+
+The first rolling trial (03:24:02 UTC, 8 mm backoff, 7.2075 mm known start)
+recorded contacts at -4.8275, -1.31, -0.17, -0.285, and +0.0025 mm relative
+to the known zero. Firmware continued past the first two candidates and
+accepted the last three, span 0.2875 mm. The final camera image matched the
+home reference at zero integer-pixel offset, correlation 0.941; confirmation
+through the API followed that check. This is one demonstrated recovery from
+early triggers, not a reliability qualification.
+
+The 03:26:09 UTC trial used a 25 mm start and 10 mm backoff. It exhausted
+twelve contacts, ending 9.0425 mm short by the ledger and outward in the
+camera view. The fixed 7.8 mm retry arming distance allowed triggers before
+returning to the previous candidate, including a 1.96 mm outward regression.
+The next image sets retry arming to the greater of the configured time gate's
+distance and the actual backoff minus the agreement tolerance. Metadata
+`retryArmingTracksBackoff` distinguishes the two versions for replay.
+
+### Earlier fixed-return experiment
+
+Main RHO remains the only fitted motor under test. Keep unknown-origin boot
+homing disabled: we have not qualified the assembled table across its travel.
+
+The current experiment uses 500 mA requested (490 mA reported by current-scale
+calculation), u8 with interpolation, 12 mm/s, an 8 mm runway and 8 mm backoff.
+The live detector setting is 85%, five votes in nine fresh samples, and a
+650 ms precision travel gate. Normal motion retains its separate quiet profile.
+Current readback is a register-derived estimate, not an ammeter measurement.
+
+We now require three consecutive contact coordinates within a **0.4 mm total
+span**, with at most six approaches. This differs from allowing each neighboring
+pair to differ by 0.4 mm; that would admit cumulative drift. The user authorized
+separate pass allowances: each approach gets up to 2 mm, subject to a shared
+5 mm positive-overrun budget. Early triggers do not refund spent overrun.
+These bounds assume the outward backoff moves the commanded distance. SG
+recovery during backoff supports that assumption but cannot measure distance.
+
+The 0.4 mm agreement span remains provisional. Select it from repeatability
+data, then test it on separate starts and thermal conditions. Compare genuine
+home repetitions with false contacts. A reproducible rail obstruction could
+satisfy a tight consensus, so agreement alone does not establish physical home.
+
+New evidence:
+
+| Trial UTC | Profile/result |
+|---|---|
+| 00:20:52 | Earlier 250 mA/u1/6 mm/s profile false-triggered 132.72 mm before home on the 200 mm start. Known-position bounds rejected it. |
+| 00:23:50 | Recovery from that position false-triggered with 78.04 mm remaining. |
+| 02:11:33–02:24:58 | u8, 250/500 mA, 6 mm/s: added 0.5 mm persistence probes rejected contact or exhausted the cap. Removed that probe from firmware. |
+| 02:36:59 | New 12 mm/s multipass strategy: first three coordinates spanned 0.44 mm; a fourth approach exhausted its 2 mm cap. Failed. |
+| 02:38:29 | Three-contact firmware and host pass; span 0.2675 mm, positive overrun 0.35 mm. Camera matched the zero reference; confirmed through the API. |
+| 02:39:34 | Firmware accepted on pass five; final three coordinates spanned 0.225 mm. Host rejected an earlier pass because it compared SG with the wrong baseline. Preserve that original failed report. |
+| 02:44:00 | Marked three-contact pass; span 0.1625 mm. Camera matched home; confirmed through the API. |
+| 02:54:42 | From a camera-checked 10 mm start, coarse SG triggered after 7.17 mm of the expected 18 mm inward travel: approximately 10.83 mm short. All 159 UART reads were valid. Firmware rejected it; camera and operator confirmed it was not home. |
+
+After the last failure, a slow 10 mm inward manual jog left the camera marker
+two pixels outward. A separate 1 mm inward jog returned it to the home
+reference (zero integer-pixel offset, correlation 0.964). Only then was Set
+Home called. This recovery is not an automatic-homing pass. The ledger's
+11 mm recovery command implies about 0.17 mm nominal overshoot, subject to
+unmeasured step loss and camera resolution.
+
+An intervening 10 mm trial rebooted the controller during capture. The cause
+is unconfirmed; do not call it a trace-index race or a proven heap failure.
+The trace endpoint now returns at most 256 samples per request rather than
+768, with smaller response allocation; the host still polls and detects any
+lost indices. Status reports the ESP32 reset reason, and aborted trials retain
+partial evidence. A repeat with the smaller endpoint did not reboot, but
+produced the 02:54:42 false contact above.
+
+The latest trace also shows STEP-rate variation after the acceleration ramp:
+173 emitted steps over one 36 ms window versus 129 over another, at a nominal
+4800 steps/s. SG fell during some slower windows. This correlation does not
+establish causation. Homing currently uses the task-dispatched ESP timer,
+whose callbacks can be delayed ([Espressif timer documentation](https://docs.espressif.com/projects/esp-idf/en/v4.4.7/esp32/api-reference/system/esp_timer.html)).
+SG depends on velocity as well as current and load ([TMC2209 datasheet](https://www.analog.com/media/en/technical-documentation/data-sheets/tmc2209_datasheet_rev1.09.pdf)).
+Measure timing before selecting a final SG threshold. Homing also retained
+uncalibrated instruction-loop STEP/DIR delays after normal motion switched to
+explicit delays; the source now uses the same 2 microsecond STEP pulse and
+DIR setup constants for both paths. This hardening is not proof that rejected
+pulses caused the failed trial.
+
+Artifacts are under `tuning-recordings/rho-main-only-20260915/` with the UTC
+prefixes above. The host now records each approach separately through trace
+field `n`. New firmware adds `b` and `h` only to the stopped contact sample:
+the detector's actual baseline and threshold. A cap stop has no contact marker.
+Use these markers when measuring candidate scatter; do not count a failed
+approach's terminal step count as an SG-detected contact.
+
+The current camera view resolves approximately 2.7 pixels/mm from the observed
+10 mm outward jog. Use `/tmp/rho-pre-jog-reference.jpg` for this view; the older
+reference no longer registers well. New zero images match at zero integer-pixel
+offset with normalized correlation above 0.97. This cannot certify sub-pixel
+physical accuracy or prove that a 0.4 mm tolerance is sufficient.
+
+Manual recovery now restores and verifies the fitted RHO bridge before an
+unhomed jog. After a failed homing cycle, a 10 mm outward manual jog moved the
+mechanism in the camera view. The earlier apparent lack of motion at the
+service image's low default speed was not proof of missed steps.
+
+## Historical checkpoint (2026-09-14 18:18 UTC)
 
 The main RHO motor is connected at driver address 0. A driver answers UART at
 RHO-CW address 1, but **no CW motor is connected**. The main-only service image
@@ -236,22 +372,22 @@ normal settings. Firmware keeps the empty CW channel disabled throughout.
 
 | Control | Current implementation |
 |---|---:|
-| Run and hold current | 250 mA requested |
+| Run and hold current | 500 mA requested (provisional) |
 | Current range | `VSENSE=1`, external 0.11 ohm shunts |
 | Chopper | StealthChop, `TPWMTHRS=0` |
 | CoolStep | off |
-| External microsteps | 1, interpolated to 256 |
+| External microsteps | 8, interpolated to 256 |
 | Outward runway | 8 mm |
-| Coarse inward speed | 6 mm/s |
-| Verification backoff | 4 mm |
-| Precision inward speed | 6 mm/s |
-| Trigger | 75% of adaptive normal-load `SG_RESULT` |
+| Coarse inward speed | 12 mm/s |
+| Verification backoff | 8 mm |
+| Precision inward speed | 12 mm/s |
+| Trigger | 85% live setting; compiled fallback remains 75% |
 | Precision vote count | 5 fresh full-step samples in a 9-sample window |
 | Coarse vote count | 5 fresh full-step samples in a 9-sample window |
 | Precision minimum travel | 650 ms, also constrained by return distance |
-| Maximum commanded contact overrun | 2 mm shared between passes |
+| Maximum commanded contact overrun | 2 mm per approach, 5 mm shared |
 | Coarse detector arming | after 7 mm inward travel from the 8 mm runway |
-| Second-pass agreement | within 0.5 mm of the first trigger coordinate |
+| Contact agreement | last three coordinates within a 0.4 mm span; six approaches maximum |
 | SG polling | 1 ms, with duplicate full-step readings discarded |
 
 These are the values currently compiled or stored by the firmware, not tuned
@@ -264,7 +400,7 @@ steps, raw `SG_RESULT`, and UART validity for each sample. The host trial
 requires the CW bridge disabled before and after motion and rejects any CW
 homing trace sample.
 
-## Commissioning safety envelope
+## Historical fixed-return commissioning safety envelope
 
 Start only after confirming main RHO at physical home and using the UI's
 explicit RHO Commissioning confirmation. In this mode the main motor:
@@ -277,17 +413,20 @@ explicit RHO Commissioning confirmation. In this mode the main motor:
 2. Approaches inward with an absolute command cap of 10 mm.
 3. Stops on the filtered `SG_RESULT` drop or after at most 2 mm of commanded
    hard-stop overrun.
-4. Moves 4 mm outward and requires load recovery.
-5. Re-approaches at 6 mm/s and requires its SG trigger within 0.5 mm of the
-   first trigger coordinate after the four-millimetre backoff.
+4. Moves 8 mm outward and requires load recovery.
+5. Re-approaches at 12 mm/s, then repeats the backoff/return until three
+   consecutive ledger contact coordinates span at most 0.4 mm, or six total
+   approaches have been attempted.
 
-The firmware subtracts any coarse-approach overrun from the precision-pass
-travel cap. Both inward approaches share one 2 mm allowance relative to the
-confirmed zero; the former fixed five-millimetre precision cap could spend a
-second full allowance after a late coarse trigger. It also requires the sum of
-both contact errors to end within 2 mm of the confirmed zero. Otherwise two
-early triggers could pass the individual checks and leave the mechanism 4 mm
-out. The host report checks both combined conditions too.
+Each inward approach has a 2 mm allowance, reduced if less than that remains
+in the shared 5 mm positive-overrun budget. Early contacts cannot refund
+positive overrun. Each contact coordinate is computed by adding emitted
+inward steps and subtracting the outward backoff. These are commanded
+coordinates, not measured physical coordinates: steps commanded into the
+stop can accumulate apparent inward drift while the carriage stays still.
+Do not use agreement alone to prove home, or loosen its tolerance to admit a
+known mid-travel false trigger. The host validates each marked approach,
+the cumulative allowance, and the final three-contact span independently.
 
 The cap is valid only because commissioning began at a manually confirmed
 zero. Production boot homing begins at an unknown position and therefore
@@ -297,9 +436,11 @@ it needs an independent physical position/end-stop signal; software and audio
 cannot provide it.
 
 Any timeout, UART error run, early trigger, inconsistent return, driver fault,
-more than 2 mm of commanded overrun, or disagreement between the two approaches
+more than 2 mm of commanded overrun in a pass, more than 5 mm accumulated
+positive overrun, or failure to find three agreeing contacts
 fails closed. Do not continue a sweep after failure: leave the stages disabled
-and manually re-establish zero.
+and re-establish zero with operator confirmation or the authorized bounded,
+camera-checked manual recovery. Never call Set Home at a failed endpoint.
 
 ## Run one trial
 
@@ -312,7 +453,7 @@ operator-confirmed camera reference and run this known-zero bounded trial:
 python3 scripts/rho_homing_tuner.py \
   --expected-motors main \
   --rho-start-mm 0 --companion-start-mm 0 \
-  --trigger-percent 75 \
+  --trigger-percent 85 \
   --consecutive-samples 5 \
   --minimum-travel-ms 650
 ```

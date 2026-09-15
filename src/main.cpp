@@ -162,6 +162,7 @@ void setup() {
     delay(500);
 
     LOG("\n\n=== Sisyphus Table Starting ===\r\n");
+    LOG("ESP reset reason: %d\r\n", static_cast<int>(esp_reset_reason()));
 
     // Initialize SD Card
 #ifdef SISYPHUS_SKIP_SD_HARDWARE

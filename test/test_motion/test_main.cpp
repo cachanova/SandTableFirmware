@@ -15,6 +15,8 @@
 #include "profile_validator.hpp"
 #include "RhoAcousticProfile.hpp"
 #include "StallGuardDetector.hpp"
+#include "RhoContactConsensus.hpp"
+#include "RhoRollingSearch.hpp"
 #include "RhoHomingBounds.hpp"
 
 // Directly include implementations for native build to resolve linker errors
@@ -325,8 +327,8 @@ bool testStallGuardFiltering() {
         elapsedMs += 7;
     }
 
-    // A sustained but finite load change must become the lagged rolling
-    // baseline. It cannot trigger without the independent deep-collapse test.
+    // A sustained load change may propose a contact. Multipass agreement
+    // now decides whether contacts establish home; the baseline still tracks.
     StallGuardDetector loadTrackingDetector(0, 5, 0.75f);
     elapsedMs = 0;
     for (uint32_t index = 0; index < 100; ++index, elapsedMs += 7) {
@@ -336,10 +338,7 @@ bool testStallGuardFiltering() {
         }
     }
     for (uint32_t index = 0; index < 100; ++index, elapsedMs += 7) {
-        if (loadTrackingDetector.update(120, elapsedMs)) {
-            std::cout << "FAIL: trackable load increase triggered homing" << std::endl;
-            return false;
-        }
+        loadTrackingDetector.update(120, elapsedMs);
     }
     const uint16_t collapsed[] = {100, 90, 80, 60, 50, 40, 20, 0, 0};
     triggered = false;
@@ -353,6 +352,69 @@ bool testStallGuardFiltering() {
     }
 
     std::cout << "PASS" << std::endl;
+    return true;
+}
+
+
+bool testRhoContactConsensus() {
+    RhoRollingSearch search(1000, 20, 50);
+    if (!search.inward(200) || search.usedOverrun() != 0 ||
+        search.backoffLimit(500) != 200 || !search.outward(100) ||
+        search.approachLimit() != 920 || !search.inward(905) ||
+        search.coordinate() != 1005 || search.usedOverrun() != 5) {
+        std::cout << "FAIL: false contact prevented continued inward search\n";
+        return false;
+    }
+    if (!search.outward(100) || !search.inward(120) ||
+        search.usedOverrun() != 25 || !search.outward(100) ||
+        !search.inward(120) || search.usedOverrun() != 45 ||
+        !search.outward(100) || search.approachLimit() != 105 ||
+        search.inward(106) || !search.inward(105) ||
+        search.usedOverrun() != 50 || search.backoffLimit(2000) != 1000 ||
+        search.outward(1001) || !search.outward(100) ||
+        search.approachLimit() != 100 || search.inward(101)) {
+        std::cout << "FAIL: rolling search exceeded per-pass/shared/outward caps\n";
+        return false;
+    }
+    RhoRollingSearch obstruction(1000, 20, 50);
+    if (!obstruction.inward(200) || obstruction.nearKnownHome(4)) {
+        std::cout << "FAIL: repeated false contact replaced known origin\n";
+        return false;
+    }
+    RhoRollingSearch lateThenEarly(1000, 20, 50);
+    if (!lateThenEarly.inward(1020) || !lateThenEarly.outward(100) ||
+        !lateThenEarly.inward(90) || lateThenEarly.nearKnownHome(4)) {
+        std::cout << "FAIL: prior stop overrun hid a later early consensus\n";
+        return false;
+    }
+    if (rhoRetryAllowance(800, 2000, 0) != 800 ||
+        rhoRetryAllowance(800, 2000, 1600) != 400 ||
+        rhoRetryAllowance(800, 2000, 2000) != 0 ||
+        rhoRetryAllowance(800, 2000, 2400) != 0) {
+        std::cout << "FAIL: per-pass overrun was not bounded by total allowance\n";
+        return false;
+    }
+    RhoContactConsensus isolated(160); // 0.4 mm at u8
+    if (isolated.add(3000) || isolated.add(3200) || isolated.add(3210) ||
+        !isolated.add(3195)) {
+        std::cout << "FAIL: one false contact prevented three later agreements\n";
+        return false;
+    }
+    RhoContactConsensus drifting(160);
+    if (drifting.add(1000) || drifting.add(1120) || drifting.add(1240)) {
+        std::cout << "FAIL: pairwise proximity accepted cumulative drift\n";
+        return false;
+    }
+    RhoContactConsensus separated(160);
+    if (separated.add(1000) || separated.add(1400) || separated.add(1000)) {
+        std::cout << "FAIL: nonconsecutive contacts accepted\n";
+        return false;
+    }
+    RhoContactConsensus boundary(160);
+    if (boundary.add(-80) || boundary.add(80) || !boundary.add(0)) {
+        std::cout << "FAIL: exact consensus boundary rejected\n";
+        return false;
+    }
     return true;
 }
 
@@ -1286,6 +1348,7 @@ int main(int argc, char* argv[]) {
 
     // Run S-curve tests
     allPassed &= testStallGuardFiltering();
+    allPassed &= testRhoContactConsensus();
     allPassed &= testRhoAcousticProfiles();
     allPassed &= testSpeedMultiplierScalesSpatialVelocity();
     allPassed &= testControlledSpeedTransition();
