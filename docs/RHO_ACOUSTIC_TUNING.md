@@ -195,6 +195,43 @@ second fix. The frozen audits before and after the short run both passed;
 29 bounded audits have passed through 09:16 UTC, on SG—not independent camera
 or encoder—evidence.
 
+The combined hardware-timer / spaced-marker build (`a1dbdfb`) completed its
+first 0 -> 10 -> 0 check with all 2,000 pulses, one >100 us STEP outlier,
+112 us maximum lateness and 98 us maximum interval error. This compares with
+8,767 us lateness in the same-distance hardware-timer-only check. Sustained
+raw upper bound was -67.01 dBFS; raw gate p95 bounds were -66.01 / -60.96,
+versus -54.67 / -47.35 before marker spacing. Both runs used the same driver
+settings and monitoring. The short comparison supports the timing correction;
+it does not qualify full-stroke sound, acceleration or mechanical position.
+Both surrounding frozen endpoint audits passed, bringing the session total
+to 31 through 09:28 UTC. The post-run contacts spanned 0.1925 mm and had
+13.93 / 17.97 / 10.45 dB advisory audio rises.
+
+An outward 20 mm command was interrupted at an emitted-step ledger position
+of 12.38 mm. Normal STOP acknowledged in 24.09 ms; ten subsequent samples
+over 1.8 seconds retained exactly 3,238 cumulative pulses and the same position,
+with inactive timer, empty queue and `INITIALIZED` state. CW remained disabled.
+The test harness then failed its mistaken expectation that normal STOP also
+disables the active bridge: `emergencyStop(false)` deliberately retains hold
+current outside homing. The original failed artifact is preserved in
+`normal-stop-validation/results.jsonl`; it is evidence of stopped pulses, not
+a passing bridge-disable test. Homing abort uses the separate force-disable
+path. Recovery must use the retained 12.38 mm ledger, not reassign zero.
+That bounded recovery passed at contacts 7031 / 7035 / 7038, a 0.0175 mm
+span, with all three advisory contact-audio rises above 8 dB. Its capture-time
+review state is preserved; the qualified SG result was subsequently accepted
+through the service API. There have now been 32 passing bounded audits.
+
+Further audio review found one short return-end event in the spaced-marker
+test: a -48.57 dBFS A-weighted frame peak, 0.214 seconds before the STEP stop.
+The outward leg and return interior had no frames above -60. This event did
+not coincide with the lone STEP timing outlier. It may be near-home motion
+noise, but one occurrence cannot establish its source. More importantly, the
+old transient mask clipped the exact STEP interval using an earlier coarse
+end estimate and a 150 ms margin, excluding the peak. Existing p95 summaries
+are therefore incomplete endpoint evidence; retain them but do not use them
+alone to qualify inaudibility. A full-STEP short-window check is being added.
+
 Homing qualification, production boot enable and cleanup merged to main as
 `a558c4e`, including the user-confirmed power-cold boot. Only the main RHO motor is connected;
 keep the CW driver at `TOFF=0` and theta stationary. Pass
