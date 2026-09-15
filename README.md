@@ -33,11 +33,12 @@ At a high level the firmware is organized around three FreeRTOS tasks pinned acr
    pio run -t uploadfs
    ```
 5. Connect to the device IP and open the Web UI.
-6. Run homing from the dashboard and visually confirm that the carriage reached
-   the physical center stop. Pattern motion remains locked until confirmation.
+6. With the current main-only hardware, place RHO at its physical center stop
+   and use **Set Home** on the manual page. Pattern motion remains locked until
+   the operator establishes the origin.
 
-Automatic homing is disabled by default (`Config::kAutoHomeOnBoot = false`) so
-firmware can be developed with the mechanism disconnected.
+Automatic homing stays disabled (`Config::kAutoHomeOnBoot = false`) until the
+assembled mechanism passes unknown-origin and cold-start qualification.
 
 ## Configuration
 Key settings in `lib/Config/src/Config.h`:
@@ -118,8 +119,10 @@ velocity. The two inward triggers must agree within 0.5 mm.
 Ten warm, known-zero trials ended at the operator-confirmed camera reference.
 That result does not qualify homing from an unknown position or after a cold
 power start. A fixed tight spot could produce two matching false triggers.
-Automatic boot homing remains off, and the dashboard requires visual
-confirmation before it accepts a sensorless result. The 2 mm commanded-overrun
+Automatic boot homing remains off. The service image requires visual
+confirmation before accepting a sensorless result. The production `/api/home`
+path rejects unknown-position attempts while
+`kEnableUnknownPositionRhoHoming` remains false. The 2 mm commanded-overrun
 limit applies to known-origin commissioning trials, not an unknown-origin boot.
 See the [RHO homing playbook](docs/RHO_HOMING_TUNING.md) before powered tests.
 The counterweight motor needs its own qualification when reconnected.

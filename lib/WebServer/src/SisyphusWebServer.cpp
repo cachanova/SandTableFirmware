@@ -1679,6 +1679,12 @@ void SisyphusWebServer::handleHome(AsyncWebServerRequest *request) {
             "{\"success\":false,\"message\":\"Confirm the physical origin before bounded homing\"}");
         return;
     }
+#else
+    if (!Config::kEnableUnknownPositionRhoHoming) {
+        request->send(409, "application/json",
+            "{\"success\":false,\"message\":\"Unknown-position RHO homing is not qualified; use manual Set Home after verifying physical zero\"}");
+        return;
+    }
 #endif
     SemaphoreGuard stateLock(m_stateMutex);
     auto state = m_polarControl->getState();

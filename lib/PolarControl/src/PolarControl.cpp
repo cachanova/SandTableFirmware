@@ -679,6 +679,10 @@ bool PolarControl::home(bool confirmedOriginBounded) {
         LOG("Confirmed-origin bounded homing is commissioning-only\r\n");
         return false;
     }
+    if (!Config::kEnableUnknownPositionRhoHoming) {
+        LOG("Unknown-position rho homing remains unqualified\r\n");
+        return false;
+    }
 #endif
     if (!m_rhoDriverConnected.load() ||
         (Config::kRhoCompanionMotorEnabled &&

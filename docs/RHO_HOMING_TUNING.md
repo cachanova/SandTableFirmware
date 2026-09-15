@@ -19,6 +19,9 @@ warm trials passed firmware and camera checks. On one of them, replay of the
 old 3 mm arming rule triggers at step 344 of 400, whereas the live 7 mm rule
 continued to step 401 and reached the camera reference. **Autonomous
 unknown-position RHO homing is not qualified. Keep automatic boot homing off.**
+Production firmware also rejects `/api/home` while
+`kEnableUnknownPositionRhoHoming=false`; use the RHO service image for bounded
+known-origin trials.
 The controller was left `IDLE` at logical rho 0 after camera confirmation.
 
 The earlier image with a 3 mm coarse arming point passed six known-zero warm

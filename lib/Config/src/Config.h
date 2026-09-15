@@ -19,10 +19,15 @@ static constexpr int kWebCore = 0;
 // Config portal timeout for WiFiManager in seconds.
 static constexpr uint32_t kWifiPortalTimeoutSec = 180;
 
-// Keep automatic motion disabled while developing on the bench. Sensorless
-// homing must be started from the UI and visually confirmed before patterns
-// are allowed to run.
+// Keep automatic motion disabled while the assembled homing profile lacks
+// unknown-origin qualification. The operator must establish physical zero
+// before pattern motion.
 static constexpr bool kAutoHomeOnBoot = false;
+// The assembled main-only profile has known-zero warm trials, but no safe
+// unknown-origin qualification. Keep the production /api/home path locked
+// until that gap is closed; the RHO service image still permits bounded
+// confirmed-origin trials.
+static constexpr bool kEnableUnknownPositionRhoHoming = false;
 
 // Static IP defaults for STA mode.
 static const IPAddress kStaticIpBase(100, 76, 149, 200);
