@@ -18,7 +18,7 @@ namespace FastGPIO {
      * Sets a pin HIGH using direct register access.
      * For constant pin numbers, the branch and bit shifts are optimized out.
      */
-    static inline void setHigh(uint8_t pin) {
+    static inline __attribute__((always_inline)) void setHigh(uint8_t pin) {
         if (pin < 32) {
             GPIO.out_w1ts = (1UL << pin);
         } else {
@@ -29,7 +29,7 @@ namespace FastGPIO {
     /**
      * Sets a pin LOW using direct register access.
      */
-    static inline void setLow(uint8_t pin) {
+    static inline __attribute__((always_inline)) void setLow(uint8_t pin) {
         if (pin < 32) {
             GPIO.out_w1tc = (1UL << pin);
         } else {
@@ -40,7 +40,7 @@ namespace FastGPIO {
     /**
      * Writes a level to a pin using direct register access.
      */
-    static inline void write(uint8_t pin, bool level) {
+    static inline __attribute__((always_inline)) void write(uint8_t pin, bool level) {
         if (level) setHigh(pin);
         else setLow(pin);
     }

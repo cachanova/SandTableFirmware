@@ -48,7 +48,9 @@ MotionPlanner::MotionPlanner()
     , m_running(false)
     , m_endOfPattern(false)
     , m_completedCount(0)
+#ifdef NATIVE_BUILD
     , m_timerHandle(nullptr)
+#endif
 {
     // Initialize segments
     for (int i = 0; i < SEGMENT_BUFFER_SIZE; i++) {
@@ -61,6 +63,10 @@ MotionPlanner::MotionPlanner()
 MotionPlanner::~MotionPlanner() {
     stop();
 #ifndef NATIVE_BUILD
+    if (m_normalHardwareTimerReady) {
+        timer_isr_callback_remove(TIMER_GROUP_1, TIMER_0);
+        timer_deinit(TIMER_GROUP_1, TIMER_0);
+    }
     if (m_homingHardwareTimerReady) {
         timer_isr_callback_remove(TIMER_GROUP_1, TIMER_1);
         timer_deinit(TIMER_GROUP_1, TIMER_1);
@@ -937,6 +943,7 @@ void MotionPlanner::start() {
 }
 
 bool MotionPlanner::ensureStepTimer() {
+#ifdef NATIVE_BUILD
     if (m_timerHandle != nullptr) return true;
 
     esp_timer_create_args_t timerArgs{};
@@ -947,12 +954,85 @@ bool MotionPlanner::ensureStepTimer() {
     timerArgs.skip_unhandled_events = true;
     return esp_timer_create(&timerArgs,
                             (esp_timer_handle_t*)&m_timerHandle) == 0;
+#else
+    if (m_normalHardwareTimerReady) return true;
+    // TG1/T0 is reserved for normal motion; qualified homing keeps TG1/T1.
+    // The ESP-IDF esp_timer uses the separate TG0 LAC timer. No Arduino
+    // timerBegin/tone consumer is used by this firmware.
+    timer_config_t config{};
+    config.alarm_en = TIMER_ALARM_DIS;
+    config.counter_en = TIMER_PAUSE;
+    config.intr_type = TIMER_INTR_LEVEL;
+    config.counter_dir = TIMER_COUNT_UP;
+    config.auto_reload = TIMER_AUTORELOAD_EN;
+    config.divider = 80;
+    if (timer_init(TIMER_GROUP_1, TIMER_0, &config) != ESP_OK) return false;
+    if (timer_isr_callback_add(TIMER_GROUP_1, TIMER_0, normalHardwareISR,
+                              this, ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LEVEL3) != ESP_OK) {
+        timer_deinit(TIMER_GROUP_1, TIMER_0);
+        return false;
+    }
+    m_normalHardwareTimerReady = true;
+    return true;
+#endif
+}
+
+bool MotionPlanner::startNormalStepTimer() {
+#ifdef NATIVE_BUILD
+    const bool started = esp_timer_start_periodic(
+        (esp_timer_handle_t)m_timerHandle, STEP_TIMER_PERIOD_US) == 0;
+    m_timerActive.store(started, std::memory_order_release);
+    return started;
+#else
+    if (!m_normalHardwareTimerReady) return false;
+    pauseNormalStepTimer();
+    if (timer_set_counter_value(TIMER_GROUP_1, TIMER_0, 0) != ESP_OK ||
+        timer_set_alarm_value(TIMER_GROUP_1, TIMER_0, STEP_TIMER_PERIOD_US) != ESP_OK ||
+        timer_set_alarm(TIMER_GROUP_1, TIMER_0, TIMER_ALARM_EN) != ESP_OK) return false;
+    // The driver ISR holds this same group lock across our callback. Clear
+    // pending status before publishing ownership for a new queue execution.
+    // IDF 4.4 deprecates explicit locks for ordinary ISR users (its callback
+    // wrapper locks already). This is a task-side restart, where that public
+    // group lock is still needed; keep the exception local to these two calls.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    timer_spinlock_take(TIMER_GROUP_1);
+    timer_group_clr_intr_status_in_isr(TIMER_GROUP_1, TIMER_0);
+    timer_spinlock_give(TIMER_GROUP_1);
+#pragma GCC diagnostic pop
+    m_timerActive.store(true, std::memory_order_release);
+    m_normalHardwareActive.store(true, std::memory_order_release);
+    if (timer_start(TIMER_GROUP_1, TIMER_0) == ESP_OK) return true;
+    pauseNormalStepTimer();
+    return false;
+#endif
+}
+
+void MotionPlanner::pauseNormalStepTimer() {
+#ifdef NATIVE_BUILD
+    if (m_timerHandle != nullptr) esp_timer_stop((esp_timer_handle_t)m_timerHandle);
+#else
+    m_normalHardwareActive.store(false, std::memory_order_release);
+    // timer_pause takes the group lock also held by timer_isr_default around
+    // its callback. Returning is therefore an in-flight callback barrier.
+    // Any pending callback after this sees normal ownership false. Do not
+    // reset/reuse queue state before this barrier, and do not call from ISR.
+    if (m_normalHardwareTimerReady) timer_pause(TIMER_GROUP_1, TIMER_0);
+#endif
+    m_timerActive.store(false, std::memory_order_release);
 }
 
 #ifndef NATIVE_BUILD
-// Reserve TG1/T1 for homing only. Normal motion keeps its existing planner
-// timer. Register from the motor task so UART and Wi-Fi task scheduling do
-// not dispatch these STEP pulses.
+bool IRAM_ATTR MotionPlanner::normalHardwareISR(void* arg) {
+    auto* planner = static_cast<MotionPlanner*>(arg);
+    if (planner->m_normalHardwareActive.load(std::memory_order_acquire)) {
+        planner->handleStepTimer();
+    }
+    return false;
+}
+
+// Reserve TG1/T1 for homing only. Register from the motor task so UART and
+// Wi-Fi task scheduling do not dispatch these STEP pulses.
 bool MotionPlanner::ensureHomingHardwareTimer() {
     if (m_homingHardwareTimerReady) return true;
     timer_config_t config{};
@@ -1020,6 +1100,7 @@ bool MotionPlanner::startRhoHoming(int8_t direction,
 #ifdef NATIVE_BUILD
     if (!ensureStepTimer()) return false;
 #else
+    pauseNormalStepTimer();
     if (!ensureHomingHardwareTimer()) return false;
 #endif
 
@@ -1079,10 +1160,11 @@ void MotionPlanner::stopRhoHoming() {
         false, std::memory_order_acq_rel);
 #ifndef NATIVE_BUILD
     if (m_homingHardwareTimerReady) timer_pause(TIMER_GROUP_1, TIMER_1);
-#endif
+#else
     if (wasHoming && m_timerHandle != nullptr) {
         esp_timer_stop((esp_timer_handle_t)m_timerHandle);
     }
+#endif
     if (wasHoming) {
         m_timerActive.store(false, std::memory_order_release);
         FastGPIO::setLow(R_STEP_PIN);
@@ -1094,9 +1176,7 @@ void MotionPlanner::stop() {
 #ifndef NATIVE_BUILD
     if (m_homingHardwareTimerReady) timer_pause(TIMER_GROUP_1, TIMER_1);
 #endif
-    if (m_timerHandle != nullptr) {
-        esp_timer_stop((esp_timer_handle_t)m_timerHandle);
-    }
+    pauseNormalStepTimer();
 
     m_running.store(false);
     m_timerActive.store(false);
@@ -1185,8 +1265,10 @@ void MotionPlanner::process() {
     // Auto-start timer if buffer has any data and startup holdoff is cleared
     if (!m_timerActive.load() && !m_startupHoldoff && m_running.load()) {
         if (queueDepth > 0) {
-            esp_timer_start_periodic((esp_timer_handle_t)m_timerHandle, STEP_TIMER_PERIOD_US);
-            m_timerActive.store(true);
+            if (!startNormalStepTimer()) {
+                stop(); // Fail closed; never leave queued movement awaiting a timer.
+                return;
+            }
         }
     }
 
@@ -1678,7 +1760,7 @@ void MotionPlanner::getTelemetry(PlannerTelemetry& out) {
     m_minQueueDepth = out.queueDepth;
 }
 
-void MotionPlanner::recordNormalCallbackTiming(uint32_t now) {
+void IRAM_ATTR MotionPlanner::recordNormalCallbackTiming(uint32_t now) {
     const uint32_t run = m_timingRunSerial.load(std::memory_order_relaxed);
     if (!m_previousCallbackValid || run != m_callbackTimingRunSerial) {
         m_callbackTimingRunSerial = run;
@@ -1699,7 +1781,7 @@ void MotionPlanner::recordNormalCallbackTiming(uint32_t now) {
     m_previousCallbackUs = now;
 }
 
-void MotionPlanner::recordAxisStepTiming(AxisStepTimingState& timing,
+void IRAM_ATTR MotionPlanner::recordAxisStepTiming(AxisStepTimingState& timing,
                                        uint32_t epoch, uint32_t scheduledUs,
                                        uint32_t actualUs) {
     const int32_t lateness = static_cast<int32_t>(actualUs - scheduledUs);
@@ -1805,13 +1887,14 @@ float MotionPlanner::stepsToRho(int32_t steps) const {
     return (float)steps / m_stepsPerMmR;
 }
 
-// esp_timer task callback, called at the configured 20kHz period.
+// Native mock callback. Firmware uses the dedicated hardware ISR above.
 void IRAM_ATTR MotionPlanner::stepTimerISR(void* arg) {
     MotionPlanner* planner = static_cast<MotionPlanner*>(arg);
     planner->handleStepTimer();
 }
 
 void IRAM_ATTR MotionPlanner::handleStepTimer() {
+#ifdef NATIVE_BUILD
     if (m_homingRhoActive.load(std::memory_order_acquire)) {
         const uint32_t now = micros();
         const uint32_t nextStep =
@@ -1849,9 +1932,16 @@ void IRAM_ATTR MotionPlanner::handleStepTimer() {
         }
         return;
     }
+#endif
 
     // Normal-motion diagnostics do not observe or modify the homing ISR.
+#ifdef NATIVE_BUILD
     uint32_t now = micros();
+#else
+    // Arduino micros()/delayMicroseconds() wrappers are flash-resident in this
+    // SDK. Use the IRAM esp_timer clock and ROM delay directly in the ISR.
+    uint32_t now = static_cast<uint32_t>(esp_timer_get_time());
+#endif
     if (m_running.load(std::memory_order_relaxed)) recordNormalCallbackTiming(now);
 
     // Check if there's a step event ready to execute
@@ -1884,9 +1974,14 @@ void IRAM_ATTR MotionPlanner::handleStepTimer() {
         }
         m_running.store(false, std::memory_order_relaxed);
         m_timerActive.store(false, std::memory_order_relaxed);
+#ifdef NATIVE_BUILD
         if (m_timerHandle != nullptr) {
             esp_timer_stop((esp_timer_handle_t)m_timerHandle);
         }
+#else
+        m_normalHardwareActive.store(false, std::memory_order_release);
+        timer_group_set_counter_enable_in_isr(TIMER_GROUP_1, TIMER_0, TIMER_PAUSE);
+#endif
         // Consume event
         m_stepQueueTail.store((tail + 1) % STEP_QUEUE_SIZE, std::memory_order_release);
         return;
@@ -1911,12 +2006,17 @@ void IRAM_ATTR MotionPlanner::handleStepTimer() {
     // the latter can become shorter than the driver's setup time depending on
     // compiler optimization and CPU frequency.
 #ifndef NATIVE_BUILD
-    delayMicroseconds(DIR_SETUP_TIME_US);
+    ets_delay_us(DIR_SETUP_TIME_US);
 #endif
 
     // Timestamp immediately before the rising writes, AFTER DIR setup. Keep
     // bookkeeping after STEP falls so it cannot extend setup or pulse width.
+#ifdef NATIVE_BUILD
     const uint32_t preRiseUs = (event.stepMask & 0x03) ? micros() : 0;
+#else
+    const uint32_t preRiseUs = (event.stepMask & 0x03)
+        ? static_cast<uint32_t>(esp_timer_get_time()) : 0;
+#endif
 
     // Generate step pulses
     if (event.stepMask & 0x01) {
@@ -1930,7 +2030,7 @@ void IRAM_ATTR MotionPlanner::handleStepTimer() {
     // after a direction transition, where marginal pulses can otherwise be
     // rejected by every driver sharing the STEP/DIR pair.
 #ifndef NATIVE_BUILD
-    delayMicroseconds(STEP_PULSE_WIDTH_US);
+    ets_delay_us(STEP_PULSE_WIDTH_US);
 #endif
 
     // End step pulses

@@ -1444,7 +1444,7 @@ void SisyphusWebServer::handleMotionTelemetry(AsyncWebServerRequest *request) {
     // outlier, not necessarily the latest pulse; counter deltas expose missed
     // outliers between HTTP samples. Require each valid flag before use.
     response->printf(
-        ",\"stepTiming\":{\"thresholdUs\":%lu,\"callback\":{\"valid\":%s,"
+        ",\"stepTiming\":{\"source\":\"hardware-timer-tg1-t0\",\"thresholdUs\":%lu,\"callback\":{\"valid\":%s,"
         "\"gaps\":%lu,\"maxGapUs\":%lu,\"lastMicros\":%lu,\"lastGapUs\":%lu},\"theta\":",
         static_cast<unsigned long>(2U * STEP_TIMER_PERIOD_US),
         telemetry.callbackTimingValid ? "true" : "false",

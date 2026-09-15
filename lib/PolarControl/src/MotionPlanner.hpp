@@ -92,7 +92,7 @@ struct Segment {
     int32_t lastGenRhoSteps = 0;
 };
 
-// Step event for the timer-task queue
+// Step event for the hardware-timer queue (mock task timer in native tests).
 struct StepEvent {
     uint32_t executeTime;      // Microsecond timestamp (relative to segment start)
     uint8_t stepMask;          // bit 0 = theta, bit 1 = rho
@@ -250,7 +250,7 @@ private:
 #ifdef NATIVE_BUILD
     friend struct MotionTimingTestAccess;
 #endif
-    // Single writer: the existing esp_timer task callback. Atomic payload
+    // Single writer: the normal hardware ISR (mock task callback on native). Atomic payload
     // fields plus a versioned bounded snapshot avoid C++ data races and torn
     // outlier records without taking locks in the pulse path.
     struct AxisStepTimingState {
@@ -264,6 +264,8 @@ private:
         bool previousValid = false;
         uint32_t previousEpoch = 0, previousScheduledUs = 0, previousActualUs = 0;
     };
+    static_assert(__atomic_always_lock_free(sizeof(uint32_t), nullptr),
+                  "STEP ISR requires lock-free word atomics");
     AxisStepTimingState m_thetaStepTiming, m_rhoStepTiming;
     std::atomic<uint32_t> m_timingRunSerial{0};
     uint32_t m_callbackTimingRunSerial = 0, m_previousCallbackUs = 0;
@@ -271,8 +273,8 @@ private:
     std::atomic<uint32_t> m_callbackTimingVersion{0};
     std::atomic<uint32_t> m_callbackGapCount{0}, m_maxCallbackGapUs{0};
     std::atomic<uint32_t> m_lastCallbackGapMicros{0}, m_lastCallbackGapUs{0};
-    void recordNormalCallbackTiming(uint32_t now);
-    static void recordAxisStepTiming(AxisStepTimingState& timing, uint32_t epoch,
+    void IRAM_ATTR recordNormalCallbackTiming(uint32_t now);
+    static void IRAM_ATTR recordAxisStepTiming(AxisStepTimingState& timing, uint32_t epoch,
                                     uint32_t scheduledUs, uint32_t actualUs);
     static void snapshotAxisStepTiming(const AxisStepTimingState& timing,
                                       AxisStepTimingTelemetry& out);
@@ -332,7 +334,9 @@ private:
     float m_segmentElapsed;          // Time elapsed in current segment
 
     // State
-    std::atomic<bool> m_running;
+    // Word-sized atomics avoid the SDK's flash-resident atomic<bool> helper
+    // in hardware ISRs; logical values remain 0/1.
+    std::atomic<uint32_t> m_running;
     // Word-sized atomics compile to inline Xtensa loads/stores in the IRAM
     // homing callback; std::atomic<bool>::load may call a flash-resident helper.
     std::atomic<uint32_t> m_timerActive{false};
@@ -346,14 +350,22 @@ private:
     std::atomic<uint32_t> m_stepMotionEpoch{0};
     std::atomic<uint32_t> m_lastStepMotionStartUs{0};
     std::atomic<uint32_t> m_lastStepMotionStopUs{0};
-    std::atomic<bool> m_stepMotionActive{false};
+    std::atomic<uint32_t> m_stepMotionActive{false};
     bool m_endOfPattern;
     bool m_stopEventQueued = false;
     uint32_t m_completedCount;
     bool m_startupHoldoff = false;
 
     // Timer handle (ESP32 specific)
+#ifdef NATIVE_BUILD
     void* m_timerHandle;
+#else
+    bool m_normalHardwareTimerReady = false;
+    std::atomic<uint32_t> m_normalHardwareActive{false};
+    static bool IRAM_ATTR normalHardwareISR(void* arg);
+#endif
+    bool startNormalStepTimer();
+    void pauseNormalStepTimer();
 #ifndef NATIVE_BUILD
     bool m_homingHardwareTimerReady = false;
     bool ensureHomingHardwareTimer();

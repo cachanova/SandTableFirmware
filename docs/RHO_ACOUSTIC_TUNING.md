@@ -145,6 +145,33 @@ No timer scheduling, driver settings or homing logic changed. A native injected
 [Espressif's timer documentation](https://docs.espressif.com/projects/esp-idf/en/v4.4.7/esp32/api-reference/system/esp_timer.html)
 describes task-dispatch delays and overdue callback handling.
 
+The instrumented same-settings u2 repeat confirmed severe normal STEP timing
+distortion: 20,000 pulses, 10,061 timing outliers, 16,552 us maximum lateness
+and 7,886 us maximum interval error. Some cruise pulses scheduled about 5 ms
+apart were emitted only 37-46 us apart, despite zero underruns. Raw cruise
+upper bound was -62.55 dBFS, but transient excess p95 remained -50.19. This is
+not a qualified quiet tune. Only 734 latest outliers were retained; 9,327
+individual timestamps were overwritten between polls. Of 154 interior sound
+bursts, 24.7% occurred near retained >2 ms errors versus 7.7% in shifted
+controls. That supports association, not complete causal reconstruction.
+
+A hardware-timer candidate moves normal queue consumption to TG1/T0 at the
+same 50 us period, with qualified homing remaining on TG1/T1. Its stop path
+revokes normal ownership then pauses under the SDK's callback group lock
+before clearing the queue. Pending interrupts are cleared before restart;
+STOP uses ISR counter pause, not a task timer API. No driver settings,
+geometry or homing detector parameters change. Both normal axes share this
+engine; only main RHO is being tested physically in this session.
+
+The initial compiled-code review caught flash-resident `atomic<bool>::load`
+and `FastGPIO::write` helpers. Word atomics and forced-inlined GPIO corrected
+them. The reviewed call graph, clock reader and literals are IRAM/ROM, with
+planner state in internal DRAM. Native assertions, 78 Python checks and both
+firmware builds pass. This is still a bench candidate pending short bounded
+motion, abort, endpoint and same-settings acoustic comparisons; native tests
+do not qualify real ISR timing. Production boot-enabled firmware must be
+restored after service-image testing.
+
 Homing qualification, production boot enable and cleanup merged to main as
 `a558c4e`, including the user-confirmed power-cold boot. Only the main RHO motor is connected;
 keep the CW driver at `TOFF=0` and theta stationary. Pass
