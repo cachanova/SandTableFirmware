@@ -1212,6 +1212,7 @@ void MotionPlanner::stop() {
     m_maxConsecutiveUnderruns.store(0);
     m_minQueueDepth = 0xFFFFFFFFu;
     m_lastQueuedEventTime = 0;
+    m_lastQueuedEventTimeValid = false;
 }
 
 void MotionPlanner::process() {
@@ -1375,9 +1376,7 @@ FillStopReason MotionPlanner::fillStepQueue(uint32_t horizonUs) {
                 continue;
             }
             uint32_t blankTime = startTime + (uint32_t)(tEnd * 1000000.0f);
-            if (blankTime > m_lastQueuedEventTime && getStepQueueSpace() > 0) {
-                queueStepEvent(blankTime, 0, 0);
-            }
+            queueHorizonMarker(blankTime);
             reason = FillStopReason::Horizon;
             break;
         }
@@ -1512,9 +1511,7 @@ FillStopReason MotionPlanner::fillStepQueue(uint32_t horizonUs) {
 
         // Horizon reached within this segment; stop.
         uint32_t blankTime = startTime + (uint32_t)(tEnd * 1000000.0f);
-        if (blankTime > m_lastQueuedEventTime && getStepQueueSpace() > 0) {
-            queueStepEvent(blankTime, 0, 0);
-        }
+        queueHorizonMarker(blankTime);
         reason = FillStopReason::Horizon;
         break;
     }
@@ -1534,6 +1531,20 @@ int MotionPlanner::getStepQueueSpace() const {
     }
 }
 
+void MotionPlanner::queueHorizonMarker(uint32_t time) {
+    // process() may run many times inside one timer period. Appending a no-op
+    // on every Horizon return can fill 511 slots with near-identical times;
+    // the ISR still spends a callback on each, delaying real STEP by ms.
+    // Suppress closely spaced markers relative to ANY previously queued event.
+    // Never edit a published slot: the consumer may already own it.
+    if ((!m_lastQueuedEventTimeValid ||
+         static_cast<int32_t>(time - m_lastQueuedEventTime) >=
+             static_cast<int32_t>(STEP_HORIZON_MARKER_INTERVAL_US)) &&
+        getStepQueueSpace() > 0) {
+        queueStepEvent(time, 0, 0);
+    }
+}
+
 bool MotionPlanner::queueStepEvent(uint32_t time, uint8_t stepMask, uint8_t dirMask) {
     const int head = m_stepQueueHead.load(std::memory_order_relaxed);
     const int nextHead = (head + 1) % STEP_QUEUE_SIZE;
@@ -1546,6 +1557,7 @@ bool MotionPlanner::queueStepEvent(uint32_t time, uint8_t stepMask, uint8_t dirM
     m_stepQueue[head].dirMask = dirMask;
     m_stepQueueHead.store(nextHead, std::memory_order_release);
     m_lastQueuedEventTime = time;
+    m_lastQueuedEventTimeValid = true;
 
     return true;
 }

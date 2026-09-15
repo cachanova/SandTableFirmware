@@ -43,6 +43,11 @@ static constexpr uint32_t STEP_TIMER_PERIOD_US = 50;  // 20kHz timer callback
 #endif
 static constexpr uint32_t STEP_QUEUE_HORIZON_US = 250000;  // 250ms lookahead
 static constexpr uint32_t STEP_QUEUE_MAX_PROCESS_US = 20000;
+// Idle horizon markers must never arrive faster than queue consumption.
+// At 1 kHz they use <=250 slots across the lookahead, leaving room for steps.
+static constexpr uint32_t STEP_HORIZON_MARKER_INTERVAL_US = 1000;
+static_assert(STEP_HORIZON_MARKER_INTERVAL_US >= 2U * STEP_TIMER_PERIOD_US,
+              "Horizon markers must be slower than the STEP consumer");
 
 enum class FillStopReason : uint32_t {
     None = 0,
@@ -328,6 +333,7 @@ private:
 
     uint32_t m_minQueueDepth = 0xFFFFFFFFu;
     uint32_t m_lastQueuedEventTime = 0;
+    bool m_lastQueuedEventTimeValid = false; // Producer-only; zero is a valid timestamp.
 
     // Timing
     uint32_t m_segmentStartTime;     // Microseconds when current segment started
@@ -379,6 +385,7 @@ private:
     FillStopReason fillStepQueue(uint32_t horizonUs);
     int getStepQueueSpace() const;
     bool queueStepEvent(uint32_t time, uint8_t stepMask, uint8_t dirMask);
+    void queueHorizonMarker(uint32_t time);
 
     // Convert physical units to steps
     int32_t thetaToSteps(float theta) const;

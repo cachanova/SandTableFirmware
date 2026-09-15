@@ -172,6 +172,29 @@ motion, abort, endpoint and same-settings acoustic comparisons; native tests
 do not qualify real ISR timing. Production boot-enabled firmware must be
 restored after service-image testing.
 
+The first hardware-timer-only 0 -> 10 -> 0 check completed all 2,000 pulses
+with valid timing/driver checks and logical return. Sustained raw upper bound
+was -66.88 dBFS, but raw gate p95 bounds remained -54.67/-47.35: still not
+qualified. STEP lateness reached 8,767 us even though callback gaps were at
+most 907 us. The queue was almost always full (510-511 entries).
+
+This exposed a second defect: `fillStepQueue()` appended no-step horizon
+markers on nearly every busy producer iteration. The ISR consumes one queue
+entry per tick, so hundreds of closely timed placeholders obstructed real
+steps. Native reproduction with an uninterrupted timer and correctly ordered
+timestamps produced up to 118.5 ms STEP lateness, zero underruns and exact
+pulse totals. Thus both task dispatch and placeholder saturation needed fixes.
+
+`queueHorizonMarker()` now permits a marker only at least 1,000 us after any
+previous queued event. It never edits a published queue slot, handles clock
+rollover and timestamp zero explicitly, and retains heartbeat coverage for
+slow motion. Six native regressions cover fast producers, producer pauses,
+rollover and one-second STEP intervals; all pass with bounded queues, exact
+pulse totals and no underruns. Hardware comparison is still pending for this
+second fix. The frozen audits before and after the short run both passed;
+29 bounded audits have passed through 09:16 UTC, on SG—not independent camera
+or encoder—evidence.
+
 Homing qualification, production boot enable and cleanup merged to main as
 `a558c4e`, including the user-confirmed power-cold boot. Only the main RHO motor is connected;
 keep the CW driver at `TOFF=0` and theta stationary. Pass

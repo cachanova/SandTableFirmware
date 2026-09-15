@@ -38,6 +38,24 @@ struct MotionTimingTestAccess {
         p.m_rhoStepTiming.version.store(busy ? 1U : 2U);
         p.m_callbackTimingVersion.store(busy ? 1U : 2U);
     }
+    static void queueOccupancy(const MotionPlanner& p, unsigned& entries,
+                               unsigned& blanks, bool& ordered) {
+        entries = blanks = 0;
+        ordered = true;
+        int tail = p.m_stepQueueTail.load();
+        const int head = p.m_stepQueueHead.load();
+        uint32_t previous = 0;
+        while (tail != head) {
+            const auto& event = p.m_stepQueue[tail];
+            if (entries && static_cast<int32_t>(event.executeTime - previous) < 0) {
+                ordered = false;
+            }
+            previous = event.executeTime;
+            ++entries;
+            if (event.stepMask == 0) ++blanks;
+            tail = (tail + 1) % STEP_QUEUE_SIZE;
+        }
+    }
 };
 
 // Test configuration
@@ -807,6 +825,71 @@ bool testStepTimingCallbackIntegration() {
     return true;
 }
 
+bool testFastProducerHeartbeatQueue() {
+    std::cout << "\n=== Test: Fast Producer Heartbeat Queue ===" << std::endl;
+    bool passed = true;
+    struct Case { uint64_t start; float velocity; float distance; };
+    for (const Case test : {Case{100000ULL, 2, 2}, Case{0xffff0000ULL, 2, 2},
+                            Case{100000ULL, .01f, .02f}}) {
+        const uint64_t start = test.start;
+        for (bool producerPauses : {false, true}) {
+            resetMock();
+            setMicros(start);
+            MotionPlanner p;
+            p.init(100, 3000, 425, test.velocity, 20, 100, .25f, 1, 10);
+            p.addSegment(0, test.distance);
+            p.setEndOfPattern(true);
+            p.recalculate();
+            p.start();
+            unsigned maximumEntries = 0, maximumBlanks = 0;
+            bool allOrdered = true;
+            for (unsigned i = 0; i < 300000 && !p.isIdle(); ++i) {
+                const uint64_t elapsed = micros64() - start;
+                // Simulate occasional mutex/producer delays WITHOUT delaying
+                // timer dispatch. The producer otherwise runs at 100 kHz.
+                const bool paused = producerPauses && elapsed > 300000 &&
+                    elapsed % 250000 < 10000;
+                if (!paused) p.process();
+                if (i % 100 == 0) {
+                    unsigned entries, blanks;
+                    bool ordered;
+                    MotionTimingTestAccess::queueOccupancy(p, entries, blanks, ordered);
+                    maximumEntries = std::max(maximumEntries, entries);
+                    maximumBlanks = std::max(maximumBlanks, blanks);
+                    allOrdered &= ordered;
+                }
+                advanceMicros(10);
+            }
+            PlannerTelemetry t;
+            p.getTelemetry(t);
+            float theta, rho;
+            p.getCurrentPosition(theta, rho);
+            // A 250 ms horizon needs ~50 real pulses and at most 250
+            // one-millisecond heartbeat markers, not a saturated 511 slots.
+            // The 0.01 mm/s case has real STEP gaps longer than the lookahead;
+            // heartbeat markers must still prevent false queue underruns.
+            const bool bounded = p.isIdle() &&
+                t.rhoStepTiming.stepCount == static_cast<uint32_t>(lroundf(test.distance * 100)) &&
+                std::fabs(rho - test.distance) < 0.0001f && t.thetaStepTiming.stepCount == 0 &&
+                t.underruns == 0 && t.callbackGapCount == 0 && allOrdered &&
+                maximumEntries <= 350 && maximumBlanks <= 260 &&
+                t.rhoStepTiming.maxLatenessUs <= 3 * STEP_TIMER_PERIOD_US &&
+                t.rhoStepTiming.maxAbsIntervalErrorUs <= 3 * STEP_TIMER_PERIOD_US;
+            std::cout << "start=" << start << " velocity=" << test.velocity
+                      << " producerPauses=" << producerPauses
+                      << " maxQueue=" << maximumEntries << " maxBlanks=" << maximumBlanks
+                      << " maxLateUs=" << t.rhoStepTiming.maxLatenessUs
+                      << " intervalErrorUs=" << t.rhoStepTiming.maxAbsIntervalErrorUs
+                      << " callbackGaps=" << t.callbackGapCount
+                      << " underruns=" << t.underruns << " ordered=" << allOrdered
+                      << " steps=" << t.rhoStepTiming.stepCount
+                      << (bounded ? " PASS" : " FAIL") << std::endl;
+            passed &= bounded;
+        }
+    }
+    return passed;
+}
+
 bool testRhoSharedOverrunBudget() {
     std::cout << "\n=== Test: Rho Shared Homing Overrun Budget ===" << std::endl;
     constexpr uint32_t expected = 3200;  // 8 mm at 400 steps/mm
@@ -1464,6 +1547,7 @@ int main(int argc, char* argv[]) {
     allPassed &= testBoundedRhoHomingPulses();
     allPassed &= testNormalStepTimingDiagnostics();
     allPassed &= testStepTimingCallbackIntegration();
+    allPassed &= testFastProducerHeartbeatQueue();
     allPassed &= testRhoSharedOverrunBudget();
     allPassed &= testSCurveBasic();
     allPassed &= testDecelDistance();
