@@ -1370,6 +1370,58 @@ def motor_participates(role: str, diagnostic: dict[str, Any]) -> bool:
     return False
 
 
+class CruiseDriverGuard:
+    """Reject bridge loss and repeated invalid/near-zero cruise SG readings."""
+
+    def __init__(self) -> None:
+        self.low_sg_runs: dict[str, int] = {}
+        self.invalid_sg_runs: dict[str, int] = {}
+
+    def observe(self, role: str, driver: dict[str, Any], phase: str) -> None:
+        if not driver_is_healthy(driver):
+            raise RuntimeError(f"{role} driver reported a fault at {phase}")
+        if not motor_participates(role, driver):
+            return
+        if phase != "during-cruise":
+            self.low_sg_runs[role] = 0
+            self.invalid_sg_runs[role] = 0
+            return
+        settings = driver.get("settings", {})
+        if (not settings.get("chopconfReadValid")
+                or settings.get("softwareEnabled") is not True
+                or int(settings.get("chopperOffTime", 0)) <= 0):
+            raise RuntimeError(f"{role} active bridge is not verified enabled")
+        dynamic = driver.get("dynamic", {})
+        sg_valid = bool(dynamic.get("stallGuardValid"))
+        sg_result = int(dynamic.get("stallGuardResult", 0))
+        self.invalid_sg_runs[role] = (
+            0 if sg_valid else self.invalid_sg_runs.get(role, 0) + 1
+        )
+        if self.invalid_sg_runs[role] >= 3:
+            raise RuntimeError(
+                f"{role} lost three consecutive SG_RESULT reads during sustained cruise"
+            )
+        self.low_sg_runs[role] = (
+            self.low_sg_runs.get(role, 0) + 1
+            if sg_valid and sg_result <= 5 else 0
+        )
+        if self.low_sg_runs[role] >= 3:
+            raise RuntimeError(
+                f"{role} SG_RESULT stayed <=5 during sustained cruise; possible physical stall"
+            )
+
+
+def planner_repeat_healthy(repeat: dict[str, Any]) -> bool:
+    """Counters are boot-cumulative; reject changes or resets within this repeat."""
+    samples = repeat.get("telemetry", [])
+    baseline = repeat.get("initialPlannerUnderruns", 0)
+    return bool(samples) and all(
+        sample["planner"]["underruns"] == baseline
+        and sample["planner"]["maxConsecutiveUnderruns"] == 0
+        for sample in samples
+    )
+
+
 def preflight_rho_commissioning(
     board: Board, expected_interpolation: bool | None = None,
     expected_motors: str | None = None,
@@ -2187,8 +2239,7 @@ def run_timed_repeat(
     stop_request_offset: float | None = None
     next_poll = recording_zero
     next_driver_poll = recording_zero
-    low_sg_runs: dict[str, int] = {}
-    invalid_sg_runs: dict[str, int] = {}
+    cruise_guard = CruiseDriverGuard()
 
     def sample_drivers(phase: str) -> None:
         """Capture driver health and abort sustained-cruise SG collapse."""
@@ -2198,33 +2249,7 @@ def run_timed_repeat(
             driver["samplePhase"] = phase
             driver["hostOffsetS"] = round(time.monotonic() - recording_zero, 6)
             driver_samples.append(driver)
-            if not driver_is_healthy(driver):
-                raise RuntimeError(
-                    f"{driver_role} driver reported a fault at {phase}"
-                )
-            if not motor_participates(driver_role, driver):
-                continue
-            if phase == "during-cruise":
-                dynamic = driver.get("dynamic", {})
-                sg_valid = bool(dynamic.get("stallGuardValid"))
-                sg_result = int(dynamic.get("stallGuardResult", 0))
-                invalid_sg_runs[driver_role] = (
-                    0 if sg_valid else invalid_sg_runs.get(driver_role, 0) + 1
-                )
-                if invalid_sg_runs[driver_role] >= 3:
-                    raise RuntimeError(
-                        f"{driver_role} lost three consecutive SG_RESULT reads "
-                        "during sustained cruise"
-                    )
-                low_sg_runs[driver_role] = (
-                    low_sg_runs.get(driver_role, 0) + 1
-                    if sg_valid and sg_result <= 5 else 0
-                )
-                if low_sg_runs[driver_role] >= 3:
-                    raise RuntimeError(
-                        f"{driver_role} SG_RESULT stayed <=5 during sustained "
-                        "cruise; possible physical stall"
-                    )
+            cruise_guard.observe(driver_role, driver, phase)
 
     def collect_for(duration_s: float) -> None:
         nonlocal next_poll, next_driver_poll
@@ -2262,11 +2287,10 @@ def run_timed_repeat(
                         sample_drivers("during-motion")
                         next_driver_poll = time.monotonic() + 0.10
                     elif (axis.name == "rho" and
-                          profile in ("continuous", "stress") and
                           abs(float(telemetry[-1]["velocity"][axis.name])) >=
                           0.9 * expected_max_velocity):
                         sample_drivers("during-cruise")
-                        next_driver_poll = time.monotonic() + 1.0
+                        next_driver_poll = time.monotonic() + 0.25
             time.sleep(0.005)
 
     def wait_for_motion_completion(
@@ -2531,6 +2555,7 @@ def run_timed_repeat(
         "startPosition": round(start_position, 6),
         "finalPosition": round(final_position, 6),
         "returnError": round(return_error, 6),
+        "initialPlannerUnderruns": start_sample["planner"]["underruns"],
         "rhoExcursionMm": rho_envelope_mm if axis.name == "rho" else None,
         "thetaExcursionDeg": (
             args.theta_excursion_deg if axis.name == "theta" and segmented_targets
@@ -2560,6 +2585,7 @@ def run_timed_repeat(
         "startPosition": round(start_position, 6),
         "finalPosition": round(final_position, 6),
         "returnError": round(return_error, 6),
+        "initialPlannerUnderruns": start_sample["planner"]["underruns"],
         "telemetry": telemetry,
         "driverSamples": driver_samples,
     }
@@ -3154,11 +3180,7 @@ def cmd_trial(args: argparse.Namespace) -> int:
                     for item in repeat_results
                 ) if axis.name == "rho" else None
             ),
-            "plannerHealthy": all(
-                int(sample["planner"]["underruns"]) == 0
-                and int(sample["planner"]["maxConsecutiveUnderruns"]) == 0
-                for sample in all_telemetry
-            ),
+            "plannerHealthy": all(planner_repeat_healthy(item) for item in repeat_results),
             "commandedStepRateHz": round(commanded_step_rate, 1),
             "stepRateBudgetPercent": round(commanded_step_rate / 10000.0 * 100.0, 1),
             "allDriverUartResponsesValid": bool(all_drivers) and all(

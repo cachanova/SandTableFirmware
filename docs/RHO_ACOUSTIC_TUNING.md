@@ -6,8 +6,8 @@ the telemetry-aligned analysis in `scripts/acoustic_tuner.py`.
 
 ## Current assembled main-only retune (2026-09-15)
 
-Finish homing qualification, enable production boot homing, and merge the
-cleanup before starting acoustic motion. Only the main RHO motor is connected;
+Homing qualification, production boot enable and cleanup merged to main as
+`a558c4e`, including the user-confirmed power-cold boot. Only the main RHO motor is connected;
 keep the CW driver at `TOFF=0` and theta stationary. Pass
 `--expected-rho-motors main` to the acoustic tool. It checks both UART devices
 and the unused bridge, but does not require the unused motor to produce SG,
@@ -20,7 +20,51 @@ synchronization at 150 mA. Keep 200 mA as the starting reliability baseline;
 consider reducing it only after the loaded main-only mechanism passes.
 Those paired-hardware results are starting points, not current qualifications.
 Keep the dedicated homing profile independent of motion changes and inspect
-the camera after each completed configuration.
+the camera after each completed configuration when illuminated. The SG-based
+endpoint-audit exception and its limits for this session are recorded below.
+
+The first assembled screen ran at 200 mA, 2 mm/s, acceleration 20 and jerk 100.
+Its four 50 mm legs completed at full cruise, returned to logical zero and had
+stable adjacent idle windows. The conservative upper bound was -65.36 dBFS;
+the loudest estimated motor excess was -68.89 dBFS. This is a screen, not a
+two-repeat qualification. The room baseline was -55.72 dBFS and the microphone
+remained at 100% / 0.00 dB.
+
+The light was off after the power-cycle confirmation, so the camera could not
+verify the first acoustic endpoint. The subsequent bounded, unchanged homing
+sequence agreed at 2460, 2424 and 2491 steps against a 2400-step reference;
+two contacts had microphone rises above 16 dB. We accepted that SG-based origin
+reset using the qualified homing method. Do not label it an independent camera
+check or proof of lossless acoustic motion. The original trial artifact retains
+its capture-time `HOMING_REVIEW` state. Stop if the bounded audit fails, and do
+not enlarge its limits to recover an uncertain position.
+
+Use the startup-trial service build for this session so endpoint audits exercise
+the frozen production entry. Service boot motion remains off during acoustic
+testing; restore the boot-enabled production image afterward. A main-only SG
+watcher checked the latter portion of the first screen without a sustained
+collapse. Subsequent screens also poll driver health and SG during cruise,
+including verification that the active bridge stays enabled. Continue checking
+that the unused CW bridge stays off. SG is an advisory stall guard here, not
+an encoder or proof of motion. Require three consecutive invalid or near-zero
+reads to abort; reset that count across segment idle gaps.
+
+The initial velocity bracket at fixed 128/2 produced:
+
+| Velocity | Conservative 95% upper bound | Disposition |
+|---|---:|---|
+| 2 mm/s | -65.36 dBFS | provisional -60 / -63 pass |
+| 4.25 mm/s | -60.81 dBFS | provisional -60 pass |
+| 6 mm/s | -55.59 dBFS | reject: too loud and planner underruns |
+
+The 6 mm/s run completed naturally but recorded 395 empty-queue timer ticks
+near the start of its first return leg. The cause is not established; increased
+diagnostic polling is a hypothesis, not a finding. Do not use this run to
+qualify motion. Its subsequent bounded endpoint audit passed with contacts
+2472, 2502 and 2501 steps and three microphone rises above 8 dB. Raw evidence
+is retained. The host now records the underrun count before each repeat and
+requires it to remain unchanged; an increase or reset fails that repeat.
+Historical fault counts do not silently disqualify unrelated later runs.
 
 Retain the -60, -63, and -66 dBFS RHO tiers. Use four-leg 50 mm screens, then
 two independent eight-leg qualifications of finalists. Require each gate to
@@ -37,7 +81,9 @@ homing profile near the 500 mA rating. The 425 mm travel is nominal: an outer
 stop contact invalidated a submillimetre command-ledger reference during homing
 qualification. Keep acoustic targets at or below 400 mm.
 
-The acoustic procedure deliberately does **not** home rho. The operator places
+The acoustic trajectory itself does **not** home rho. Separate, explicitly
+recorded endpoint audits use the qualified homing method in this session.
+For initial commissioning, the operator places
 the mechanism at a known, marked physical start, then explicitly switches the
 service image from Manual RHO to RHO Commissioning. That confirmation assigns
 the current physical position temporary logical `rho=0`.
@@ -67,8 +113,9 @@ to the marked starting position.
 
 ## Commissioning firmware safety boundary
 
-Use only `esp32dev_rho_commissioning` or
-`esp32dev_rho_commissioning_ota`. This single service build:
+Use `esp32dev_rho_commissioning` or `esp32dev_rho_commissioning_ota` for ordinary
+commissioning, or `esp32dev_rho_startup_trial_ota` when auditing the frozen
+production homing entry as in this session. These guarded service builds:
 
 - boots in Manual RHO mode without claiming a physical origin, and permits
   relative RHO jogs for setup;
@@ -535,7 +582,8 @@ A candidate passes only when:
 - theta stayed stationary;
 - both rho UART streams and interpolation readbacks stayed valid;
 - no driver fault or thermal warning appeared;
-- planner underruns and maximum consecutive underruns stayed zero;
+- no new planner underruns occurred during the repeat, and maximum consecutive
+  underruns stayed zero;
 - repeated timing-locked tones stayed beneath the selected rho ceiling;
 - the loudest adjacent-idle-subtracted sustained-cruise gate in every repeated
   gated trial stayed beneath its selected ceiling, with every expected on/off

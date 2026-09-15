@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from acoustic_tuner import motor_participates, interpolation_readback_confirmed
+from acoustic_tuner import (motor_participates, interpolation_readback_confirmed,
+                            CruiseDriverGuard, planner_repeat_healthy)
 
 
 class MotorSelectionTest(unittest.TestCase):
@@ -46,6 +47,68 @@ class MotorSelectionTest(unittest.TestCase):
             [main, self.cw], {"rho", "rhoCompanion"}, True))
         self.assertFalse(interpolation_readback_confirmed(
             [main], {"rho", "rhoCompanion"}, False))
+
+
+class CruiseGuardTest(unittest.TestCase):
+    def setUp(self):
+        self.guard = CruiseDriverGuard()
+        self.driver = {
+            "uartResponseValid": True, "setupOk": True,
+            "settings": {"chopconfReadValid": True, "softwareEnabled": True,
+                         "chopperOffTime": 3},
+            "dynamic": {"stallGuardValid": True, "stallGuardResult": 0},
+        }
+
+    def observe(self, phase="during-cruise"):
+        self.guard.observe("rho", self.driver, phase)
+
+    def test_three_low_samples_abort_but_isolated_zero_does_not(self):
+        self.observe()
+        self.driver["dynamic"]["stallGuardResult"] = 220
+        self.observe()
+        self.driver["dynamic"]["stallGuardResult"] = 0
+        self.observe()
+        self.observe()
+        with self.assertRaisesRegex(RuntimeError, "possible physical stall"):
+            self.observe()
+
+    def test_idle_resets_consecutive_count(self):
+        self.observe()
+        self.observe()
+        self.observe("after-segment-0mm")
+        self.observe()
+        self.observe()
+
+    def test_invalid_reads_and_disabled_bridge_fail(self):
+        self.driver["dynamic"]["stallGuardValid"] = False
+        self.observe()
+        self.observe()
+        with self.assertRaisesRegex(RuntimeError, "lost three"):
+            self.observe()
+        self.driver["settings"]["chopperOffTime"] = 0
+        with self.assertRaisesRegex(RuntimeError, "bridge"):
+            self.observe()
+
+    def test_unused_motor_does_not_need_sg_but_must_stay_disabled(self):
+        self.driver.update(driverRole="rhoCompanion", motorConfigured=False,
+                           connected=True)
+        self.driver["settings"].update(softwareEnabled=False, chopperOffTime=0)
+        for _ in range(4):
+            self.guard.observe("rhoCompanion", self.driver, "during-cruise")
+        self.driver["settings"]["softwareEnabled"] = True
+        with self.assertRaisesRegex(RuntimeError, "Unused CW"):
+            self.guard.observe("rhoCompanion", self.driver, "during-cruise")
+
+    def test_planner_uses_repeat_baseline_without_hiding_new_faults_or_reset(self):
+        def repeat(counts, baseline=395):
+            return {"initialPlannerUnderruns": baseline, "telemetry": [
+                {"planner": {"underruns": count, "maxConsecutiveUnderruns": 0}}
+                for count in counts]}
+        self.assertTrue(planner_repeat_healthy(repeat([395, 395])))
+        self.assertFalse(planner_repeat_healthy(repeat([395, 396])))
+        self.assertFalse(planner_repeat_healthy(repeat([395, 0])))
+        self.assertFalse(planner_repeat_healthy(repeat([])))
+        self.assertFalse(planner_repeat_healthy(repeat([0, 395], baseline=0)))
 
 
 if __name__ == "__main__":
