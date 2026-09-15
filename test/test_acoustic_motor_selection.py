@@ -16,6 +16,26 @@ from acoustic_tuner import (motor_participates, interpolation_readback_confirmed
 
 
 class CalibrationCleanupTest(unittest.TestCase):
+    def test_calibration_stops_on_out_of_envelope_or_planner_fault(self):
+        settings = dict(runCurrent=275, highSensitivityCurrentScale=True,
+                        stealthChopEnabled=True, automaticCurrentScaling=True,
+                        automaticGradientAdaptation=True)
+        initial = dict(state="IDLE", position={"rho": 0}, velocity={"rho": 0},
+                       planner={"underruns": 0, "maxConsecutiveUnderruns": 0})
+        for position, underruns, message in ((-0.1, 0, "bounded"),
+                                             (100.1, 0, "bounded"),
+                                             (1, 1, "underrun")):
+            sample = copy.deepcopy(initial)
+            sample.update(state="RUNNING", position={"rho": position},
+                          velocity={"rho": 4})
+            sample["planner"]["underruns"] = underruns
+            board = Mock()
+            board.get.side_effect = [initial, sample]
+            with self.assertRaisesRegex(RuntimeError, message):
+                precondition_rho_stealthchop(board, 4, settings, .11)
+            board.recovering_stop.assert_called_once_with()
+            board.post.assert_called_once_with("/api/tuning/test/rho/segment", {"targetMm": 100})
+
     def test_fault_transport_and_interrupt_always_stop_without_return_motion(self):
         for failure in (RuntimeError("driver"), OSError("transport"), KeyboardInterrupt()):
             board = Mock()

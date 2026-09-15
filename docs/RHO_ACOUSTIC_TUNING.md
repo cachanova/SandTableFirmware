@@ -37,6 +37,21 @@ requested, checking standstill adaptation before motion. This does not alter
 the dedicated homing profile, which already uses automatic current control.
 See the [TMC2209 datasheet, PWMCONF and section 6.4](https://www.analog.com/media/en/technical-documentation/data-sheets/TMC2209_datasheet_rev1.09.pdf).
 
+The regulated 275 mA / manual-gradient-0 comparison settled at standstill
+(`PWM_SCALE_AUTO=0`, `PWM_OFS_AUTO=117..118`, `PWM_SCALE_SUM=32..33`). Its
+3.5 mm/s offset screen remained too loud: -54.97 dBFS upper bound versus
+-55.15 for the fixed-PWM comparison. Both inward 100 -> 50 mm legs were
+loud, with stable background, full cruise and no planner/driver errors. This
+change establishes regulated current for further tests; it is not an acoustic
+improvement. The following bounded home audit passed at ledger contacts
+2615, 2588 and 2644 steps (0.14 mm span), with a 21.63 dB first-contact
+audio rise. Its origin reset was accepted on SG evidence, not camera evidence.
+
+Reducing that regulated profile to 2 mm/s passed the six-leg offset screen at
+-60.74 dBFS upper bound (-61.76 estimated motor excess), with valid local
+background/timing, full cruise and no faults. This is the first regulated
+candidate to pass the known noisy section, not a full-stroke qualification.
+
 The initial sweep rechecked the historical fixed-PWM 128/2, u8 interpolated,
 CoolStep-off family at 200 mA requested run/hold. The older acoustic winners used 150/75 mA at 4.25,
 2, and 1 mm/s, acceleration 20 and jerk 100, but later reversal stress lost
