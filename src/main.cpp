@@ -18,6 +18,7 @@ LEDController ledController(Config::kLedPin);
 
 TaskHandle_t motorTaskHandle = NULL;
 TaskHandle_t webTaskHandle = NULL;
+void reportPreviousPanic();
 
 void motorTask(void *parameter) {
     LOG("Motor task started on Core %d\r\n", xPortGetCoreID());
@@ -163,6 +164,7 @@ void setup() {
 
     LOG("\n\n=== Sisyphus Table Starting ===\r\n");
     LOG("ESP reset reason: %d\r\n", static_cast<int>(esp_reset_reason()));
+    reportPreviousPanic();
 
     // Initialize SD Card
 #ifdef SISYPHUS_SKIP_SD_HARDWARE
@@ -197,6 +199,9 @@ void setup() {
     }
 
     LOG("WiFi connected!\r\n");
+    // This mains-powered controller prioritizes control/stream latency over
+    // modem sleep, which otherwise delays packet delivery between DTIM wakes.
+    WiFi.setSleep(false);
     LOG("IP Address: %s\r\n", WiFi.localIP().toString().c_str());
     LOG("SSID: %s\r\n", WiFi.SSID().c_str());
 

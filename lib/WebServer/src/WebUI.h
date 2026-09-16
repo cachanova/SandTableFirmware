@@ -102,7 +102,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
         }
         .canvas-inner { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; }
         .viewer-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
-        #pattern-overlay { z-index: 1; }
+        #pattern-overlay { z-index: 1; object-fit: contain; filter: brightness(0); opacity: 0.25; }
         #path-canvas { z-index: 2; }
         #ball-canvas { z-index: 3; }
 
@@ -207,14 +207,27 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
         .pattern-list { max-height: 320px; overflow-y: auto; }
         .pattern-list-item {
             display: flex;
-            align-items: baseline;
+            align-items: center;
             gap: 14px;
             padding: 11px 2px;
+            width: 100%;
+            border: 0;
             border-bottom: 1px solid var(--hair);
+            background: none;
+            color: inherit;
+            text-align: left;
             cursor: pointer;
         }
         .pattern-list-item:hover { background: var(--wash); }
+        .pattern-list-item:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
         .pattern-list-item.selected { background: var(--wash); box-shadow: inset 3px 0 0 var(--ink); padding-left: 10px; }
+        .pattern-thumbnail {
+            position: relative; display: grid; place-items: center;
+            width: 56px; height: 56px; flex: none; overflow: hidden;
+            border: 1px solid var(--hair); border-radius: 50%; background: var(--wash);
+            color: var(--ink-faint); font-size: 10px; text-align: center;
+        }
+        .pattern-thumbnail img { position: absolute; width: 100%; height: 100%; object-fit: contain; background: var(--ink); }
         .pattern-info { flex: 1; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
         .pattern-name {
             font-family: var(--serif);
@@ -224,7 +237,6 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             text-overflow: ellipsis;
         }
         .pattern-list-item.selected .pattern-name { font-style: italic; }
-        .pattern-size { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); flex: none; }
 
         /* Buttons */
         .actions { display: flex; gap: 12px; margin-top: 18px; flex-wrap: wrap; }
@@ -411,6 +423,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 <span class="stage-uptime">up <span id="uptime">0s</span></span>
             </div>
             <div class="stage-title" id="current-pattern">None</div>
+            <div id="playback-message" role="status" aria-live="polite"></div>
             <div id="file-progress-container" style="display: none;">
                 <div class="progress-rule"><div class="progress-rule-fill" id="file-progress-bar"></div></div>
                 <div class="progress-pct" id="file-progress-text">0%</div>
@@ -419,7 +432,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             <div class="viewer-wrapper">
                 <div class="canvas-container">
                     <div class="canvas-inner">
-                        <img id="pattern-overlay" class="viewer-canvas" style="object-fit: cover; opacity: 0.45; display: none;" src="" onerror="this.style.display='none'">
+                        <img id="pattern-overlay" class="viewer-canvas" style="display: none;" alt="" aria-hidden="true">
                         <canvas id="path-canvas" class="viewer-canvas" width="800" height="800"></canvas>
                         <canvas id="ball-canvas" class="viewer-canvas" width="800" height="800"></canvas>
                     </div>
@@ -428,7 +441,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             <div class="position-display" id="position-coords">Loading...</div>
 
             <div class="transport">
-                <button class="t-btn t-main" id="btn-start">Start</button>
+                <button class="t-btn t-main" id="btn-start" disabled>Start</button>
                 <button class="t-btn" id="btn-pause">Pause</button>
                 <button class="t-btn" id="btn-stop">Stop</button>
                 <button class="t-btn" id="btn-home">Home</button>
@@ -606,13 +619,12 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 this.setupEventListeners();
                 this.setupUploadHandlers();
                 this.connectStream();
-                try { await this.loadFileList(); } catch (error) { console.error('File list unavailable:', error); }
-                try { await this.loadSystemInfo(); } catch (error) { console.error('System info unavailable:', error); }
-                try { this.updateUI(await this.getStatus()); } catch (error) { console.error('Status unavailable:', error); }
-                try { this.updateErrorUI(await this.getErrors()); } catch (error) { console.error('Error log unavailable:', error); }
-                try { await this.loadPlaylistStatus(); } catch (error) { console.error('Playlist unavailable:', error); }
+                // Controls/status must not wait behind the SD library or images.
                 this.startStatusPolling();
                 this.startErrorPolling();
+                this.loadFileList();
+                try { await this.loadSystemInfo(); } catch (error) { console.error('System info unavailable:', error); }
+                try { await this.loadPlaylistStatus(); } catch (error) { console.error('Playlist unavailable:', error); }
             }
             
             setupUploadHandlers() {
@@ -696,8 +708,13 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             }
 
             connectStream() {
+                if (this.eventSource) this.eventSource.close();
                 this.eventSource = new EventSource('/api/stream');
-
+                this.eventSource.addEventListener('open', () => {
+                    // A reconnect has no replay: never draw a chord across missing motion.
+                    this.pendingPositions = [];
+                    this.lastX = this.lastY = undefined;
+                });
                 this.eventSource.addEventListener('pos', (e) => {
                     try {
                         this.drawStreamPosition(JSON.parse(e.data));
@@ -710,6 +727,22 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 this.ballCanvas = document.getElementById('ball-canvas');
                 this.ctxPath = this.pathCanvas.getContext('2d');
                 this.ctxBall = this.ballCanvas.getContext('2d');
+                this.positionLabel = document.getElementById('position-coords');
+                // Cache the shaded ball instead of rebuilding its gradient on every sample.
+                this.ballSprite = document.createElement('canvas');
+                this.ballSprite.width = this.ballSprite.height = 28;
+                const sprite = this.ballSprite.getContext('2d');
+                sprite.fillStyle = 'rgba(0, 0, 0, 0.2)';
+                sprite.beginPath();
+                sprite.arc(14, 14, 10, 0, 2 * Math.PI);
+                sprite.fill();
+                const gradient = sprite.createRadialGradient(9, 9, 0, 12, 12, 10);
+                gradient.addColorStop(0, '#888');
+                gradient.addColorStop(1, '#333');
+                sprite.fillStyle = gradient;
+                sprite.beginPath();
+                sprite.arc(12, 12, 10, 0, 2 * Math.PI);
+                sprite.fill();
                 this.drawTable();
             }
 
@@ -719,8 +752,6 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
 
                 const centerX = this.pathCanvas.width / 2;
                 const centerY = this.pathCanvas.height / 2;
-                const radius = Math.min(centerX, centerY) - 20;
-
                 ctx.clearRect(0, 0, this.pathCanvas.width, this.pathCanvas.height);
 
                 // Draw subtle center marker
@@ -731,69 +762,80 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             }
 
             drawStreamPosition(data) {
-                if (!this.ctxPath || !this.ctxBall) return;
-
-                if (data.clear) {
-                    this.clearPath();
+                if (!this.ctxPath || !this.ctxBall || !data ||
+                    !Number.isFinite(data.x) || !Number.isFinite(data.y)) return;
+                if (!this.pendingPositions) this.pendingPositions = [];
+                // requestAnimationFrame pauses in background tabs; bound the retained samples.
+                if (this.pendingPositions.length >= 128 || data.clear) {
+                    if (this.pendingPositions.some(point => point.clear)) data = { ...data, clear: true };
+                    this.pendingPositions = [];
+                    this.lastX = this.lastY = undefined;
                 }
+                this.pendingPositions.push(data);
+                if (this.positionFrame === undefined) {
+                    this.positionFrame = requestAnimationFrame(() => this.renderStreamPositions());
+                }
+            }
 
+            renderStreamPositions() {
+                this.positionFrame = undefined;
+                const positions = this.pendingPositions || [];
+                this.pendingPositions = [];
+                if (!positions.length) return;
                 const centerX = this.pathCanvas.width / 2;
                 const centerY = this.pathCanvas.height / 2;
                 const radius = Math.min(centerX, centerY) - 20;
-
-                const x = centerX + (data.x - 0.5) * 2 * radius;
-                const y = centerY + (data.y - 0.5) * 2 * radius;
-
-                // Draw path line
-                if (this.lastX !== undefined) {
-                    const ctx = this.ctxPath;
-                    ctx.strokeStyle = 'rgba(26, 25, 23, 0.8)';
-                    ctx.lineWidth = 3;
-                    ctx.lineCap = 'round';
-                    ctx.beginPath();
-                    ctx.moveTo(this.lastX, this.lastY);
-                    ctx.lineTo(x, y);
-                    ctx.stroke();
-                }
-
-                // Draw ball
-                const ctxB = this.ctxBall;
-                ctxB.clearRect(0, 0, this.ballCanvas.width, this.ballCanvas.height);
-
-                // Ball shadow
-                ctxB.fillStyle = 'rgba(0, 0, 0, 0.2)';
-                ctxB.beginPath();
-                ctxB.arc(x + 2, y + 2, 10, 0, 2 * Math.PI);
-                ctxB.fill();
-
-                // Ball
-                const gradient = ctxB.createRadialGradient(x - 3, y - 3, 0, x, y, 10);
-                gradient.addColorStop(0, '#888');
-                gradient.addColorStop(1, '#333');
-                ctxB.fillStyle = gradient;
-                ctxB.beginPath();
-                ctxB.arc(x, y, 10, 0, 2 * Math.PI);
-                ctxB.fill();
-
-                this.lastX = x;
-                this.lastY = y;
-
+                const ctx = this.ctxPath;
+                ctx.strokeStyle = 'rgba(26, 25, 23, 0.8)';
+                ctx.lineWidth = 3;
+                ctx.lineCap = 'round';
+                positions.forEach(data => {
+                    if (data.clear) {
+                        this.lastX = this.lastY = undefined;
+                        this.drawTable();
+                    }
+                    const x = centerX + (data.x - 0.5) * 2 * radius;
+                    const y = centerY + (data.y - 0.5) * 2 * radius;
+                    if (this.lastX !== undefined && (this.lastX !== x || this.lastY !== y)) {
+                        ctx.beginPath();
+                        ctx.moveTo(this.lastX, this.lastY);
+                        ctx.lineTo(x, y);
+                        ctx.stroke();
+                    }
+                    this.lastX = x;
+                    this.lastY = y;
+                });
+                this.drawBall(this.lastX, this.lastY);
+                const data = positions[positions.length - 1];
+                const now = performance.now();
+                if (this.lastPositionLabelAt !== undefined && now - this.lastPositionLabelAt < 250 &&
+                    !(data.vr === 0 && data.vt === 0)) return;
+                this.lastPositionLabelAt = now;
                 const formatValue = (value, digits) =>
                     Number.isFinite(value) ? value.toFixed(digits) : '--';
                 const thetaDeg = Number.isFinite(data.t) ? data.t * 180 / Math.PI : NaN;
                 const thetaVelDeg = Number.isFinite(data.vt) ? data.vt * 180 / Math.PI : NaN;
 
-                document.getElementById('position-coords').textContent =
+                this.positionLabel.textContent =
                     `ρ ${formatValue(data.r, 1)}mm  ·  θ ${formatValue(thetaDeg, 1)}°  ·  vρ ${formatValue(data.vr, 1)}mm/s  ·  vθ ${formatValue(thetaVelDeg, 1)}°/s  ·  vxy ${formatValue(data.vc, 1)}mm/s`;
             }
 
+            drawBall(x, y) {
+                if (this.ballX === x && this.ballY === y) return;
+                if (this.ballX !== undefined) {
+                    this.ctxBall.clearRect(this.ballX - 14, this.ballY - 14, 32, 32);
+                }
+                this.ctxBall.drawImage(this.ballSprite, x - 12, y - 12);
+                this.ballX = x;
+                this.ballY = y;
+            }
+
             clearPath() {
+                this.pendingPositions = [];
                 this.lastX = undefined;
                 this.lastY = undefined;
                 this.drawTable();
-                if (this.ctxBall) {
-                    this.ctxBall.clearRect(0, 0, this.ballCanvas.width, this.ballCanvas.height);
-                }
+                // Clearing the history must not erase the last known stationary ball.
             }
 
             setupEventListeners() {
@@ -835,55 +877,84 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 document.getElementById('playlist-clearing-toggle').addEventListener('change', (e) => this.setPlaylistClearing(e.target.checked));
             }
 
-            async getStatus() {
-                const response = await fetch(this.apiBase + '/status');
-                return await response.json();
+            async requestJSON(path, options = {}, timeoutMs = 4000) {
+                const abort = new AbortController();
+                const timer = setTimeout(() => abort.abort(), timeoutMs);
+                try {
+                    const response = await fetch(this.apiBase + path, {
+                        ...options, signal: abort.signal, cache: 'no-store'
+                    });
+                    const result = await response.json();
+                    if (!response.ok || result.success === false) {
+                        const error = new Error(result.message || `Request failed (${response.status})`);
+                        error.status = response.status;
+                        throw error;
+                    }
+                    return result;
+                } finally {
+                    clearTimeout(timer);
+                }
             }
 
-            async getErrors() {
-                const response = await fetch(this.apiBase + '/errors');
-                if (!response.ok) {
-                    return { errors: [], count: 0, total: 0, dropped: 0 };
-                }
-                return await response.json();
-            }
+            async getStatus() { return this.requestJSON('/status'); }
+            async getErrors() { return this.requestJSON('/errors'); }
 
             async startPattern() {
+                if (this.startInFlight) return;
                 const file = this.selectedPattern;
-                const clearing = document.getElementById('clearing-select').value;
                 if (!file) { alert('Please select a pattern'); return; }
-
-                // Optimistic UI update
-                this.clearPath();
-                const stateBadge = document.getElementById('state-badge');
-                stateBadge.textContent = "STARTING...";
-                stateBadge.className = 'status-badge status-running';
-
+                this.startInFlight = true;
+                const button = document.getElementById('btn-start');
+                const message = document.getElementById('playback-message');
+                button.disabled = true;
+                message.textContent = `Requesting ${file.replace(/\.thr$/, '')}…`;
                 const formData = new FormData();
                 formData.append('file', file);
-                formData.append('clearing', clearing);
-
+                formData.append('clearing', document.getElementById('clearing-select').value);
                 try {
-                    const response = await fetch(this.apiBase + '/pattern/start', { method: 'POST', body: formData });
-                    const result = await response.json();
-                    if (!result.success) {
-                        alert('Error: ' + result.message);
-                    } else {
-                        // Force a status poll after a short delay to see the RUNNING state
-                        setTimeout(() => this.pollStatusOnce(), 200);
-                    }
-                } catch (err) {
-                    alert('Request failed');
+                    await this.requestJSON('/pattern/start', {method: 'POST', body: formData});
+                    this.clearPath();
+                    message.textContent = 'Pattern queued.';
+                } catch (error) {
+                    message.textContent = error.status ? error.message
+                        : 'No acknowledgement from the table. Start is unconfirmed; check its status before retrying.';
+                } finally {
+                    this.startInFlight = false;
+                    await this.pollStatusOnce().catch(() => {});
                 }
             }
 
-            async pollStatusOnce() {
-                const status = await this.getStatus();
-                this.updateUI(status);
+            pollStatusOnce() {
+                // A slow chip gets ONE outstanding status request, including
+                // polls triggered by commands. Never accumulate interval fetches.
+                if (this.statusRequest) return this.statusRequest;
+                this.statusRequest = this.getStatus().then(status => {
+                    this.updateUI(status);
+                    return status;
+                }).catch(error => {
+                    const badge = document.getElementById('state-badge');
+                    badge.textContent = 'CONNECTION LOST';
+                    badge.className = 'status-badge status-warning';
+                    document.getElementById('btn-start').disabled = true;
+                    throw error;
+                }).finally(() => { this.statusRequest = null; });
+                return this.statusRequest;
             }
 
-            async stopPattern() { await fetch(this.apiBase + '/pattern/stop', { method: 'POST' }); }
-            async pausePattern() { await fetch(this.apiBase + '/pattern/pause', { method: 'POST' }); }
+            async playbackCommand(path) {
+                const message = document.getElementById('playback-message');
+                try {
+                    await this.requestJSON(path, {method: 'POST'});
+                    message.textContent = '';
+                } catch (error) {
+                    message.textContent = error.status ? error.message
+                        : 'No acknowledgement from the table. Check its status before retrying.';
+                }
+                await this.pollStatusOnce().catch(() => {});
+            }
+
+            async stopPattern() { await this.playbackCommand('/pattern/stop'); }
+            async pausePattern() { await this.playbackCommand('/pattern/pause'); }
 
             async abortHoming() {
                 // Never delay an active homing stop behind a confirmation dialog.
@@ -946,9 +1017,13 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             }
 
             async loadFileList() {
+                if (this.fileListInFlight) return;
+                clearTimeout(this.fileListRetry);
+                this.fileListInFlight = true;
                 try {
-                    const response = await fetch(this.apiBase + '/files');
-                    const data = await response.json();
+                    const data = await this.requestJSON('/files');
+                    this.fileListRevision = data.revision;
+                    if (data.loading) this.fileListRetry = setTimeout(() => this.loadFileList(), 750);
                     this.storageAvailable = data.storageAvailable !== false;
                     this.files = data.files || [];
                     this.fileTimes = {};
@@ -969,13 +1044,28 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     });
                     this.renderPatternList();
                     this.updateStorageControls();
+                    // Status can arrive before the library during startup.
+                    // Revisit its requested overlay once image metadata is ready.
+                    if (this.overlayFilename && !this.overlaySuppressed) {
+                        this.setOverlayImage(this.overlayFilename);
+                    }
                 } catch (error) {
-                    console.error('Error loading files:', error);
+                    if (!this.files.length) {
+                        document.getElementById('pattern-list-container').textContent =
+                            error.status === 503 ? 'Loading pattern library…' : 'Pattern library unavailable. Retrying…';
+                    }
+                    this.fileListRetry = setTimeout(() => this.loadFileList(), error.status === 503 ? 750 : 3000);
+                } finally {
+                    this.fileListInFlight = false;
                 }
             }
 
             renderPatternList() {
                 const container = document.getElementById('pattern-list-container');
+                if (this.thumbnailObserver) this.thumbnailObserver.disconnect();
+                if (this.thumbnailScrollHandler) container.removeEventListener('scroll', this.thumbnailScrollHandler);
+                this.thumbnailQueue = [];
+                this.visibleThumbnails = new Set();
                 if (!this.storageAvailable) {
                     container.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--warn);">SD card not detected — patterns are unavailable</div>';
                     return;
@@ -989,18 +1079,21 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     const isSelected = this.selectedPattern === file.name;
                     const displayName = file.name.replace('.thr', '');
                     const hasImage = !!file.hasImage;
-                    const imgTime = hasImage ? (file.imageTime || 0) : 0;
+                    const imgTime = hasImage ? (file.imageTime || file.time || 0) : 0;
                     const thumbUrl = hasImage
-                        ? `/api/pattern/image?file=${encodeURIComponent(displayName)}&t=${imgTime}`
+                        ? `/api/pattern/image?file=${encodeURIComponent(file.name)}&t=${imgTime}`
                         : '';
                     
                     return `
-                    <div class="pattern-list-item ${isSelected ? 'selected' : ''}" data-index="${index}">
-                        <div class="pattern-info">
-                            <div class="pattern-name">${this.escapeHtml(displayName)}</div>
-                            <div class="pattern-size">${file.size > 0 ? Math.round(file.size / 1024) + ' KB' : ''}</div>
-                        </div>
-                    </div>`;
+                    <button type="button" class="pattern-list-item ${isSelected ? 'selected' : ''}" data-index="${index}" aria-pressed="${isSelected}">
+                        <span class="pattern-thumbnail" aria-hidden="true">
+                            <span>${hasImage ? 'Preview' : 'No preview'}</span>
+                            ${hasImage ? `<img data-preview-url="${thumbUrl}" alt="" width="56" height="56" decoding="async" hidden>` : ''}
+                        </span>
+                        <span class="pattern-info">
+                            <span class="pattern-name">${this.escapeHtml(displayName)}</span>
+                        </span>
+                    </button>`;
                 }).join('');
                 container.querySelectorAll('.pattern-list-item').forEach(item => {
                     item.addEventListener('click', () => {
@@ -1008,6 +1101,89 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                         if (file) this.selectPattern(file.name);
                     });
                 });
+                this.observePatternThumbnails(container);
+            }
+
+            observePatternThumbnails(container) {
+                const images = container.querySelectorAll('img[data-preview-url]');
+                const updateVisibility = (img, visible) => {
+                    if (!visible) {
+                        this.visibleThumbnails.delete(img);
+                        return;
+                    }
+                    this.visibleThumbnails.add(img);
+                    if (!img.dataset.previewState) {
+                        img.dataset.previewState = 'queued';
+                        this.thumbnailQueue.push(img);
+                    }
+                };
+                if (typeof IntersectionObserver !== 'undefined') {
+                    // Observe the visible frame: a hidden image has no intersection area.
+                    this.thumbnailObserver = new IntersectionObserver(entries => {
+                        entries.forEach(entry => updateVisibility(entry.target.querySelector('img'), entry.isIntersecting));
+                        this.loadNextPatternThumbnail();
+                    }, { root: container, rootMargin: '0px' });
+                    images.forEach(img => this.thumbnailObserver.observe(img.parentElement));
+                } else {
+                    this.thumbnailScrollHandler = () => {
+                        const bounds = container.getBoundingClientRect();
+                        images.forEach(img => {
+                            const rect = img.parentElement.getBoundingClientRect();
+                            updateVisibility(img, rect.bottom > bounds.top && rect.top < bounds.bottom);
+                        });
+                        this.loadNextPatternThumbnail();
+                    };
+                    container.addEventListener('scroll', this.thumbnailScrollHandler, { passive: true });
+                    this.thumbnailScrollHandler();
+                }
+            }
+
+            async loadNextPatternThumbnail() {
+                // Only one SD image read at a time, and only for rows still in view.
+                if (this.thumbnailLoading) return;
+                let img;
+                while ((img = this.thumbnailQueue.shift())) {
+                    if (img.isConnected && this.visibleThumbnails.has(img)) break;
+                    delete img.dataset.previewState;
+                    img = null;
+                }
+                if (!img) return;
+                this.thumbnailLoading = true;
+                img.dataset.previewState = 'loading';
+                const abort = new AbortController();
+                const timeout = setTimeout(() => abort.abort(), 8000);
+                let objectUrl = null;
+                try {
+                    // Versioned URLs share the browser cache with the full pattern image.
+                    const response = await fetch(img.dataset.previewUrl, { signal: abort.signal, cache: 'default' });
+                    if (!response.ok) throw new Error('Preview unavailable');
+                    const blob = await response.blob();
+                    if (!img.isConnected) return;
+                    objectUrl = URL.createObjectURL(blob);
+                    const release = () => {
+                        if (objectUrl) URL.revokeObjectURL(objectUrl);
+                        objectUrl = null;
+                    };
+                    img.onload = () => {
+                        img.hidden = false;
+                        img.previousElementSibling.hidden = true;
+                        release();
+                    };
+                    img.onerror = () => {
+                        img.hidden = true;
+                        img.previousElementSibling.textContent = 'No preview';
+                        release();
+                    };
+                    img.src = objectUrl;
+                    img.dataset.previewState = 'loaded';
+                } catch (error) {
+                    img.dataset.previewState = 'unavailable';
+                    if (img.isConnected) img.previousElementSibling.textContent = 'No preview';
+                } finally {
+                    clearTimeout(timeout);
+                    this.thumbnailLoading = false;
+                    this.loadNextPatternThumbnail();
+                }
             }
 
             escapeHtml(value) {
@@ -1022,8 +1198,8 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 items.forEach(item => {
                     const file = this.files[Number(item.dataset.index)];
                     item.classList.toggle('selected', !!file && file.name === filename);
+                    item.setAttribute('aria-pressed', String(!!file && file.name === filename));
                 });
-                this.preloadPatternImage(filename);
             }
 
             preloadPatternImage(filename) {
@@ -1040,21 +1216,26 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
 
             async setOverlayImage(filename) {
                 const img = document.getElementById('pattern-overlay');
-                if (!filename || filename === 'None') {
+                const requestId = ++this.overlayRequestId;
+                if (this.overlayFilename !== filename) img.style.display = 'none';
+                this.overlayFilename = filename;
+                if (!filename || filename === 'None' || !this.fileHasImage[filename]) {
                     img.style.display = 'none';
                     img.src = '';
-                    return;
-                }
-                if (!this.fileHasImage[filename]) {
-                    img.style.display = 'none';
-                    img.src = '';
+                    if (this.overlayObjectUrl && this.overlayObjectUrlIsTemp) {
+                        URL.revokeObjectURL(this.overlayObjectUrl);
+                    }
+                    this.overlayObjectUrl = null;
+                    this.overlayObjectUrlIsTemp = false;
                     return;
                 }
                 const t = this.fileImageTimes[filename] || this.fileTimes[filename] || 0;
                 const nextSrc = `/api/pattern/image?file=${encodeURIComponent(filename)}&t=${t}`;
-                const requestId = ++this.overlayRequestId;
                 const result = await this.fetchPatternImageUrl(nextSrc, 3);
-                if (requestId !== this.overlayRequestId) return;
+                if (requestId !== this.overlayRequestId) {
+                    if (result && result.revoke) URL.revokeObjectURL(result.src);
+                    return;
+                }
                 if (this.overlayObjectUrl && this.overlayObjectUrlIsTemp) {
                     URL.revokeObjectURL(this.overlayObjectUrl);
                 }
@@ -1065,14 +1246,19 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     this.overlayObjectUrlIsTemp = false;
                     return;
                 }
-                img.onload = () => {
-                    img.style.display = 'block';
+                const release = () => {
                     if (result.revoke) {
                         URL.revokeObjectURL(result.src);
+                        if (this.overlayObjectUrl === result.src) this.overlayObjectUrlIsTemp = false;
                     }
                 };
+                img.onload = () => {
+                    if (requestId === this.overlayRequestId) img.style.display = 'block';
+                    release();
+                };
                 img.onerror = () => {
-                    img.style.display = 'none';
+                    if (requestId === this.overlayRequestId) img.style.display = 'none';
+                    release();
                 };
                 img.src = result.src;
                 this.overlayObjectUrl = result.src;
@@ -1086,8 +1272,10 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             async fetchPatternImageUrl(url, retries) {
                 let attempt = 0;
                 while (attempt <= retries) {
+                    const abort = new AbortController();
+                    const timeout = setTimeout(() => abort.abort(), 8000);
                     try {
-                        const response = await fetch(url, { cache: 'no-cache' });
+                        const response = await fetch(url, { cache: 'default', signal: abort.signal });
                         if (response.status === 503) {
                             let delayMs = 1000;
                             const retryAfter = response.headers.get('Retry-After');
@@ -1114,14 +1302,15 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                         if (attempt === retries) return null;
                         await this.sleep(1000);
                         attempt += 1;
+                    } finally {
+                        clearTimeout(timeout);
                     }
                 }
                 return null;
             }
 
             async loadSystemInfo() {
-                const response = await fetch(this.apiBase + '/system/info');
-                const data = await response.json();
+                const data = await this.requestJSON('/system/info');
                 document.getElementById('heap').textContent = Math.round(data.heap / 1024) + ' KB';
                 document.getElementById('wifi-ssid').textContent = data.wifi.ssid;
                 document.getElementById('wifi-ip').textContent = data.wifi.ip;
@@ -1134,6 +1323,9 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 document.getElementById('btn-home-abort').disabled = !this.homingActive || !!this.abortInFlight;
                 const stateBadge = document.getElementById('state-badge');
                 stateBadge.textContent = status.state;
+                if (!this.startInFlight && ['RUNNING', 'CLEARING'].includes(status.state)) {
+                    document.getElementById('playback-message').textContent = '';
+                }
                 stateBadge.className = 'status-badge status-' + status.state.toLowerCase();
 
                 const homingCard = document.getElementById('homing-card');
@@ -1190,9 +1382,12 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 homingDetails.textContent = homingPasses.join(' | ');
 
                 document.getElementById('btn-home').disabled = !['INITIALIZED', 'HOMING_FAILED'].includes(status.state);
-                document.getElementById('btn-start').disabled = status.state !== 'IDLE' || !this.storageAvailable;
+                document.getElementById('btn-start').disabled = this.startInFlight || status.state !== 'IDLE' || !this.storageAvailable;
 
-                const currentPattern = status.currentPattern || 'None';
+                if (status.fileListRevision !== undefined && status.fileListRevision !== this.fileListRevision) {
+                    this.loadFileList();
+                }
+                const currentPattern = status.currentPattern || status.queuedPattern || 'None';
                 const clearingPattern = status.clearingPattern || '';
                 const isClearing = status.state === 'CLEARING';
                 const displayPattern = (isClearing && clearingPattern) ? `Clearing: ${clearingPattern}` : currentPattern;
@@ -1340,30 +1535,27 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             }
 
             startStatusPolling() {
-                this.statusInterval = setInterval(async () => {
-                    try {
-                        const status = await this.getStatus();
-                        this.updateUI(status);
-                    } catch (error) {
-                        console.error('Status poll failed:', error);
-                    }
-                }, 500);
+                clearTimeout(this.statusInterval);
+                const poll = async () => {
+                    try { await this.pollStatusOnce(); } catch (error) { /* Connection state is visible. */ }
+                    this.statusInterval = setTimeout(poll, document.hidden ? 3000 : 500);
+                };
+                poll();
             }
 
             startErrorPolling() {
-                this.errorsInterval = setInterval(async () => {
-                    try {
-                        const errors = await this.getErrors();
-                        this.updateErrorUI(errors);
-                    } catch (error) {
-                        console.error('Error poll failed:', error);
-                    }
-                }, 1000);
+                clearTimeout(this.errorsInterval);
+                const poll = async () => {
+                    try { this.updateErrorUI(await this.getErrors()); }
+                    catch (error) { console.error('Error poll failed:', error); }
+                    this.errorsInterval = setTimeout(poll, document.hidden ? 10000 : 2000);
+                };
+                poll();
             }
 
             updateStorageControls() {
                 const disabled = !this.storageAvailable;
-                ['btn-upload-new', 'btn-start', 'btn-add-to-playlist',
+                ['btn-upload-new', 'btn-add-to-playlist',
                  'btn-add-all-to-playlist', 'btn-playlist-start',
                  'btn-save-playlist', 'btn-load-playlist'].forEach(id => {
                     const element = document.getElementById(id);
@@ -1411,15 +1603,16 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 this.updateErrorUI(errors);
             }
 
-            async startPlaylist() {
-                const response = await fetch(this.apiBase + '/playlist/start', { method: 'POST' });
-                const result = await response.json();
-                if (!result.success) alert('Error: ' + result.message);
+            async startPlaylist() { await this.playbackCommand('/playlist/start'); }
+            async stopPlaylist() { await this.playbackCommand('/playlist/stop'); }
+            async playlistPrev() {
+                await this.playbackCommand('/playlist/prev');
+                await this.loadPlaylistStatus().catch(() => {});
             }
-
-            async stopPlaylist() { await fetch(this.apiBase + '/playlist/stop', { method: 'POST' }); }
-            async playlistPrev() { await fetch(this.apiBase + '/playlist/prev', { method: 'POST' }); await this.loadPlaylistStatus(); }
-            async playlistNext() { await fetch(this.apiBase + '/playlist/next', { method: 'POST' }); await this.loadPlaylistStatus(); }
+            async playlistNext() {
+                await this.playbackCommand('/playlist/next');
+                await this.loadPlaylistStatus().catch(() => {});
+            }
 
             async setPlaylistLoop(enabled) {
                 const formData = new FormData();
@@ -1464,8 +1657,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             }
 
             async loadPlaylistStatus() {
-                const response = await fetch(this.apiBase + '/playlist');
-                const data = await response.json();
+                const data = await this.requestJSON('/playlist');
 
                 document.getElementById('playlist-loop-toggle').checked = data.loop;
                 document.getElementById('playlist-clearing-toggle').checked = data.clearingEnabled !== false;

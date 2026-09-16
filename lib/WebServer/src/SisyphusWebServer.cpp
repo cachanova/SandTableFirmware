@@ -5,6 +5,8 @@
 #include "TuningUI.h"
 #include "FileUI.h"
 #include "JsonHelpers.hpp"
+#include "BufferedResponse.hpp"
+#include "PatternImageResponse.hpp"
 #include "PolarUtils.hpp"
 #include "MakeUnique.hpp"
 #include <SDCard.hpp>
@@ -16,6 +18,8 @@
 #include <climits>
 #include <cmath>
 #include <cstdlib>
+#include <dirent.h>
+#include <sys/stat.h>
 
 static constexpr size_t kResponseBufferSize = 256;
 static constexpr unsigned long kStatusCacheMs = 300;
@@ -23,8 +27,9 @@ static constexpr unsigned long kErrorsCacheMs = 1000;
 static constexpr unsigned long kFileCacheThrottleMs = 500;
 
 struct UploadContext {
-    char finalPath[160];
-    char tempPath[160];
+    // An 80-character filename is repeated in the nested directory path.
+    char finalPath[192];
+    char tempPath[192];
     size_t maxBytes;
     size_t received;
     int status;
@@ -156,18 +161,16 @@ static bool requirePatternStorage(AsyncWebServerRequest* request) {
     return false;
 }
 
-// Helper to resolve pattern file path
-static String resolvePatternPath(const String& filename) {
-    if (!isSDCardReady()) return "";
-    if (!validSimpleFilename(filename, ".thr")) return "";
-    String basename = filename;
-    if (basename.endsWith(".thr")) basename = basename.substring(0, basename.length() - 4);
-
-    String nestedPath = "/patterns/" + basename + "/" + filename;
-    if (SD.exists(nestedPath)) {
-        return nestedPath;
-    }
-    return "/patterns/" + filename;
+// Resolve from the metadata index: starting a known pattern needs no SD opens
+// on the AsyncTCP task. The file reader reports any subsequent open failure.
+String SisyphusWebServer::resolvePatternPath(const String& filename) {
+    if (!isSDCardReady() || !validSimpleFilename(filename, ".thr")) return "";
+    const String base = filename.substring(0, filename.length() - 4);
+    SemaphoreGuard cacheLock(m_cacheMutex);
+    const FileEntry* entry = findFileEntryByBase(base);
+    if (!entry) return "";
+    return entry->isDirectory ? "/patterns/" + base + "/" + filename
+                              : "/patterns/" + filename;
 }
 
 static constexpr bool kEnablePatternImages = true;
@@ -210,7 +213,10 @@ void SisyphusWebServer::getRequestStats(uint32_t& total, uint32_t& inflight) con
 void SisyphusWebServer::noteRequest(AsyncWebServerRequest *request) {
     m_requestTotal.fetch_add(1);
     m_requestInflight.fetch_add(1);
-    request->onDisconnect([this]() {
+    const bool imageRequest = request->url() == "/api/pattern/image";
+    if (imageRequest) m_imageInflight.fetch_add(1);
+    request->onDisconnect([this, imageRequest]() {
+        if (imageRequest) m_imageInflight.fetch_sub(1);
         uint32_t current = m_requestInflight.load();
         while (current > 0 && !m_requestInflight.compare_exchange_weak(current, current - 1)) {
         }
@@ -398,8 +404,10 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
             if (!requirePatternStorage(request)) return;
 
             // Limit concurrent file operations to prevent FD exhaustion (FATFS limit is low)
-            if (m_requestInflight > 3) {
-                request->send(503);
+            if (m_imageInflight > 2) {
+                AsyncWebServerResponse* response = request->beginResponse(503);
+                response->addHeader("Retry-After", "1");
+                request->send(response);
                 return;
             }
 
@@ -415,6 +423,7 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
             // Lookup in cache
             bool found = false;
             time_t imgTime = 0;
+            size_t imageSize = 0;
             String pngPath;
 
             if (m_cacheMutex) {
@@ -423,13 +432,14 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
                 if (entry && entry->hasImage && entry->pngPath.length() > 0) {
                     found = true;
                     imgTime = entry->imageTime;
+                    imageSize = entry->imageSize;
                     pngPath = entry->pngPath;
                 }
                 xSemaphoreGive(m_cacheMutex);
             }
 
             if (!found) {
-                if (m_fileListDirty) {
+                if (m_fileListDirty || m_fileScanActive) {
                     AsyncWebServerResponse *response = request->beginResponse(503);
                     response->addHeader("Retry-After", "1");
                     request->send(response);
@@ -449,7 +459,12 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
                         return;
                     }
                 }
-                AsyncWebServerResponse *response = request->beginResponse(SD, pngPath, "image/png");
+                auto* response = new PatternImageResponse(pngPath, imageSize);
+                if (!response->_sourceValid()) {
+                    delete response;
+                    request->send(503);
+                    return;
+                }
                 response->addHeader("Cache-Control", "public, max-age=31536000, immutable");
 
                 if (imgTime > 0) {
@@ -671,14 +686,14 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
     // Driver dump routes (for diagnostics)
     m_server.on("/api/tuning/dump/theta", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
-        AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
+        BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
         m_polarControl->writeThetaDriverSettings(*response);
         request->send(response);
     });
 
     m_server.on("/api/tuning/dump/rho", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
-        AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
+        BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
         m_polarControl->writeRhoDriverSettings(*response,
             request->hasParam("motionHealth") &&
             request->getParam("motionHealth")->value() == "true");
@@ -687,7 +702,7 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
 
     m_server.on("/api/tuning/dump/rho-companion", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
-        AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
+        BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
         m_polarControl->writeRhoCompanionDriverSettings(*response,
             request->hasParam("motionHealth") &&
             request->getParam("motionHealth")->value() == "true");
@@ -700,114 +715,94 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
     });
     m_server.addHandler(&m_events);
 
+    if (xTaskCreatePinnedToCore(fileCacheTask, "FileIndex", 4096, this, 1,
+                                &m_fileCacheTask, 0) != pdPASS) {
+        ErrorLog::instance().log("ERROR", "SD", "INDEX_TASK_FAILED",
+                                 "Could not create pattern index task");
+    }
     m_server.begin();
     LOG("Web server started on port 80\r\n");
 }
 
-void SisyphusWebServer::updateFileListCache() {
-    LOG("Updating file list cache in memory...\r\n");
+void SisyphusWebServer::fileCacheTask(void* arg) {
+    auto* self = static_cast<SisyphusWebServer*>(arg);
+    for (;;) {
+        // Consume dirty BEFORE scanning so uploads/deletes during a scan are
+        // never lost. Keep the previous complete index available until swap.
+        if (self->m_fileListDirty.load()) {
+            self->m_fileScanActive.store(true);
+            self->m_fileListDirty.exchange(false);
+            self->updateFileListCache();
+            self->m_fileScanActive.store(false);
+        }
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(kFileCacheThrottleMs));
+    }
+}
 
+void SisyphusWebServer::updateFileListCache() {
+    const uint32_t started = millis();
     std::vector<FileEntry> newCache;
     std::vector<FileIndexEntry> newIndex;
-
-    if (!isSDCardReady()) {
-        if (m_cacheMutex) {
-            xSemaphoreTake(m_cacheMutex, portMAX_DELAY);
-            m_fileCache.clear();
-            m_fileIndex.clear();
-            xSemaphoreGive(m_cacheMutex);
+    if (isSDCardReady()) {
+        // Arduino SD.open/exists/openNextFile each repeat stat/open work.
+        // Enumerate names once and stat only the two metadata records needed;
+        // never open a .thr or .png just to learn its size or modification time.
+        DIR* root = opendir("/sd/patterns");
+        if (!root) {
+            ErrorLog::instance().log("ERROR", "SD", "OPEN_DIR_FAILED",
+                                     "Failed to index patterns directory", "/patterns");
+            return;
         }
-        m_fileListDirty.store(false);
-        m_lastFileCacheUpdate = millis();
-        LOG("Pattern storage unavailable; file cache left empty\r\n");
-        return;
-    }
-
-    File root = SD.open("/patterns");
-    if (!root) {
-        LOG("ERROR: Failed to open patterns directory\r\n");
-        ErrorLog::instance().log("ERROR", "SD", "OPEN_DIR_FAILED",
-                                 "Failed to open patterns directory", "/patterns");
-        if (m_cacheMutex) {
-            xSemaphoreTake(m_cacheMutex, portMAX_DELAY);
-            m_fileCache.clear();
-            m_fileIndex.clear();
-            xSemaphoreGive(m_cacheMutex);
-        }
-        m_fileListDirty = false; // Prevent infinite retry loop if SD fails
-        m_lastFileCacheUpdate = millis();
-        return;
-    }
-
-    File file = root.openNextFile();
-    while (file) {
-        String name = String(file.name());
-        if (name.startsWith("/")) name = name.substring(1);
-
-        if (file.isDirectory()) {
-            // Check for pattern inside directory
-            String patternFile = name + ".thr";
-            String innerPath = "/patterns/" + name + "/" + patternFile;
-            if (SD.exists(innerPath)) {
-                File innerFile = SD.open(innerPath);
-                if (innerFile) {
-                    // Check for image inside directory
-                    String pngPath = "/patterns/" + name + "/" + name + ".png";
-                    bool hasImg = false;
-                    time_t imgTime = 0;
-
-                    if (SD.exists(pngPath)) {
-                        hasImg = true;
-                        File img = SD.open(pngPath);
-                        if (img) {
-                            imgTime = img.getLastWrite();
-                            img.close();
-                        }
-                    }
-
-                    FileEntry entry{patternFile, name, innerFile.size(), innerFile.getLastWrite(),
-                                    hasImg, imgTime, true, hasImg ? pngPath : ""};
-                    newIndex.push_back({entry.baseName, newCache.size()});
-                    newCache.push_back(entry);
-                    innerFile.close();
-                }
+        while (dirent* file = readdir(root)) {
+            const String name(file->d_name);
+            vTaskDelay(pdMS_TO_TICKS(1));
+            if (name.startsWith(".")) continue;
+            bool nested = file->d_type == DT_DIR;
+            if (file->d_type == DT_UNKNOWN) {
+                struct stat info{};
+                if (stat(("/sd/patterns/" + name).c_str(), &info) != 0) continue;
+                nested = S_ISDIR(info.st_mode);
             }
-        } else if (name.endsWith(".thr")) {
-            String baseName = name.substring(0, name.length() - 4);
-            String pngPath = "/patterns/" + baseName + ".png";
-            bool hasImg = SD.exists(pngPath);
-            time_t imgTime = 0;
-            if (hasImg) {
-                File img = SD.open(pngPath);
-                if (img) {
-                    imgTime = img.getLastWrite();
-                    img.close();
-                }
-            }
-            FileEntry entry{name, baseName, file.size(), file.getLastWrite(),
-                            hasImg, imgTime, false, hasImg ? pngPath : ""};
-            newIndex.push_back({entry.baseName, newCache.size()});
-            newCache.push_back(entry);
+            const String patternName = nested ? name + ".thr" : name;
+            if (!validSimpleFilename(patternName, ".thr")) continue;
+            const String base = patternName.substring(0, patternName.length() - 4);
+            const String prefix = nested ? "/patterns/" + name + "/" : "/patterns/";
+            struct stat patternInfo{};
+            if (stat(("/sd" + prefix + patternName).c_str(), &patternInfo) != 0 ||
+                !S_ISREG(patternInfo.st_mode)) continue;
+            const String pngPath = prefix + base + ".png";
+            struct stat imageInfo{};
+            const bool hasImage = stat(("/sd" + pngPath).c_str(), &imageInfo) == 0 &&
+                S_ISREG(imageInfo.st_mode);
+            FileEntry entry{patternName, base, static_cast<size_t>(patternInfo.st_size),
+                            patternInfo.st_mtime, hasImage,
+                            hasImage ? imageInfo.st_mtime : 0,
+                            hasImage ? static_cast<size_t>(imageInfo.st_size) : 0, nested,
+                            hasImage ? pngPath : ""};
+            auto existing = std::find_if(newCache.begin(), newCache.end(),
+                [&](const FileEntry& item) { return item.baseName == base; });
+            // Preserve the resolver's historical preference for a nested
+            // pattern when a legacy flat file has the same name.
+            if (existing == newCache.end()) newCache.push_back(std::move(entry));
+            else if (nested) *existing = std::move(entry);
+
         }
-        file.close();
-        file = root.openNextFile();
+        closedir(root);
     }
-    root.close();
-
-    if (m_cacheMutex) {
-        xSemaphoreTake(m_cacheMutex, portMAX_DELAY);
-        m_fileCache = std::move(newCache);
-        m_fileIndex = std::move(newIndex);
-        std::sort(m_fileIndex.begin(), m_fileIndex.end(),
-                  [](const FileIndexEntry& a, const FileIndexEntry& b) {
-                      return a.baseName.compareTo(b.baseName) < 0;
-                  });
-        xSemaphoreGive(m_cacheMutex);
+    newIndex.reserve(newCache.size());
+    for (size_t i = 0; i < newCache.size(); ++i) newIndex.push_back({newCache[i].baseName, i});
+    std::sort(newIndex.begin(), newIndex.end(), [](const FileIndexEntry& a, const FileIndexEntry& b) {
+        return a.baseName.compareTo(b.baseName) < 0;
+    });
+    const size_t count = newCache.size();
+    {
+        SemaphoreGuard cacheLock(m_cacheMutex);
+        m_fileCache.swap(newCache);
+        m_fileIndex.swap(newIndex);
+        m_fileListRevision.fetch_add(1);
     }
-
-    m_fileListDirty = false;
-    m_lastFileCacheUpdate = millis();
-    LOG("File list cache updated: %u files\r\n", m_fileCache.size());
+    LOG("Pattern index: %u files in %lums (metadata only)\r\n",
+        static_cast<unsigned>(count), static_cast<unsigned long>(millis() - started));
 }
 
 const SisyphusWebServer::FileEntry* SisyphusWebServer::findFileEntryByBase(const String& baseName) const {
@@ -831,92 +826,80 @@ const SisyphusWebServer::FileEntry* SisyphusWebServer::findFileEntryByBase(const
 }
 
 void SisyphusWebServer::loop() {
-    if (m_fileListDirty && (millis() - m_lastFileCacheUpdate) >= kFileCacheThrottleMs) {
-        updateFileListCache();
-    }
     processPatternQueue();
     broadcastPosition();
 }
 
+static void formatPositionEvent(char* buffer, size_t capacity,
+                                const PolarCord_t& position,
+                                const PolarVelocity_t& velocity,
+                                const CartesianCord_t& norm, bool clear) {
+    // Radial and tangential components are perpendicular; no extra sin/cos
+    // calls are needed to calculate Cartesian speed.
+    const float speed = hypotf(velocity.rho, position.rho * velocity.theta);
+    snprintf(buffer, capacity,
+             "{\"x\":%.4f,\"y\":%.4f,\"r\":%.1f,\"t\":%.2f,\"vr\":%.2f,\"vt\":%.3f,\"vc\":%.2f%s}",
+             norm.x, norm.y, position.rho, position.theta, velocity.rho,
+             velocity.theta, speed, clear ? ",\"clear\":1" : "");
+}
+
 void SisyphusWebServer::broadcastSinglePosition(AsyncEventSourceClient *client) {
-    // Get actual position (thread-safe now)
-    PolarCord_t actualPos = m_polarControl->getActualPosition();
-    PolarVelocity_t actualVel = m_polarControl->getActualVelocity();
-    float maxRho = m_polarControl->getMaxRho();
-
-    // Convert to normalized Cartesian coordinates (0-1 range)
-    CartesianCord_t norm = PolarUtils::toNormalizedCartesian(actualPos, maxRho);
-
-    // Create compact JSON manually to save heap
-    float cosT = cosf(actualPos.theta);
-    float sinT = sinf(actualPos.theta);
-    float cartVelX = actualVel.rho * cosT - actualPos.rho * sinT * actualVel.theta;
-    float cartVelY = actualVel.rho * sinT + actualPos.rho * cosT * actualVel.theta;
-    float cartVel = sqrtf(cartVelX * cartVelX + cartVelY * cartVelY);
-
+    PolarCord_t position;
+    PolarVelocity_t velocity;
+    uint32_t completed;
+    m_polarControl->getPositionSample(position, velocity, completed);
+    const CartesianCord_t norm = PolarUtils::toNormalizedCartesian(
+        position, m_polarControl->getMaxRho());
     char buffer[196];
-    snprintf(buffer, sizeof(buffer),
-             "{\"x\":%.4f,\"y\":%.4f,\"r\":%.1f,\"t\":%.2f,\"vr\":%.2f,\"vt\":%.3f,\"vc\":%.2f}",
-             norm.x, norm.y, actualPos.rho, actualPos.theta, actualVel.rho, actualVel.theta, cartVel);
-
+    formatPositionEvent(buffer, sizeof(buffer), position, velocity, norm, false);
     try {
-        if (client) {
-            client->send(buffer, "pos", millis());
-        } else {
-            m_events.send(buffer, "pos", millis());
-        }
+        if (client) client->send(buffer, "pos", millis());
+        else m_events.send(buffer, "pos", millis());
     } catch (...) {
-        // Drop the event on allocation failure to avoid crashing Core 0.
+        // Position is replaceable; the next heartbeat repairs a dropped sample.
     }
 }
 
 void SisyphusWebServer::broadcastPosition() {
-    // Broadcast position check every ~66ms (~15Hz)
-    unsigned long now = millis();
+    const unsigned long now = millis();
     if (now - m_lastPosBroadcast < 66) return;
     m_lastPosBroadcast = now;
-
     if (m_events.count() == 0) return;
+    // Do not build a seconds-long backlog of stale ball positions on slow
+    // connections. Resume with the latest position when queued samples drain.
+    if (m_events.avgPacketsWaiting() > 2) return;
 
-    // Get actual position
-    PolarCord_t actualPos = m_polarControl->getActualPosition();
-    float maxRho = m_polarControl->getMaxRho();
-    CartesianCord_t norm = PolarUtils::toNormalizedCartesian(actualPos, maxRho);
-
-    // Only broadcast if changed significantly to reduce network load
-    if (abs(norm.x - m_lastBroadcastX) < 0.0001 && abs(norm.y - m_lastBroadcastY) < 0.0001) {
-        return;
+    PolarCord_t position;
+    PolarVelocity_t velocity;
+    uint32_t completed;
+    bool shouldClear;
+    {
+        SemaphoreGuard stateLock(m_stateMutex);
+        m_polarControl->getPositionSample(position, velocity, completed);
+        shouldClear = !m_firstPointCleared.load() && completed >= 1;
+        if (shouldClear) m_firstPointCleared.store(true);
     }
+    const CartesianCord_t norm = PolarUtils::toNormalizedCartesian(
+        position, m_polarControl->getMaxRho());
+    const bool unchanged = fabsf(norm.x - m_lastBroadcastX) < 0.0001f &&
+        fabsf(norm.y - m_lastBroadcastY) < 0.0001f &&
+        fabsf(velocity.rho - m_lastBroadcastVr) < 0.005f &&
+        fabsf(velocity.theta - m_lastBroadcastVt) < 0.0005f;
+    // Include stopped velocity and a one-second heartbeat even when XY is
+    // unchanged. Otherwise the browser can retain a stale speed indefinitely.
+    if (unchanged && !shouldClear && now - m_lastPosSent < 1000) return;
 
-    m_lastBroadcastX = norm.x;
-    m_lastBroadcastY = norm.y;
-
-    // Check if we should signal a clear (reached first point of pattern)
-    bool shouldClear = false;
-    if (!m_firstPointCleared && m_polarControl->getSegmentsCompleted() >= 1) {
-        shouldClear = true;
-        m_firstPointCleared = true;
-    }
-
-    if (shouldClear) {
-        PolarVelocity_t actualVel = m_polarControl->getActualVelocity();
-        float cosT = cosf(actualPos.theta);
-        float sinT = sinf(actualPos.theta);
-        float cartVelX = actualVel.rho * cosT - actualPos.rho * sinT * actualVel.theta;
-        float cartVelY = actualVel.rho * sinT + actualPos.rho * cosT * actualVel.theta;
-        float cartVel = sqrtf(cartVelX * cartVelX + cartVelY * cartVelY);
-
-        char buffer[196];
-        snprintf(buffer, sizeof(buffer),
-                 "{\"x\":%.4f,\"y\":%.4f,\"r\":%.1f,\"t\":%.2f,\"vr\":%.2f,\"vt\":%.3f,\"vc\":%.2f,\"clear\":1}",
-                 norm.x, norm.y, actualPos.rho, actualPos.theta, actualVel.rho, actualVel.theta, cartVel);
-        try {
-            m_events.send(buffer, "pos", millis());
-        } catch (...) {
-            // Drop the event on allocation failure to avoid crashing Core 0.
-        }
-    } else {
-        broadcastSinglePosition();
+    char buffer[196];
+    formatPositionEvent(buffer, sizeof(buffer), position, velocity, norm, shouldClear);
+    try {
+        if (m_events.send(buffer, "pos", now) == AsyncEventSource::DISCARDED) return;
+        m_lastBroadcastX = norm.x;
+        m_lastBroadcastY = norm.y;
+        m_lastBroadcastVr = velocity.rho;
+        m_lastBroadcastVt = velocity.theta;
+        m_lastPosSent = now;
+    } catch (...) {
+        // Position is replaceable; the next heartbeat repairs a dropped sample.
     }
 }
 
@@ -1007,8 +990,7 @@ void SisyphusWebServer::processPatternQueue() {
         m_currentPattern = m_pendingPattern;
         m_firstPointCleared = false;
 
-        m_polarControl->loadAndRunFile(resolvePatternPath(m_pendingPattern));
-        m_activeMotion = MotionOwner::PATTERN;
+        beginPatternLocked(m_pendingPattern);
         m_pendingPattern = "";
         m_runningClearing = false;
         m_singlePatternClearing = false;
@@ -1034,9 +1016,7 @@ void SisyphusWebServer::processPatternQueue() {
                 m_runningClearing = false;
                 m_singlePatternClearing = false;
                 m_activeClearingPattern = CLEARING_NONE;
-                m_polarControl->loadAndRunFile(resolvePatternPath(m_pendingPattern));
-                m_activeMotion = MotionOwner::PATTERN;
-                m_currentPattern = m_pendingPattern;
+                beginPatternLocked(m_pendingPattern);
                 m_pendingPattern = "";
             } else {
                 m_activeClearingPattern = pattern;
@@ -1048,8 +1028,7 @@ void SisyphusWebServer::processPatternQueue() {
         m_currentPattern = m_queuedPattern;
         m_firstPointCleared = false;
         m_polarControl->resetTheta();
-        m_polarControl->loadAndRunFile(resolvePatternPath(m_queuedPattern));
-        m_activeMotion = MotionOwner::PATTERN;
+        beginPatternLocked(m_queuedPattern);
         m_hasQueuedPattern = false;
         m_queuedPattern = "";
         return;
@@ -1062,8 +1041,7 @@ void SisyphusWebServer::processPatternQueue() {
             m_polarControl->resetTheta();
             m_currentPattern = m_pendingPattern;
             m_firstPointCleared = false;
-            m_polarControl->loadAndRunFile(resolvePatternPath(m_pendingPattern));
-            m_activeMotion = MotionOwner::PATTERN;
+            beginPatternLocked(m_pendingPattern);
             m_pendingPattern = "";
             m_runningClearing = false;
             m_activeClearingPattern = CLEARING_NONE;
@@ -1084,8 +1062,7 @@ void SisyphusWebServer::processPatternQueue() {
                     if (!m_polarControl->startClearing(std_patch::make_unique<ClearingPatternGen>(pattern, m_polarControl->getMaxRho()))) {
                         m_runningClearing = false;
                         m_activeClearingPattern = CLEARING_NONE;
-                        m_polarControl->loadAndRunFile(resolvePatternPath(next.filename));
-                        m_activeMotion = MotionOwner::PATTERN;
+                        beginPatternLocked(next.filename);
                     } else {
                         m_activeClearingPattern = pattern;
                         m_activeMotion = MotionOwner::PATTERN;
@@ -1095,8 +1072,7 @@ void SisyphusWebServer::processPatternQueue() {
                     m_polarControl->resetTheta();
                     m_currentPattern = next.filename;
                     m_firstPointCleared = false;
-                    m_polarControl->loadAndRunFile(resolvePatternPath(next.filename));
-                    m_activeMotion = MotionOwner::PATTERN;
+                    beginPatternLocked(next.filename);
                 }
             }
         } else {
@@ -1113,11 +1089,26 @@ void SisyphusWebServer::processPatternQueue() {
     }
 }
 
+bool SisyphusWebServer::beginPatternLocked(const String& filename) {
+    const String path = resolvePatternPath(filename);
+    if (path.isEmpty() || !m_polarControl->loadAndRunFile(path)) {
+        ErrorLog::instance().log("ERROR", "FILE", "START_FAILED",
+                                 "Pattern could not be started", filename.c_str());
+        m_currentPattern = "";
+        m_activeMotion = MotionOwner::NONE;
+        return false;
+    }
+    m_currentPattern = filename;
+    m_activeMotion = MotionOwner::PATTERN;
+    return true;
+}
+
 void SisyphusWebServer::clearPlaybackLocked() {
     m_pendingMotion = PendingMotion::NONE;
     m_hasQueuedPattern = false;
     m_queuedPattern = "";
     m_currentPattern = "";
+    m_statusCache = "";
     m_pendingPattern = "";
     m_runningClearing = false;
     m_singlePatternClearing = false;
@@ -1173,7 +1164,9 @@ void SisyphusWebServer::writeStatusJSON(Print& out) {
     if (m_polarControl->getState() == PolarControl::CLEARING) {
         clearingPattern = getClearingPatternName(m_activeClearingPattern);
     }
-    JsonHelpers::writeStatusJSON(out, m_polarControl, m_ledController, m_currentPattern, clearingPattern);
+    JsonHelpers::writeStatusJSON(out, m_polarControl, m_ledController, m_currentPattern,
+        clearingPattern, m_hasQueuedPattern ? m_queuedPattern : m_pendingPattern,
+        m_fileListRevision.load());
 }
 
 void SisyphusWebServer::writeFileListJSON(Print& out) {
@@ -1272,7 +1265,7 @@ void SisyphusWebServer::handleLogs(AsyncWebServerRequest *request) {
                       "{\"success\":false,\"message\":\"Invalid since or limit\"}");
         return;
     }
-    AsyncResponseStream *response = request->beginResponseStream("application/json", 1024);
+    BufferedResponse *response = new BufferedResponse("application/json", 1024);
     response->addHeader("Cache-Control", "no-store");
     RuntimeLog::instance().writeJson(*response, since, limit);
     request->send(response);
@@ -1285,7 +1278,7 @@ void SisyphusWebServer::handleLogsText(AsyncWebServerRequest *request) {
         request->send(400, "text/plain", "Invalid since or limit\n");
         return;
     }
-    AsyncResponseStream *response = request->beginResponseStream("text/plain", 1024);
+    BufferedResponse *response = new BufferedResponse("text/plain", 1024);
     response->addHeader("Cache-Control", "no-store");
     RuntimeLog::instance().writeText(*response, since, limit);
     request->send(response);
@@ -1309,13 +1302,18 @@ void SisyphusWebServer::handlePatternStart(AsyncWebServerRequest *request) {
     String filePath = resolvePatternPath(file);
 
     if (filePath.length() == 0) {
-        request->send(400, "application/json", "{\"success\":false,\"message\":\"Invalid filename\"}");
+        request->send(404, "application/json", "{\"success\":false,\"message\":\"File not found\"}");
         return;
     }
 
-    if (!SD.exists(filePath)) {
-        request->send(404, "application/json", "{\"success\":false,\"message\":\"File not found\"}");
-        return;
+    {
+        SemaphoreGuard cacheLock(m_cacheMutex);
+        const FileEntry* entry = findFileEntryByBase(file.substring(0, file.length() - 4));
+        if (entry && entry->size == 0) {
+            request->send(422, "application/json",
+                "{\"success\":false,\"message\":\"Pattern file is empty\"}");
+            return;
+        }
     }
 
     // Check for clearing parameter
@@ -1345,6 +1343,7 @@ void SisyphusWebServer::handlePatternStart(AsyncWebServerRequest *request) {
     m_selectedClearing = selectedClearing;
     m_queuedPattern = file;
     m_hasQueuedPattern = true;
+    m_statusCache = "";
 
     request->send(202, "application/json", "{\"success\":true,\"message\":\"Pattern queued\"}");
 }
@@ -1415,7 +1414,7 @@ void SisyphusWebServer::handleMotionTelemetry(AsyncWebServerRequest *request) {
     m_polarControl->getTelemetry(telemetry);
     const uint32_t sampleMicros = micros();
 
-    AsyncResponseStream *response = request->beginResponseStream("application/json", 1536);
+    BufferedResponse *response = new BufferedResponse("application/json", 1536);
     response->print("{\"state\":\"");
     response->print(getStateString());
     response->printf(
@@ -1483,7 +1482,7 @@ void SisyphusWebServer::handleRhoServiceModeGet(
         "{\"success\":false,\"message\":\"RHO service mode is unavailable\"}");
 #else
     const bool commissioning = m_rhoCommissioningMode.load();
-    AsyncResponseStream *response = request->beginResponseStream(
+    BufferedResponse *response = new BufferedResponse(
         "application/json", 192);
     response->printf(
         "{\"success\":true,\"mode\":\"%s\",\"originConfirmed\":%s,"
@@ -1838,7 +1837,7 @@ void SisyphusWebServer::handleHomingTrace(
     const size_t count = m_polarControl->getHomingTrace(
         samples.get(), kTraceCapacity, &total);
     const HomingStatus status = m_polarControl->getHomingStatus();
-    AsyncResponseStream *response = request->beginResponseStream(
+    BufferedResponse *response = new BufferedResponse(
         "application/json", 256 + count * 128);
     response->printf("{\"cycle\":%lu,\"count\":%u,\"total\":%lu,\"samples\":[",
         static_cast<unsigned long>(status.cycle), static_cast<unsigned>(count),
@@ -1905,17 +1904,19 @@ void SisyphusWebServer::handleFileList(AsyncWebServerRequest *request) {
     }
 
     // If cache is empty and we are marked dirty, it means we are likely initializing
-    if (isEmpty && m_fileListDirty) {
+    if (isEmpty && (m_fileListDirty || m_fileScanActive)) {
         AsyncWebServerResponse *response = request->beginResponse(503, "application/json", "{\"success\":false,\"message\":\"File list generating...\"}");
         response->addHeader("Retry-After", "1");
         request->send(response);
         return;
     }
 
-    AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
+    BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
     response->print("{\"storageAvailable\":");
     response->print(isSDCardReady() ? "true" : "false");
-    response->print(",\"files\":[");
+    response->printf(",\"loading\":%s,\"revision\":%lu,\"files\":[",
+                     (m_fileListDirty || m_fileScanActive) ? "true" : "false",
+                     static_cast<unsigned long>(m_fileListRevision.load()));
 
     if (m_cacheMutex) {
         xSemaphoreTake(m_cacheMutex, portMAX_DELAY);
@@ -2070,7 +2071,7 @@ void SisyphusWebServer::handleLEDBrightnessGet(AsyncWebServerRequest *request) {
     uint8_t brightness = m_ledController->getBrightness();
     doc["brightness"] = map(brightness, 0, 255, 0, 100);
 
-    AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
+    BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
     serializeJson(doc, *response);
     request->send(response);
 }
@@ -2103,7 +2104,7 @@ void SisyphusWebServer::handleSpeedGet(AsyncWebServerRequest *request) {
     JsonDocument doc;
     doc["speed"] = m_polarControl->getSpeed();
 
-    AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
+    BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
     serializeJson(doc, *response);
     request->send(response);
 }
@@ -2131,7 +2132,7 @@ void SisyphusWebServer::handleSpeedSet(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handleSystemInfo(AsyncWebServerRequest *request) {
-    AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
+    BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
     writeSystemInfoJSON(*response);
     request->send(response);
 }
@@ -2151,7 +2152,7 @@ void SisyphusWebServer::handlePlaylistAdd(AsyncWebServerRequest *request) {
 
     String file = request->getParam("file", true)->value();
     const String path = resolvePatternPath(file);
-    if (path.length() == 0 || !SD.exists(path) || !m_playlist.addPattern(file)) {
+    if (path.length() == 0 || !m_playlist.addPattern(file)) {
         request->send(400, "application/json",
             "{\"success\":false,\"message\":\"Invalid pattern\"}");
         return;
@@ -2163,37 +2164,20 @@ void SisyphusWebServer::handlePlaylistAdd(AsyncWebServerRequest *request) {
 void SisyphusWebServer::handlePlaylistAddAll(AsyncWebServerRequest *request) {
     SemaphoreGuard stateLock(m_stateMutex);
     if (!requirePatternStorage(request)) return;
-    File root = SD.open("/patterns");
-    if (!root) {
-        ErrorLog::instance().log("ERROR", "SD", "OPEN_DIR_FAILED",
-                                 "Failed to open patterns directory", "/patterns");
-        request->send(500, "application/json", "{\"success\":false,\"message\":\"Failed to open patterns directory\"}");
-        return;
-    }
-
     int count = 0;
-    File file = root.openNextFile();
-    while (file) {
-        String filename = String(file.name());
-        if (filename.startsWith("/")) filename = filename.substring(1);
-
-        if (file.isDirectory()) {
-            // Check for pattern inside directory: /patterns/<name>/<name>.thr
-            String nestedPath = "/patterns/" + filename + "/" + filename + ".thr";
-            if (SD.exists(nestedPath)) {
-                if (m_playlist.addPattern(filename + ".thr")) count++;
-            }
-        } else {
-            if (filename.endsWith(".thr")) {
-                if (m_playlist.addPattern(filename)) count++;
-            }
+    {
+        SemaphoreGuard cacheLock(m_cacheMutex);
+        if (m_fileCache.empty() && (m_fileListDirty || m_fileScanActive)) {
+            request->send(503, "application/json",
+                "{\"success\":false,\"message\":\"Pattern library is still loading\"}");
+            return;
         }
-        file.close();
-        file = root.openNextFile();
+        for (const auto& entry : m_fileCache) {
+            if (m_playlist.addPattern(entry.name)) ++count;
+        }
     }
-    root.close();
 
-    AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
+    BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
     response->printf("{\"success\":true,\"count\":%d}", count);
     request->send(response);
 }
@@ -2225,7 +2209,7 @@ void SisyphusWebServer::handlePlaylistClear(AsyncWebServerRequest *request) {
 
 void SisyphusWebServer::handlePlaylistGet(AsyncWebServerRequest *request) {
     SemaphoreGuard stateLock(m_stateMutex);
-    AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
+    BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
     response->print("{\"loop\":");
     response->print(m_playlist.isLoop() ? "true" : "false");
     response->print(",\"playing\":");
@@ -2350,7 +2334,7 @@ void SisyphusWebServer::handlePlaylistList(AsyncWebServerRequest *request) {
             "{\"storageAvailable\":false,\"playlists\":[]}");
         return;
     }
-    AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
+    BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
     response->print("{\"storageAvailable\":true,\"playlists\":[");
     bool first = true;
 
@@ -2495,7 +2479,7 @@ void SisyphusWebServer::handlePosition(AsyncWebServerRequest *request) {
         LOG("API Position: rho=%.2f theta=%.2f\r\n", actualPos.rho, actualPos.theta);
     }
 
-    AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
+    BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
 
     if (isnan(actualPos.rho) || isnan(actualPos.theta)) {
         response->printf("{\"current\":null,\"maxRho\":%.2f}", maxRho);
@@ -2777,7 +2761,7 @@ void SisyphusWebServer::handleTuningGet(AsyncWebServerRequest *request) {
         Config::kRhoMaxUnmeasuredCurrentRegister;
     doc["persistenceAvailable"] = m_polarControl->tuningPersistenceAvailable();
 
-    AsyncResponseStream *response = request->beginResponseStream("application/json", kResponseBufferSize);
+    BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
     serializeJson(doc, *response);
     request->send(response);
 }

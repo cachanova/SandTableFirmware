@@ -161,48 +161,66 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
         const apiBase = '/api';
         let storageAvailable = true;
 
+        let fileListInFlight = false;
+        let fileListRetry;
         async function loadFileList() {
-            const response = await fetch(apiBase + '/files');
-            const data = await response.json();
-            const fileList = document.getElementById('file-list');
-            fileList.innerHTML = '';
-            storageAvailable = data.storageAvailable !== false;
-            const uploadArea = document.getElementById('upload-area');
-            uploadArea.style.pointerEvents = storageAvailable ? '' : 'none';
-            uploadArea.style.opacity = storageAvailable ? '' : '0.5';
+            if (fileListInFlight) return;
+            fileListInFlight = true;
+            clearTimeout(fileListRetry);
+            const abort = new AbortController();
+            const timeout = setTimeout(() => abort.abort(), 4000);
+            try {
+                const response = await fetch(apiBase + '/files', {signal: abort.signal, cache: 'no-store'});
+                if (!response.ok) throw new Error(response.status === 503 ? 'Loading pattern library…' : 'Pattern library unavailable. Retrying…');
+                const data = await response.json();
+                if (data.loading) fileListRetry = setTimeout(loadFileList, 750);
+                const fileList = document.getElementById('file-list');
+                fileList.innerHTML = '';
+                storageAvailable = data.storageAvailable !== false;
+                const uploadArea = document.getElementById('upload-area');
+                uploadArea.style.pointerEvents = storageAvailable ? '' : 'none';
+                uploadArea.style.opacity = storageAvailable ? '' : '0.5';
 
-            if (!storageAvailable) {
-                uploadArea.querySelector('.upload-text').textContent = 'SD card not detected — uploads unavailable';
-                fileList.innerHTML = '<div class="empty-state">SD card not detected — patterns unavailable</div>';
-                return;
-            }
+                if (!storageAvailable) {
+                    uploadArea.querySelector('.upload-text').textContent = 'SD card not detected — uploads unavailable';
+                    fileList.innerHTML = '<div class="empty-state">SD card not detected — patterns unavailable</div>';
+                    return;
+                }
 
-            if (data.files && data.files.length > 0) {
-                data.files.forEach(file => {
-                    const displayName = file.name.replace('.thr', '');
-                    const thumbUrl = apiBase + '/pattern/image?file=' + encodeURIComponent(displayName);
-                    const fileItem = document.createElement('div');
-                    fileItem.className = 'file-item';
-                    const info = document.createElement('div');
-                    info.className = 'file-info';
-                    const name = document.createElement('div');
-                    name.className = 'file-name';
-                    name.textContent = displayName;
-                    const size = document.createElement('div');
-                    size.className = 'file-size';
-                    size.textContent = file.size > 0 ? (file.size / 1024).toFixed(1) + ' KB' : '';
-                    const remove = document.createElement('button');
-                    remove.className = 'btn-delete';
-                    remove.textContent = 'Delete';
-                    remove.addEventListener('click', () => deleteFile(file.name));
-                    info.appendChild(name);
-                    info.appendChild(size);
-                    fileItem.appendChild(info);
-                    fileItem.appendChild(remove);
-                    fileList.appendChild(fileItem);
-                });
-            } else {
-                fileList.innerHTML = '<div class="empty-state">No pattern files found</div>';
+                if (data.files && data.files.length > 0) {
+                    data.files.forEach(file => {
+                        const displayName = file.name.replace('.thr', '');
+                        const thumbUrl = apiBase + '/pattern/image?file=' + encodeURIComponent(displayName);
+                        const fileItem = document.createElement('div');
+                        fileItem.className = 'file-item';
+                        const info = document.createElement('div');
+                        info.className = 'file-info';
+                        const name = document.createElement('div');
+                        name.className = 'file-name';
+                        name.textContent = displayName;
+                        const size = document.createElement('div');
+                        size.className = 'file-size';
+                        size.textContent = file.size > 0 ? (file.size / 1024).toFixed(1) + ' KB' : '';
+                        const remove = document.createElement('button');
+                        remove.className = 'btn-delete';
+                        remove.textContent = 'Delete';
+                        remove.addEventListener('click', () => deleteFile(file.name));
+                        info.appendChild(name);
+                        info.appendChild(size);
+                        fileItem.appendChild(info);
+                        fileItem.appendChild(remove);
+                        fileList.appendChild(fileItem);
+                    });
+                } else {
+                    fileList.innerHTML = '<div class="empty-state">No pattern files found</div>';
+                }
+            } catch (error) {
+                const list = document.getElementById('file-list');
+                if (!list.querySelector('.file-item')) list.textContent = error.message || 'Pattern library unavailable. Retrying…';
+                fileListRetry = setTimeout(loadFileList, 1000);
+            } finally {
+                clearTimeout(timeout);
+                fileListInFlight = false;
             }
         }
 

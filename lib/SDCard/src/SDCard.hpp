@@ -29,7 +29,7 @@ inline bool initSDCard() {
     // Explicitly initialize SPI with defined pins
     SPI.begin(SD_CLK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
 
-    // Initialize SD with CS pin, SPI instance, and high frequency (20MHz)
+    // The pinned Arduino SD driver limits supported cards to 25 MHz.
     if (!SD.begin(SD_CS_PIN, SPI, 40000000)) {
         LOG("ERROR: SD card mount failed!\r\n");
         ErrorLog::instance().log("ERROR", "SD", "MOUNT_FAILED", "SD card mount failed");

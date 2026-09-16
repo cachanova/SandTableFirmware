@@ -2611,6 +2611,7 @@ bool PolarControl::loadAndRunFile(String filePath, float maxRho) {
     strncpy(cmd.filename, filePath.c_str(), sizeof(cmd.filename) - 1);
     cmd.filename[sizeof(cmd.filename) - 1] = '\0';
     cmd.maxRho = maxRho;
+    cmd.generation = m_fileGeneration.fetch_add(1) + 1;
 
     // Set flag explicitly BEFORE command to prevent race condition with feedPlanner
     m_fileLoading = true;
@@ -2622,7 +2623,7 @@ bool PolarControl::loadAndRunFile(String filePath, float maxRho) {
     m_planner.resetCompletedCount();
 
     // Send command
-    if (xQueueSend(m_cmdQueue, &cmd, 100) != pdTRUE) {
+    if (xQueueSend(m_cmdQueue, &cmd, 0) != pdTRUE) {
         LOG("ERROR: Failed to send load command\r\n");
         ErrorLog::instance().log("ERROR", "FILE", "QUEUE_SEND_FAILED",
                                  "Failed to send load command");
@@ -2632,10 +2633,8 @@ bool PolarControl::loadAndRunFile(String filePath, float maxRho) {
     }
     LOG("Load command queued\r\n");
 
-    // Wait briefly for file task to start filling queue
-    vTaskDelay(10);
-    feedPlanner();
-
+    // The motor task starts feeding only after this load has been acknowledged.
+    // Never sleep or calculate profiles while holding the web-control lock.
     m_state = PREPARING;
     m_motionCompletionState.store(IDLE);
     xSemaphoreGive(m_mutex);
@@ -2812,6 +2811,15 @@ uint32_t PolarControl::getSegmentsCompleted() const {
     uint32_t completed = m_planner.getCompletedCount();
     xSemaphoreGive(m_mutex);
     return completed;
+}
+
+void PolarControl::getPositionSample(PolarCord_t& position, PolarVelocity_t& velocity,
+                                     uint32_t& completed) {
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    m_planner.getCurrentPosition(position.theta, position.rho);
+    m_planner.getCurrentVelocity(velocity.theta, velocity.rho);
+    completed = m_planner.getCompletedCount();
+    xSemaphoreGive(m_mutex);
 }
 
 void PolarControl::getDiagnostics(uint32_t& queueDepth, uint32_t& underruns) const {
@@ -3012,7 +3020,9 @@ void PolarControl::feedPlanner() {
             // Queue empty. The file task publishes completion atomically.
             if (!m_fileLoading.load()) {
                 // File done and queue empty -> End of Pattern
-                LOG("feedPlanner: Queue empty and fileLoading=false -> End of Pattern\r\n");
+                // This path runs on every motor tick until the last segment
+                // finishes. Serial logging here floods the UART while holding
+                // the motion mutex and delays status/stop requests.
                 m_planner.setEndOfPattern(true);
             }
             break;
@@ -3073,12 +3083,19 @@ bool PolarControl::processNextMove() {
     }
 
     if (m_state == RUNNING || m_state == CLEARING || m_state == PREPARING) {
+        // A preceding STOP may still be draining the old file. Its completion
+        // must not make a newly queued LOAD appear empty or feed stale points.
+        if (m_state == PREPARING &&
+            m_fileReadyGeneration.load() != m_fileGeneration.load()) {
+            xSemaphoreGive(m_mutex);
+            return false;
+        }
         // Feed more segments to the planner
         feedPlanner();
 
         // Check if pattern is complete
         if (m_planner.isIdle()) {
-            if (m_state == PREPARING && m_fileLoading) {
+            if (!m_posGen && m_fileLoading) {
                 xSemaphoreGive(m_mutex);
                 return false;
             }
@@ -4476,6 +4493,10 @@ void PolarControl::fileReadTask(void* arg) {
         if (xQueueReceive(pc->m_cmdQueue, &cmd, (directActive || hasPendingPos) ? 0 : portMAX_DELAY) == pdTRUE) {
             LOG("FileTask: Received command %d\r\n", cmd.type);
             if (cmd.type == FileCommand::CMD_LOAD) {
+                if (directFile) directFile.close();
+                hasPendingPos = false;
+                xQueueReset(pc->m_coordQueue);
+                pc->m_fileLoading.store(true);
                 LOG("FileTask: Opening %s with maxRho=%.2f\r\n", cmd.filename, cmd.maxRho);
                 strncpy(currentFilename, cmd.filename, sizeof(currentFilename) - 1);
                 currentFilename[sizeof(currentFilename) - 1] = '\0';
@@ -4501,6 +4522,7 @@ void PolarControl::fileReadTask(void* arg) {
                     pc->m_lastFilePos.store(0);
                     pc->m_lastFileSize.store(0);
                 }
+                pc->m_fileReadyGeneration.store(cmd.generation);
             } else if (cmd.type == FileCommand::CMD_STOP) {
                 LOG("FileTask: Stopping\r\n");
                 if (directFile) {

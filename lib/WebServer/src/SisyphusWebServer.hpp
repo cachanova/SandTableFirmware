@@ -61,7 +61,7 @@ private:
     PlaylistManager m_playlist;
     bool m_playlistMode;
     bool m_runningClearing;       // True if currently running a clearing pattern
-    bool m_firstPointCleared;     // True if we've cleared the lead-in path
+    std::atomic<bool> m_firstPointCleared; // True if we've cleared the lead-in path
     String m_pendingPattern;      // Pattern to run after clearing completes
     ClearingPattern m_activeClearingPattern;
 
@@ -137,6 +137,7 @@ private:
     // Helper methods
     void processPatternQueue();
     void clearPlaybackLocked();
+    bool beginPatternLocked(const String& filename);
     bool prepareReplacementLocked();
     bool prepareManualJogLocked();
     bool queueTuningTestLocked(PendingMotion motion);
@@ -149,16 +150,25 @@ private:
     void noteRequest(AsyncWebServerRequest *request);
     
     void updateFileListCache();
+    static void fileCacheTask(void* arg);
+    String resolvePatternPath(const String& filename);
     struct FileEntry;
     const FileEntry* findFileEntryByBase(const String& baseName) const;
 
     unsigned long m_lastPosBroadcast = 0; // Timer for position streaming
     float m_lastBroadcastX = -1.0f;
     float m_lastBroadcastY = -1.0f;
+    float m_lastBroadcastVr = 0.0f;
+    float m_lastBroadcastVt = 0.0f;
+    unsigned long m_lastPosSent = 0;
     std::atomic<uint32_t> m_requestTotal{0};
     std::atomic<uint32_t> m_requestInflight{0};
+    std::atomic<uint32_t> m_imageInflight{0};
 
     std::atomic<bool> m_fileListDirty; // Flag to trigger regeneration of cache
+    std::atomic<bool> m_fileScanActive{false};
+    std::atomic<uint32_t> m_fileListRevision{0};
+    TaskHandle_t m_fileCacheTask = nullptr;
 
     struct FileEntry {
         String name;
@@ -167,6 +177,7 @@ private:
         time_t time;
         bool hasImage;
         time_t imageTime;
+        size_t imageSize;
         bool isDirectory;
         String pngPath;
     };
@@ -178,7 +189,6 @@ private:
     std::vector<FileIndexEntry> m_fileIndex;
     SemaphoreHandle_t m_cacheMutex = nullptr;
     SemaphoreHandle_t m_stateMutex = nullptr;
-    unsigned long m_lastFileCacheUpdate = 0;
 
     String m_statusCache;
     unsigned long m_statusCacheAt = 0;

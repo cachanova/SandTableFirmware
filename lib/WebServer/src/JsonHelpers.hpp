@@ -8,7 +8,7 @@
 
 class JsonHelpers {
 public:
-    static void writeStatusJSON(Print& out, PolarControl* polarControl, LEDController* ledController, const String& currentPattern, const String& clearingPattern) {
+    static void writeStatusJSON(Print& out, PolarControl* polarControl, LEDController* ledController, const String& currentPattern, const String& clearingPattern, const String& queuedPattern, uint32_t fileListRevision) {
         String state = getStateString(polarControl->getState());
         int progress = polarControl->getProgressPercent();
         uint8_t brightness = ledController->getBrightness();
@@ -26,6 +26,8 @@ public:
         out.print(currentPattern);
         out.print("\",\"clearingPattern\":\"");
         out.print(clearingPattern);
+        out.print("\",\"queuedPattern\":\"");
+        out.print(queuedPattern);
         out.print("\",\"progress\":");
         out.print(progress);
         out.print(",\"clearingProgress\":");
@@ -42,6 +44,8 @@ public:
         out.print(static_cast<int>(esp_reset_reason()));
         out.print(",\"storageAvailable\":");
         out.print(isSDCardReady() ? "true" : "false");
+        out.print(",\"fileListRevision\":");
+        out.print(fileListRevision);
         out.print(",\"drivers\":{\"theta\":");
         out.print(drivers.theta ? "true" : "false");
         out.print(",\"rho\":");
@@ -161,6 +165,7 @@ public:
         wifi["ssid"] = WiFi.SSID();
         wifi["ip"] = WiFi.localIP().toString();
         wifi["rssi"] = WiFi.RSSI();
+        wifi["sleep"] = static_cast<int>(WiFi.getSleep());
         serializeJson(doc, out);
     }
 

@@ -237,6 +237,8 @@ public:
   PolarCord_t getCurrentPosition() const;
   PolarCord_t getActualPosition();
   PolarVelocity_t getActualVelocity();
+  void getPositionSample(PolarCord_t& position, PolarVelocity_t& velocity,
+                         uint32_t& completed);
   uint32_t getSegmentsCompleted() const;
   float getMaxRho() const { return R_MAX; }
   int getProgressPercent() const;
@@ -293,8 +295,9 @@ public:
 private:
   struct FileCommand {
       enum Type { CMD_LOAD, CMD_STOP } type;
-      char filename[64];
+      char filename[192];
       float maxRho;
+      uint32_t generation = 0;
   };
 
   static void fileReadTask(void* arg);
@@ -331,6 +334,8 @@ private:
   QueueHandle_t m_cmdQueue = NULL;
   TaskHandle_t m_fileTaskHandle = NULL;
   std::atomic<bool> m_fileLoading{false};
+  std::atomic<uint32_t> m_fileGeneration{0};
+  std::atomic<uint32_t> m_fileReadyGeneration{0};
   std::atomic<uint32_t> m_lastFileLine{0};
   std::atomic<uint32_t> m_lastFilePos{0};
   std::atomic<uint32_t> m_lastFileSize{0};
