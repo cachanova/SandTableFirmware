@@ -6,15 +6,39 @@ the telemetry-aligned analysis in `scripts/acoustic_tuner.py`.
 
 ## Current assembled main-only retune (2026-09-15)
 
-**Hardware testing paused after the 09:39 UTC slow-speed trial.** Three
+**Position recovered on 2026-09-16 at 00:43 UTC.** The operator reported a
+small outward offset and turned on the light. I ran the existing short-bound
+Home route without changing the homing settings or assigning logical zero.
+The first attempt reached its 3,200-pulse approach cap (8 mm) before a valid
+contact vote, reported failure 2 and disabled the RHO bridge. Preserve this
+failed attempt alongside the earlier 35 passing audits.
+
+The longer-exposure camera image then placed the carriage near the saved
+home reference. A known-position test request received HTTP 409 because the
+stale logical position disagreed with its requested start; that request caused
+no motion. I used the existing bounded Home route for the verification cycle.
+It returned three contact coordinates of 2494 / 2476 / 2540 steps, a 0.16 mm
+span, with 298/298 valid UART samples. CW stayed disabled and the driver
+settings matched their pre-home values. The final image agreed with the saved
+home reference at camera resolution. I accepted that completed homing result
+through `/api/home/confirm`; the board now reports `IDLE`, rho 0, STEP inactive.
+The camera did not measure the 0.16 mm span. Evidence is in
+`near-home-recovery/results.jsonl`; no quiet-motion trial followed recovery.
+
+The installed service image still has boot motion OFF and does not expose the
+production unknown-position homing path. Its short-origin cap can truncate a
+recovery from an uncertain outward position. Do not describe that service-mode
+restriction as a camera dependency of production homing. Before further sound
+automation, address the host stop helper's failure to recognize a stopped
+`HOMING_FAILED` state; it masked the HTTP 409 with a 30-second stop-confirmation
+timeout. Firmware telemetry showed an inactive timer and empty queue throughout.
+The 1 mm/s sound profile remains rejected; no new sound tier is qualified.
+
+**Earlier safety stop, 2026-09-15 at 09:39 UTC:** Three
 consecutive SG_RESULT <=5 samples during the return caused an automatic stop.
-The retained emitted-step ledger is 2.5125 mm, not a verified physical position.
-The camera image is too dark to resolve the mechanism. Do not Set Home, jog
-back to zero, increase the recovery allowance, or resume sound trials from
-this ledger alone. Restore an independently checked origin first. The current
-service image has boot motion OFF; production boot homing is enabled in main
-but has not been reinstalled after these timing experiments. Leave it off until
-recovery is checked. None of the new sound profiles is qualified.
+The retained emitted-step ledger was 2.5125 mm, without a verified physical
+position. The camera image was too dark to resolve the mechanism. I paused
+hardware testing without assigning zero or increasing the recovery allowance.
 
 Qualification correction: energized idle was not always room background. A
 stationary A/B/A check at regulated 275 mA, unchanged mic gain and no STEP
