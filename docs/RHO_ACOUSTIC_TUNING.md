@@ -6,6 +6,22 @@ the telemetry-aligned analysis in `scripts/acoustic_tuner.py`.
 
 ## Current assembled main-only retune (2026-09-15)
 
+### Operator-adopted default, 2026-09-16
+
+The operator ended acoustic tuning for now and selected **5.5 mm/s** as the
+default. The microphone is no longer available. Adopt the complete short-screen
+candidate: acceleration 20 mm/s², jerk 100 mm/s³, run/hold requests 350 mA,
+u8/interpolation, StealthChop, VSENSE high sensitivity, F2/TBL0/REG1/LIM8,
+automatic current on, automatic gradient off, PWM_OFS128/GRAD0, CoolStep on
+with SEMIN2/SEMAX1/SEUP2/SEDN0/TCOOLTHRS1000. The firmware fallback defaults
+now match this selection; the device's saved settings already match it.
+
+This is an operator acceptance decision, not a new acoustic qualification.
+Retain the earlier failures and inconclusive measurements. Full-travel/stress
+sound qualification and the quieter tiers remain incomplete. Keep theta's
+0.225 rad/s profile, CW disabled and the dedicated homing parameters unchanged.
+Do not run more microphone tests as part of deployment.
+
 ### Speed-first search, 2026-09-16
 
 Latest continuation, 17:05 UTC: the 5.5 mm/s recheck and a new 5.75 mm/s

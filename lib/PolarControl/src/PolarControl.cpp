@@ -37,21 +37,27 @@ PolarControl::PolarControl() {
     m_tDriverSettings.coolStepCurrentIncrement = 1;
     m_tDriverSettings.coolStepMeasurementCount = 1;
     m_tDriverSettings.coolStepThreshold = 2000;
-    // Loaded RHO reliability profile. The 150 mA acoustic candidate passed
-    // steady travel but lost physical synchronization during the reversal
-    // stress profile, so keep both run and standstill torque at 200 mA until
-    // the loaded mechanism has completed its full motion qualification.
-    m_rDriverSettings.runCurrent = 200;
-    m_rDriverSettings.holdCurrent = 200;
+    // Operator-adopted 5.5 mm/s main-only profile (2026-09-16). Keep the
+    // measured register settings together; full-travel sound qualification
+    // remains incomplete. Homing applies its independent profile.
+    m_rDriverSettings.runCurrent = 350;
+    m_rDriverSettings.holdCurrent = 350;
     m_rDriverSettings.microsteps = 8;
     m_rDriverSettings.highSensitivityCurrentScale = true;
-    m_rDriverSettings.pwmFrequency = 0;
-    m_rDriverSettings.pwmRegulation = 15;
+    m_rDriverSettings.blankTime = 0;
+    m_rDriverSettings.pwmFrequency = 2;
+    m_rDriverSettings.pwmRegulation = 1;
     m_rDriverSettings.pwmLimit = 8;
-    m_rDriverSettings.automaticCurrentScaling = false;
+    m_rDriverSettings.automaticCurrentScaling = true;
     m_rDriverSettings.automaticGradientAdaptation = false;
     m_rDriverSettings.pwmOffset = 128;
-    m_rDriverSettings.pwmGradient = 2;
+    m_rDriverSettings.pwmGradient = 0;
+    m_rDriverSettings.coolStepEnabled = true;
+    m_rDriverSettings.coolStepLowerThreshold = 2;
+    m_rDriverSettings.coolStepUpperThreshold = 1;
+    m_rDriverSettings.coolStepCurrentIncrement = 2;
+    m_rDriverSettings.coolStepMeasurementCount = 0;
+    m_rDriverSettings.coolStepThreshold = 1000;
 }
 
 PolarControl::~PolarControl() {

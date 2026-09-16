@@ -40,9 +40,9 @@
 
 // Tuning settings structures
 struct MotionSettings {
-  // Historical paired-RHO acoustic speed at a -60 dBFS ceiling (2026-09-09).
-  // Requalify for the assembled main-only hardware before claiming that tier.
-  float rMaxVelocity = 4.25f;   // mm/s
+  // Operator-adopted main-only RHO profile (2026-09-16). Short-screen
+  // candidate accepted for use; not a full-travel acoustic qualification.
+  float rMaxVelocity = 5.5f;    // mm/s
   float rMaxAccel = 20.0f;      // mm/s²
   float rMaxJerk = 100.0f;      // mm/s³
   // Operator-selected provisional quiet theta profile (2026-09-13).
