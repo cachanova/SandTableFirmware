@@ -8,6 +8,20 @@ the telemetry-aligned analysis in `scripts/acoustic_tuner.py`.
 
 ### Speed-first search, 2026-09-16
 
+**Paused at 02:29 UTC: unexpected ESP32 panic reset before the 4 mm/s
+capture. No final acoustic profile is qualified.** The trial failed closed
+in preflight with no motion commands issued. API `resetReason=4` maps to
+`ESP_RST_PANIC` in the installed ESP-IDF headers. The board now reports
+INITIALIZED, manual service mode and the unknown-start placeholder rho=212.5,
+not a measured physical position. CW remains TOFF=0; boot homing remains off
+in the installed service image. Do not resume the sweep by merely assigning
+zero. Camera `/tmp/rho-unexpected-reset-home.jpg` matches the saved home
+reference, but does not diagnose the crash. No ESP32 USB serial device is
+connected, the error API is empty after reboot, and `partitions.csv` has no
+coredump partition. Capture a serial panic/backtrace before resuming motion.
+The failed-trial JSON and host log preserve the preflight failure; no WAV was
+recorded for that attempt. Root cause remains unknown.
+
 The operator requested that we optimize settings at **6 mm/s first**, measure
 the lowest repeatable noise at that speed, then decrease speed in small steps
 to find the quieter tiers. Start with 0.5 mm/s steps; refine crossings with
@@ -61,7 +75,76 @@ Regulation 1 at 150 mA retained stable sustained bounds (-67.32/-67.61), but
 return peaks remained -59.08/-56.96 dBFS. Shorter blanking (TBL 0, regulation
 4) gave one stable screen at -67.98 incremental and -63.16 raw cruise upper
 bounds, with a -57.12 return peak. These short screens have not qualified a
-tier. Evidence is under `speed-first-6/`; all tested targets remain 0..25 mm.
+tier. Evidence is under `speed-first-6/` and in
+`docs/RHO_SOUND_SPEED_FIRST_RESULTS.json`. Initial screens use 0..25 mm;
+the final short confirmation extends to 0..50 mm.
+
+The 350 mA request became the strongest fixed-current candidate. One screen
+measured -62.52 dBFS whole-STEP maxima in both directions. A 275 mA comparison
+had stronger roughly 4 mm-spaced return bursts despite near-matched idle;
+the independent spectral/timing audit supports a transient improvement beyond
+the quieter background. Sustained incremental bounds remained near -67.7.
+400 and 450 mA requests did not improve the screen. **325 and 350 mA both
+read back CS=10**, about 337 mA nominal with the configured 0.11-ohm shunts;
+treat those as repeats of one current code, not distinct current settings.
+These are calculated currents, not measured coil RMS current.
+
+Do not promote the best fixed-current screen to a qualified profile. Its
+later confirmation included a -54.16 dBFS return burst near commanded
+18.1..17.5 mm, with quiet adjacent idle and no coincident recorded STEP timing
+outlier. A second repeat stayed near -61.57. The burst overlaps an earlier
+problem region but has a different spectrum. Attribution remains unresolved;
+retain the failed/inconclusive repeat. Neither 4 nor 16 external microsteps,
+frequency 3, nor longer blanking improved on the strongest u8/F2/TBL0 screen.
+
+Regulation 1 gave two consistent fixed-current screens, with whole-motion
+maxima near -59.74/-59.98 dBFS and return peaks near -61.2. Regulation 2 and
+8 did not show a clear improvement. CoolStep now has a useful provisional
+candidate: run/hold request 350 mA, u8/interpolation, F2/TBL0/REG1/LIM8,
+automatic current on, automatic gradient off, SEMIN=2, SEMAX=1, SEUP=2,
+SEDN=0, TCOOLTHRS=1000. Readback confirmed actual current codes 5..10 during
+motion. Its first screen peaked at -60.83/-61.38 dBFS. SEMIN=3 held code 10
+and did not improve noise; SEUP=0 gave similar maxima (-61.54/-60.70).
+Keep IRUN >=10 for these half-current CoolStep trials, per the datasheet.
+Do not reuse CoolStep below that current-code range without revisiting its
+operating assumptions. Homing continues to force CoolStep off.
+
+The gentler 10/50 acceleration/jerk screen peaked at -61.28/-60.39; the faster
+40/200 screen at -59.46/-60.01. Retain 20/100 for the descending-speed search.
+The three longer 0 -> 50 -> 0 mm confirmations failed the transient screen:
+whole-STEP outward/return maxima were -60.82/-59.62, -57.74/-59.59 and
+-58.11/-45.40 dBFS. Sustained incremental upper bounds were -67.41, -65.32
+and -66.52; quiet sustained sound does not qualify these whole movements.
+
+The last burst peaked near commanded 16.05 mm, about 2.92 seconds before
+STEP stopped, with 621/1242 Hz harmonics. Adjacent driver polls showed SG
+194..238 and current code 5, no fault or current transition, and no coincident
+recorded STEP timing outlier. This does not support sustained endstop contact;
+it also does not prove an ambient source or exclude brief slipping. Motion
+was paused and the camera matched the saved home reference before continuing.
+The camera is not an encoder. Preserve this as failed/inconclusive evidence.
+No final tier, 400 mm range test, or stress qualification has passed in this
+new search yet. Start the next bracket at 5.5 mm/s without weakening the
+transient or background checks.
+
+Descending short-screen results with that CoolStep candidate:
+
+| Speed | Loudest whole-STEP window | Sustained incremental upper bound | Outcome |
+| --- | --- | --- | --- |
+| 5.5 mm/s | -60.83 dBFS | -67.86 dBFS | Two 25 mm out/back repeats pass the -60 screen only |
+| 5.0 mm/s | -57.62 dBFS | -65.11 dBFS | Repeated return burst near 13 mm; fails -60 screen |
+| 4.5 mm/s | -57.59 dBFS | -62.15 dBFS | Both repeats too loud for -60 screen |
+| 4.0 mm/s | Not measured | Not measured | Board panic reset before capture/motion |
+
+At 5.5 mm/s all legs sustained target velocity for about 4.25 seconds;
+background, gain and timing checks passed. The margin is only 0.83 dB and
+`verify` is not qualification-eligible. At 5 mm/s the return burst repeated
+near 12.7..13.0 mm with roughly 1.54 kHz ringing; an outbound ~246 Hz tone
+also repeated. CoolStep readbacks changed from mostly code 9 at 5.5 mm/s to
+code 10 throughout 5 mm/s cruise, compared with code 5 in the 6 mm/s long
+confirmation. These are not constant-current speed comparisons. Refine near
+5.5 mm/s and recheck current settings at slower speeds after the reset cause
+is addressed; do not apply a monotonic binary search across this resonance.
 
 ### Endpoint diagnosis, 2026-09-16
 
