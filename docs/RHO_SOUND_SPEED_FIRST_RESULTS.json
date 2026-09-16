@@ -1,5 +1,18 @@
 {
-  "status": "38 completed short trials; no qualified final profile; new 5.5/5.75 comparisons inconclusive under changing sound",
+  "status": "Operator adopted 5.5 mm/s for use; acoustic qualification remains incomplete; microphone removed",
+  "operatorAdoption": {
+    "date": "2026-09-16",
+    "velocityMmS": 5.5,
+    "accelerationMmS2": 20,
+    "jerkMmS3": 100,
+    "runAndHoldRequestMa": 350,
+    "microsteps": 8,
+    "interpolation": true,
+    "coolStep": true,
+    "sourceCommit": "e0545f7",
+    "fullTravelAcousticQualificationComplete": false,
+    "microphoneAvailable": false
+  },
   "scope": "main RHO only; zero-inclusive; camera prohibited by operator",
   "trials": [
     {

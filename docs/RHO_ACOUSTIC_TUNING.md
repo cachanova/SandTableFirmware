@@ -22,6 +22,15 @@ sound qualification and the quieter tiers remain incomplete. Keep theta's
 0.225 rad/s profile, CW disabled and the dedicated homing parameters unchanged.
 Do not run more microphone tests as part of deployment.
 
+Deployment: uploaded regular `esp32dev_ota` firmware from source commit
+`e0545f7`, restoring the previously requested automatic startup homing. Readback
+confirmed 5.5 mm/s, the selected driver profile, theta unchanged and CW TOFF=0.
+The firmware completed startup homing (cycle 1, no failure, 307/307 valid UART
+samples) and reported IDLE at rho=0. No camera or microphone confirmed physical
+position. The SD mount still fails, so pattern storage is unavailable.
+The release build, 102 host tests and native motion tests passed. See
+`docs/RHO_ADOPTED_PROFILE_DEPLOYMENT.json` for the binary hash and readback.
+
 ### Speed-first search, 2026-09-16
 
 Latest continuation, 17:05 UTC: the 5.5 mm/s recheck and a new 5.75 mm/s
