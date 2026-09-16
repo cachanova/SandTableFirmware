@@ -8,8 +8,8 @@ the telemetry-aligned analysis in `scripts/acoustic_tuner.py`.
 
 ### Speed-first search, 2026-09-16
 
-**Paused at 02:29 UTC: unexpected ESP32 panic reset before the 4 mm/s
-capture. No final acoustic profile is qualified.** The trial failed closed
+**No final acoustic profile is qualified.** At 02:29 UTC an unexpected ESP32
+panic reset interrupted preflight before the 4 mm/s capture. The trial failed closed
 in preflight with no motion commands issued. API `resetReason=4` maps to
 `ESP_RST_PANIC` in the installed ESP-IDF headers. The board now reports
 INITIALIZED, manual service mode and the unknown-start placeholder rho=212.5,
@@ -18,9 +18,45 @@ in the installed service image. Do not resume the sweep by merely assigning
 zero. Camera `/tmp/rho-unexpected-reset-home.jpg` matches the saved home
 reference, but does not diagnose the crash. No ESP32 USB serial device is
 connected, the error API is empty after reboot, and `partitions.csv` has no
-coredump partition. Capture a serial panic/backtrace before resuming motion.
+coredump partition. A serial panic/backtrace would help identify the cause.
 The failed-trial JSON and host log preserve the preflight failure; no WAV was
 recorded for that attempt. Root cause remains unknown.
+
+The operator then power-cycled the board, requested continued testing and
+confirmed the mechanism was at home. Readback showed resetReason=1, stopped
+motion and CW TOFF=0. We established commissioning zero from that new physical
+confirmation. The operator prohibited further camera use and turned off the
+lights. Do not capture more camera images; stop if another reset or uncertain
+position invalidates this reference.
+
+The resumed 4 mm/s / 350 mA CoolStep run completed both 25 mm out/back
+repeats with healthy driver/planner checks. Both acoustic comparisons failed
+background validation (outbound idle drift 7.70/5.60 dB). The 150 mA fixed-current
+comparison also completed its motions but had unstable backgrounds, with an
+idle upper bound of -48.37 dBFS. Neither test ranks motor noise. Pause motion
+and measure stationary background before spending more trials in this noise.
+The attempted 150 mA repeat remained contaminated. A 20-second stationary
+recording at 04:56 UTC illustrates why the old baseline aggregate is unsafe
+as a readiness check: its median-per-frequency spectrum gave -64.99 dBFS,
+while time-window median/p95/max were -59.82/-47.41/-43.55 dBFS. About 51%
+of the windows exceeded -60. The changing spectra suggest external noise but
+do not rule out energized-driver or supply noise. At 04:59 UTC another idle
+recording gave median/p95/max -56.81/-48.12/-43.92, without clipping.
+After a 25-second quiet interval, the 05:00 UTC 20-second recording still
+gave median/p95/max -61.86/-48.50/-42.68. Leave motion stopped until the
+stationary sound permits comparison. No further reset occurred during the
+three resumed trials; they returned to commanded zero. This is a command
+ledger, not a physical-position measurement. The last applied trial settings
+are 4 mm/s, 150 mA run/hold request, CoolStep off, u8/interpolation,
+F2/TBL0/REG1, acceleration 20 and jerk 100; do not promote them as a final tune.
+
+The host `baseline` command now reports `stationaryBackground`: A-weighted
+power quantiles across 85.3 ms FFT windows at 21.3 ms cadence (48 kHz), mean
+window power and clipping fraction. It retains the old aggregate with an
+explicit warning. Use the window statistics to decide whether another trial
+is worth running; they do not attribute sound to a source or qualify a tier.
+Motion-trial acceptance criteria remain unchanged. Three regression tests
+cover a steady tone, intermittent noise and invalid input; 99 host tests pass.
 
 The operator requested that we optimize settings at **6 mm/s first**, measure
 the lowest repeatable noise at that speed, then decrease speed in small steps

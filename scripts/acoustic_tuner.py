@@ -1528,6 +1528,38 @@ def save_result(output_dir: Path, payload: dict[str, Any]) -> None:
         stream.write(json.dumps(payload, sort_keys=True) + "\n")
 
 
+def stationary_background_metrics(audio: np.ndarray, rate: int) -> dict[str, Any]:
+    """Expose changing idle noise hidden by per-frequency median averaging.
+
+    Diagnostic only: these overlapping FFT windows neither identify the
+    sound source nor qualify a motor sound tier.
+    """
+    frame_size, hop = 4096, 1024
+    if rate <= 0 or len(audio) < frame_size or not np.all(np.isfinite(audio)):
+        raise ValueError("Stationary analysis requires finite audio and a full FFT frame")
+    _, frequencies, spectra = short_window_spectrogram(audio, rate, frame_size, hop)
+    audible = (frequencies >= HUMAN_AUDIBLE_MIN_HZ) & (
+        frequencies <= min(HUMAN_AUDIBLE_MAX_HZ, rate / 2.0)
+    )
+    weights = a_weighting_power(frequencies)
+    power = np.sum(spectra[:, audible] * weights[audible], axis=1)
+    levels = 10.0 * np.log10(np.maximum(power, 1e-20))
+    return {
+        "metric": "A-weighted audible-band power per FFT window, before temporal quantiles",
+        "windowDurationS": frame_size / rate,
+        "windowCadenceS": hop / rate,
+        "windowCount": len(levels),
+        "aWeightedDbfsQuantiles": {
+            key: round(float(np.quantile(levels, quantile)), 2)
+            for key, quantile in (("p10", .1), ("p50", .5), ("p90", .9), ("p95", .95), ("max", 1.0))
+        },
+        "meanWindowPowerAWeightedDbfs": round(db(float(np.mean(power)), power=True), 2),
+        "clippedSampleFraction": float(np.mean(np.abs(audio) >= 32767.0 / 32768.0)),
+        "qualificationEligible": False,
+        "limitation": "Includes energized motor idle and room noise; no source attribution or motion qualification",
+    }
+
+
 def cmd_baseline(args: argparse.Namespace) -> int:
     board = Board(args.board)
     board.recovering_stop()
@@ -1536,7 +1568,12 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     path = output_dir / f"{utc_stamp()}-baseline.wav"
     capture(path, args.source, args.duration, args.rate)
     metrics = analyze(path)
-    payload = {"kind": "baseline", "audio": str(path), "metrics": asdict(metrics)}
+    audio, rate = read_wav(path)
+    payload = {
+        "kind": "baseline", "audio": str(path), "metrics": asdict(metrics),
+        "legacySpectralMetric": "Per-frequency median spectrum; may hide intermittent noise",
+        "stationaryBackground": stationary_background_metrics(audio, rate),
+    }
     save_result(output_dir, payload)
     print(json.dumps(payload, indent=2))
     return 0
