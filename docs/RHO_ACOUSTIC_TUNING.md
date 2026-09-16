@@ -8,6 +8,41 @@ the telemetry-aligned analysis in `scripts/acoustic_tuner.py`.
 
 ### Speed-first search, 2026-09-16
 
+Latest continuation, 17:05 UTC: the 5.5 mm/s recheck and a new 5.75 mm/s
+comparison each completed two 25 mm out/back repeats with healthy motion
+checks and commanded zero return. Neither recording supports a tier decision.
+The 5.5 recheck had 3.59 dB global background drift in repeat 1, no confirmed
+motion-locked tones, and a -48.34 dBFS outward incremental bound in repeat 2.
+At 5.75 both repeats failed local-background stability; conditional incremental
+upper bounds were -58.58/-48.12. These results neither disqualify the motor
+nor improve the earlier quiet 5.5 mm/s short-screen result.
+
+Separate motor-correlated evidence from raw total sound. FFT bins do not
+identify sources. Adjacent-idle subtraction estimates the incremental sustained
+median under the assumption that those idles represent the background during
+motion. It excludes energized idle noise and can miss sparse bursts. A clipped
+result such as -200 dBFS is not proof of silence. Keep uncertain transients
+unresolved and retain the existing whole-motion qualification guard; a raw
+exceedance alone does not prove the motor exceeded its target.
+
+A stationary hold-current A/B/A probe used 350/100/350 mA requests while
+keeping run current at 350. Settled CS readbacks were 10/2/10; STEP epoch
+remained 20 and commanded position remained zero. Across three 15-second
+recordings, window medians were -53.72/-53.35/-54.46 dBFS, with p95 values
+-46.63/-48.30/-40.76. The lower-current recording did not show a reversible
+median reduction. Changing stationary sound still masks the comparison; this
+does not prove that all of it comes from the room or that hold current has no
+acoustic effect. Restore hold current to 350 and the provisional speed to 5.5.
+
+The three earlier post-reset 4 mm/s trials inherited PWM_GRAD=2 (their result
+JSON records it). The new 5.5/5.75 comparisons explicitly set PWM_GRAD=0 to
+match the earlier quiet candidate. Do not describe those post-reset settings
+as identical to the pre-reset profile. No camera was used in this continuation.
+No final -60/-63/-66 profile, new 400 mm traversal or stress qualification is
+complete. The board remains stopped in commissioning at commanded zero, with
+CW disabled, theta unchanged and service-image boot homing off. Preserve the
+earlier panic as unresolved; it has not recurred since the user's power cycle.
+
 **No final acoustic profile is qualified.** At 02:29 UTC an unexpected ESP32
 panic reset interrupted preflight before the 4 mm/s capture. The trial failed closed
 in preflight with no motion commands issued. API `resetReason=4` maps to
