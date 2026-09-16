@@ -6,6 +6,63 @@ the telemetry-aligned analysis in `scripts/acoustic_tuner.py`.
 
 ## Current assembled main-only retune (2026-09-15)
 
+### Speed-first search, 2026-09-16
+
+The operator requested that we optimize settings at **6 mm/s first**, measure
+the lowest repeatable noise at that speed, then decrease speed in small steps
+to find the quieter tiers. Start with 0.5 mm/s steps; refine crossings with
+0.1-0.25 mm/s steps. Recheck neighboring driver settings at each crossing:
+mechanical resonances and driver behavior need not vary monotonically with
+speed. Use binary refinement only inside a measured monotonic bracket.
+
+Keep the full physical 0..425 mm range, including 0..1 mm. The operator
+withdrew the proposed clearance after observing another zero-return test.
+No firmware clearance or location-dependent slowdown has been implemented.
+The 01:10 UTC three-repeat 4 mm/s test returned to commanded zero with healthy
+planner and driver checks, but changing background invalidated its acoustic
+rating. Do not use an isolated peak to identify motor noise or dismiss it as
+room noise without repetition and timing evidence.
+
+At 6 mm/s, start with zero-inclusive 0 -> 25 -> 0 mm screens at 200 mA,
+u8/interpolation, StealthChop, automatic current on, automatic gradient off,
+PWM frequency 2, regulation 4, limit 8, acceleration 20 and jerk 100.
+Compare the existing quiet candidates one parameter family at a time, with
+interleaved baseline repeats. Include frequency 3, current, PWM regulation
+and blank time; revisit microsteps and PWM adaptation only at a verified
+physical zero. Preserve the 500 mA motor rating and existing CS14 normal-motion
+cap. Keep CW disabled and theta stationary. Treat SG collapse, UART faults,
+planner faults or uncertain position as safety stops, not acoustic failures.
+
+Rank candidates by valid sustained-motion upper bounds, with energized idle,
+whole-STEP transients and motion-locked tones reported alongside them. Retest
+contaminated or inconclusive comparisons. A short `verify` run cannot qualify
+a sound tier. Confirm finalists with repeated gated trials, 0 -> 400 -> 0 mm
+travel and stress tests, then restore and verify production boot homing.
+Report measured dBFS rather than promising a global optimum or a tier below
+the available measurement floor. Homing uses its separate frozen profile.
+
+Early valid 6 mm/s measurements at 150 mA / u8 / frequency 2 / TBL 1 /
+regulation 4 gave sustained incremental upper bounds of -67.10 and -66.76
+dBFS across two 25 mm out/back repeats. Raw cruise upper bounds were -63.12 /
+-62.33 and -62.92 / -62.48 dBFS, with local idle drift <=0.31 dB. The 200 mA
+interleaved comparison was only 0.3-1.3 dB louder in incremental bounds; retain
+150 mA as a provisional candidate rather than a decisive current optimum.
+
+Both currents exceeded -60 dBFS on return transients. Independent waveform,
+position and timing review found bursts near 21.7, 17.7 and 13.7 mm. The 200 mA
+13.7 mm return event repeated at 13.69/13.68 mm. The roughly 4 mm spacing
+suggests periodic motor/mechanical excitation; it does not identify the part
+responsible. Recorded >100 us timing outliers did not overlap those bursts.
+The -28.43 dBFS outbound maximum in the first 200 mA comparison preceded the
+first STEP by about 92 ms and coincided with loud adjacent idle. Preserve it
+as a contaminated edge window, not evidence of a loud motor onset.
+
+Regulation 1 at 150 mA retained stable sustained bounds (-67.32/-67.61), but
+return peaks remained -59.08/-56.96 dBFS. Shorter blanking (TBL 0, regulation
+4) gave one stable screen at -67.98 incremental and -63.16 raw cruise upper
+bounds, with a -57.12 return peak. These short screens have not qualified a
+tier. Evidence is under `speed-first-6/`; all tested targets remain 0..25 mm.
+
 ### Endpoint diagnosis, 2026-09-16
 
 The 200 mA / u8 / frequency 2 / TBL 1 / PWM_REG 4 profile at 2 mm/s
@@ -40,8 +97,8 @@ louder adjacent-idle maximum. Room/hold noise changed during this trial;
 do not use its cruise medians as a clean current A/B comparison. Planner and
 driver checks passed, but this profile is rejected for quiet motion.
 
-I proposed a 1 mm normal-motion clearance to the operator. That choice is
-pending; no production minimum radius, zero, or homing parameter changed.
+I proposed a 1 mm normal-motion clearance to the operator. The operator later
+withdrew that choice; no production minimum radius, zero, or homing parameter changed.
 Further offset tests are diagnostics only. A final quiet profile must state
 its tested range and pass repeated range, acceleration and stress checks.
 Boot homing remains OFF in the installed service image during this work.
@@ -771,8 +828,10 @@ hardware session. Retain three distinct, mechanically reliable profiles:
 - quiet -3 dB: every qualifying gate is at or below `-63 dBFS`;
 - quiet -6 dB: every qualifying gate is at or below `-66 dBFS`.
 
-These limits apply only to the adjacent-idle-subtracted, A-weighted broadband
-motor-excess metric described below. Timing-locked tone levels use a different
+Apply these limits to the adjacent-idle-subtracted, A-weighted broadband
+motor-excess metric and the raw-total/whole-STEP checks in the current retune
+section above. The raw checks prevent subtraction of energized hold noise
+from creating a false pass. Timing-locked tone levels use a different
 calculation and remain corroborating diagnostics until the operator selects a
 separate tone ceiling; do not compare a tone dBFS value directly with these
 broadband limits. The microphone position, gain, load state, and timing-quality

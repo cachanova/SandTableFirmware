@@ -1,0 +1,2617 @@
+{
+  "status": "in-progress; no qualified final profile",
+  "scope": "main RHO only; full zero-inclusive travel retained; short screens 0..25 mm",
+  "trials": [
+    {
+      "recordedAt": "20260916T012726Z",
+      "label": "v6-baseline-u8-200ma-f2",
+      "settings": {
+        "motion": {
+          "rMaxVelocity": 6,
+          "rMaxAccel": 20,
+          "rMaxJerk": 100,
+          "tMaxVelocity": 0.225,
+          "tMaxAccel": 2,
+          "tMaxJerk": 10
+        },
+        "rhoDriver": {
+          "runCurrent": 200,
+          "holdCurrent": 200,
+          "holdDelay": 8,
+          "powerDownDelay": 20,
+          "highSensitivityCurrentScale": true,
+          "chopperOffTime": 3,
+          "hysteresisStart": 5,
+          "hysteresisEnd": 0,
+          "blankTime": 1,
+          "microsteps": 8,
+          "interpolationEnabled": true,
+          "stealthChopEnabled": true,
+          "stealthChopThreshold": 0,
+          "pwmFrequency": 2,
+          "pwmRegulation": 4,
+          "pwmLimit": 8,
+          "standstillMode": 0,
+          "automaticCurrentScaling": true,
+          "automaticGradientAdaptation": false,
+          "pwmOffset": 128,
+          "pwmGradient": 0,
+          "coolStepEnabled": false,
+          "coolStepLowerThreshold": 1,
+          "coolStepUpperThreshold": 0,
+          "coolStepCurrentIncrement": 0,
+          "coolStepMeasurementCount": 0,
+          "coolStepThreshold": 0
+        }
+      },
+      "health": {
+        "allTestsCompletedNaturally": true,
+        "allSequencesReturnedToStart": true,
+        "rhoNeverMovedInwardOfStart": true,
+        "otherAxisStationary": true,
+        "plannerHealthy": true,
+        "allDriverUartResponsesValid": true,
+        "allDriversFaultFree": true
+      },
+      "acoustic": {
+        "qualificationMeasurementValid": false,
+        "levelValidForComparison": false,
+        "loudestConservative95MotorExcessUpperBoundAWeightedDbfs": null,
+        "totalRecordedSound": {
+          "measurementValid": false,
+          "withinTier": false,
+          "status": "inconclusive-invalid-measurement",
+          "loudestRawMotionUpper95AWeightedDbfs": -50.05,
+          "loudestRawIdleUpper95AWeightedDbfs": -48.79,
+          "wholeStepTransientRequired": true,
+          "wholeStepTransientMeasurementValid": true,
+          "loudestWholeStep100msAWeightedDbfs": -40.441735,
+          "ceilingAWeightedDbfs": -60.0,
+          "confidenceScope": "median/p95 bounds are per-window 95%, not simultaneous profile coverage; whole-STEP maximum is a screening statistic, not a confidence bound",
+          "limitation": "A raw exceedance does not identify room versus motor noise; whole-STEP ~100 ms screening is not a validated audibility guarantee"
+        }
+      },
+      "repeats": [
+        {
+          "returnError": 0.0,
+          "expectedFinalError": 0.0,
+          "gainFingerprintStable": true,
+          "timingQuality": {
+            "valid": true,
+            "sampleCount": 335,
+            "p95GapS": 0.164916,
+            "cadenceP95GapS": 0.160031,
+            "maximumGapS": 0.26933,
+            "maximumClassificationCriticalGapS": 0.0,
+            "interpolatedSteadyGapCount": 3,
+            "motionStartBracketS": 0.14944,
+            "motionStopBracketS": 0.079423,
+            "motionStartCount": 2,
+            "motionStopCount": 2,
+            "exactStepMotionEventCount": 2,
+            "exactStepMotionEventsValid": true,
+            "exactStepMotionIntervals": [
+              {
+                "epoch": 32,
+                "startHostS": 5.796769,
+                "stopHostS": 10.422960999999999,
+                "startUncertaintyS": 0.012042,
+                "stopUncertaintyS": 0.0127095
+              },
+              {
+                "epoch": 33,
+                "startHostS": 16.196221,
+                "stopHostS": 20.820480999999997,
+                "startUncertaintyS": 0.010438,
+                "stopUncertaintyS": 0.0102105
+              }
+            ],
+            "maximumRequestRttS": 0.317492,
+            "invalidReasons": [],
+            "audioEpochUncertaintyS": 0.010058225588873029,
+            "audioPrimingBlocksDiscarded": 4,
+            "audioDurationS": 31.104,
+            "hostAudioDurationS": 31.107281,
+            "audioDurationSkewS": 0.003281
+          },
+          "metrics": {
+            "raw_gate_median_upper_95_a_weighted_dbfs": [
+              -57.37,
+              -53.85
+            ],
+            "broadband_gate_excess_upper_95_a_weighted_dbfs": [
+              -61.35,
+              -55.99
+            ],
+            "raw_gate_pre_idle_median_upper_95_a_weighted_dbfs": [
+              -57.5,
+              -58.08
+            ],
+            "raw_gate_post_idle_median_upper_95_a_weighted_dbfs": [
+              -57.74,
+              -51.75
+            ],
+            "all_local_background_stable": false,
+            "local_background_drift_db": [
+              0.3,
+              3.96
+            ],
+            "gate_cruise_durations_s": [
+              3.84,
+              3.861
+            ],
+            "whole_step_transient": {
+              "valid": true,
+              "invalidReasons": [],
+              "requestedWindowS": 0.1,
+              "gates": [
+                {
+                  "epoch": 32,
+                  "valid": true,
+                  "startHostS": 5.796769,
+                  "stopHostS": 10.422960999999999,
+                  "max100msAWeightedDbfs": -51.753337,
+                  "max100msHostS": 9.554677,
+                  "preIdle100msMedianAWeightedDbfs": -57.873813,
+                  "postIdle100msMedianAWeightedDbfs": -57.894515,
+                  "preIdle100msMaxAWeightedDbfs": -40.11709,
+                  "postIdle100msMaxAWeightedDbfs": -55.62606,
+                  "max100msGainOverAdjacentIdleMaxDb": -11.636248
+                },
+                {
+                  "epoch": 33,
+                  "valid": true,
+                  "startHostS": 16.196221,
+                  "stopHostS": 20.820480999999997,
+                  "max100msAWeightedDbfs": -43.869362,
+                  "max100msHostS": 19.645343,
+                  "preIdle100msMedianAWeightedDbfs": -58.233223,
+                  "postIdle100msMedianAWeightedDbfs": -54.297243,
+                  "preIdle100msMaxAWeightedDbfs": -56.962005,
+                  "postIdle100msMaxAWeightedDbfs": -42.467695,
+                  "max100msGainOverAdjacentIdleMaxDb": -1.401668
+                }
+              ],
+              "limitation": "Conservative ~100 ms FFT-power screening, not a validated audibility guarantee; raw noise does not establish motor attribution",
+              "windowFrames": 5,
+              "windowS": 0.106667,
+              "signalSupportS": 0.170667
+            }
+          }
+        },
+        {
+          "returnError": 0.0,
+          "expectedFinalError": 0.0,
+          "gainFingerprintStable": true,
+          "timingQuality": {
+            "valid": true,
+            "sampleCount": 344,
+            "p95GapS": 0.161999,
+            "cadenceP95GapS": 0.158315,
+            "maximumGapS": 0.26798,
+            "maximumClassificationCriticalGapS": 0.0,
+            "interpolatedSteadyGapCount": 2,
+            "motionStartBracketS": 0.172091,
+            "motionStopBracketS": 0.136849,
+            "motionStartCount": 2,
+            "motionStopCount": 2,
+            "exactStepMotionEventCount": 2,
+            "exactStepMotionEventsValid": true,
+            "exactStepMotionIntervals": [
+              {
+                "epoch": 34,
+                "startHostS": 5.776165,
+                "stopHostS": 10.402988,
+                "startUncertaintyS": 0.013058,
+                "stopUncertaintyS": 0.0138415
+              },
+              {
+                "epoch": 35,
+                "startHostS": 15.964792999999998,
+                "stopHostS": 20.589311,
+                "startUncertaintyS": 0.0126965,
+                "stopUncertaintyS": 0.009873
+              }
+            ],
+            "maximumRequestRttS": 0.230272,
+            "invalidReasons": [],
+            "audioEpochUncertaintyS": 0.010039676669985056,
+            "audioPrimingBlocksDiscarded": 3,
+            "audioDurationS": 31.146667,
+            "hostAudioDurationS": 31.14529,
+            "audioDurationSkewS": 0.001377
+          },
+          "metrics": {
+            "raw_gate_median_upper_95_a_weighted_dbfs": [
+              -57.52,
+              -50.05
+            ],
+            "broadband_gate_excess_upper_95_a_weighted_dbfs": [
+              -67.21,
+              -51.47
+            ],
+            "raw_gate_pre_idle_median_upper_95_a_weighted_dbfs": [
+              -53.55,
+              -51.24
+            ],
+            "raw_gate_post_idle_median_upper_95_a_weighted_dbfs": [
+              -48.79,
+              -49.77
+            ],
+            "all_local_background_stable": false,
+            "local_background_drift_db": [
+              4.25,
+              5.47
+            ],
+            "gate_cruise_durations_s": [
+              3.861,
+              3.819
+            ],
+            "whole_step_transient": {
+              "valid": true,
+              "invalidReasons": [],
+              "requestedWindowS": 0.1,
+              "gates": [
+                {
+                  "epoch": 34,
+                  "valid": true,
+                  "startHostS": 5.776165,
+                  "stopHostS": 10.402988,
+                  "max100msAWeightedDbfs": -43.985952,
+                  "max100msHostS": 10.322183,
+                  "preIdle100msMedianAWeightedDbfs": -54.747441,
+                  "postIdle100msMedianAWeightedDbfs": -50.327243,
+                  "preIdle100msMaxAWeightedDbfs": -44.178754,
+                  "postIdle100msMaxAWeightedDbfs": -33.566584,
+                  "max100msGainOverAdjacentIdleMaxDb": -10.419368
+                },
+                {
+                  "epoch": 35,
+                  "valid": true,
+                  "startHostS": 15.964792999999998,
+                  "stopHostS": 20.589311,
+                  "max100msAWeightedDbfs": -40.441735,
+                  "max100msHostS": 17.34085,
+                  "preIdle100msMedianAWeightedDbfs": -55.641926,
+                  "postIdle100msMedianAWeightedDbfs": -50.401885,
+                  "preIdle100msMaxAWeightedDbfs": -41.156808,
+                  "postIdle100msMaxAWeightedDbfs": -43.754152,
+                  "max100msGainOverAdjacentIdleMaxDb": 0.715073
+                }
+              ],
+              "limitation": "Conservative ~100 ms FFT-power screening, not a validated audibility guarantee; raw noise does not establish motor attribution",
+              "windowFrames": 5,
+              "windowS": 0.106667,
+              "signalSupportS": 0.170667
+            }
+          }
+        }
+      ]
+    },
+    {
+      "recordedAt": "20260916T012917Z",
+      "label": "v6-u8-200ma-f3",
+      "settings": {
+        "motion": {
+          "rMaxVelocity": 6,
+          "rMaxAccel": 20,
+          "rMaxJerk": 100,
+          "tMaxVelocity": 0.225,
+          "tMaxAccel": 2,
+          "tMaxJerk": 10
+        },
+        "rhoDriver": {
+          "runCurrent": 200,
+          "holdCurrent": 200,
+          "holdDelay": 8,
+          "powerDownDelay": 20,
+          "highSensitivityCurrentScale": true,
+          "chopperOffTime": 3,
+          "hysteresisStart": 5,
+          "hysteresisEnd": 0,
+          "blankTime": 1,
+          "microsteps": 8,
+          "interpolationEnabled": true,
+          "stealthChopEnabled": true,
+          "stealthChopThreshold": 0,
+          "pwmFrequency": 3,
+          "pwmRegulation": 4,
+          "pwmLimit": 8,
+          "standstillMode": 0,
+          "automaticCurrentScaling": true,
+          "automaticGradientAdaptation": false,
+          "pwmOffset": 128,
+          "pwmGradient": 0,
+          "coolStepEnabled": false,
+          "coolStepLowerThreshold": 1,
+          "coolStepUpperThreshold": 0,
+          "coolStepCurrentIncrement": 0,
+          "coolStepMeasurementCount": 0,
+          "coolStepThreshold": 0
+        }
+      },
+      "health": {
+        "allTestsCompletedNaturally": true,
+        "allSequencesReturnedToStart": true,
+        "rhoNeverMovedInwardOfStart": true,
+        "otherAxisStationary": true,
+        "plannerHealthy": true,
+        "allDriverUartResponsesValid": true,
+        "allDriversFaultFree": true
+      },
+      "acoustic": {
+        "qualificationMeasurementValid": false,
+        "levelValidForComparison": false,
+        "loudestConservative95MotorExcessUpperBoundAWeightedDbfs": null,
+        "totalRecordedSound": {
+          "measurementValid": false,
+          "withinTier": false,
+          "status": "inconclusive-invalid-measurement",
+          "loudestRawMotionUpper95AWeightedDbfs": -44.27,
+          "loudestRawIdleUpper95AWeightedDbfs": -48.64,
+          "wholeStepTransientRequired": true,
+          "wholeStepTransientMeasurementValid": true,
+          "loudestWholeStep100msAWeightedDbfs": -26.806663,
+          "ceilingAWeightedDbfs": -60.0,
+          "confidenceScope": "median/p95 bounds are per-window 95%, not simultaneous profile coverage; whole-STEP maximum is a screening statistic, not a confidence bound",
+          "limitation": "A raw exceedance does not identify room versus motor noise; whole-STEP ~100 ms screening is not a validated audibility guarantee"
+        }
+      },
+      "repeats": [
+        {
+          "returnError": 0.0,
+          "expectedFinalError": 0.0,
+          "gainFingerprintStable": true,
+          "timingQuality": {
+            "valid": true,
+            "sampleCount": 317,
+            "p95GapS": 0.169111,
+            "cadenceP95GapS": 0.16483,
+            "maximumGapS": 0.422368,
+            "maximumClassificationCriticalGapS": 0.0,
+            "interpolatedSteadyGapCount": 5,
+            "motionStartBracketS": 0.084017,
+            "motionStopBracketS": 0.146322,
+            "motionStartCount": 2,
+            "motionStopCount": 2,
+            "exactStepMotionEventCount": 2,
+            "exactStepMotionEventsValid": true,
+            "exactStepMotionIntervals": [
+              {
+                "epoch": 36,
+                "startHostS": 5.7355469999999995,
+                "stopHostS": 10.360418000000001,
+                "startUncertaintyS": 0.0132255,
+                "stopUncertaintyS": 0.0102955
+              },
+              {
+                "epoch": 37,
+                "startHostS": 15.873179,
+                "stopHostS": 20.497411999999997,
+                "startUncertaintyS": 0.0106705,
+                "stopUncertaintyS": 0.011264
+              }
+            ],
+            "maximumRequestRttS": 0.391533,
+            "invalidReasons": [],
+            "audioEpochUncertaintyS": 0.010062009203247726,
+            "audioPrimingBlocksDiscarded": 3,
+            "audioDurationS": 31.621333,
+            "hostAudioDurationS": 31.624014,
+            "audioDurationSkewS": 0.00268
+          },
+          "metrics": {
+            "raw_gate_median_upper_95_a_weighted_dbfs": [
+              -55.25,
+              -44.27
+            ],
+            "broadband_gate_excess_upper_95_a_weighted_dbfs": [
+              -64.3,
+              -44.6
+            ],
+            "raw_gate_pre_idle_median_upper_95_a_weighted_dbfs": [
+              -52.51,
+              -48.64
+            ],
+            "raw_gate_post_idle_median_upper_95_a_weighted_dbfs": [
+              -51.33,
+              -55.54
+            ],
+            "all_local_background_stable": false,
+            "local_background_drift_db": [
+              0.14,
+              4.08
+            ],
+            "gate_cruise_durations_s": [
+              3.84,
+              3.883
+            ],
+            "whole_step_transient": {
+              "valid": true,
+              "invalidReasons": [],
+              "requestedWindowS": 0.1,
+              "gates": [
+                {
+                  "epoch": 36,
+                  "valid": true,
+                  "startHostS": 5.7355469999999995,
+                  "stopHostS": 10.360418000000001,
+                  "max100msAWeightedDbfs": -44.324248,
+                  "max100msHostS": 9.902031,
+                  "preIdle100msMedianAWeightedDbfs": -53.069043,
+                  "postIdle100msMedianAWeightedDbfs": -53.146608,
+                  "preIdle100msMaxAWeightedDbfs": -28.538136,
+                  "postIdle100msMaxAWeightedDbfs": -43.149228,
+                  "max100msGainOverAdjacentIdleMaxDb": -15.786112
+                },
+                {
+                  "epoch": 37,
+                  "valid": true,
+                  "startHostS": 15.873179,
+                  "stopHostS": 20.497411999999997,
+                  "max100msAWeightedDbfs": -26.806663,
+                  "max100msHostS": 17.198031,
+                  "preIdle100msMedianAWeightedDbfs": -50.198905,
+                  "postIdle100msMedianAWeightedDbfs": -56.243603,
+                  "preIdle100msMaxAWeightedDbfs": -39.584263,
+                  "postIdle100msMaxAWeightedDbfs": -49.096253,
+                  "max100msGainOverAdjacentIdleMaxDb": 12.7776
+                }
+              ],
+              "limitation": "Conservative ~100 ms FFT-power screening, not a validated audibility guarantee; raw noise does not establish motor attribution",
+              "windowFrames": 5,
+              "windowS": 0.106667,
+              "signalSupportS": 0.170667
+            }
+          }
+        }
+      ]
+    },
+    {
+      "recordedAt": "20260916T013119Z",
+      "label": "v6-baseline-return-u8-200ma-f2",
+      "settings": {
+        "motion": {
+          "rMaxVelocity": 6,
+          "rMaxAccel": 20,
+          "rMaxJerk": 100,
+          "tMaxVelocity": 0.225,
+          "tMaxAccel": 2,
+          "tMaxJerk": 10
+        },
+        "rhoDriver": {
+          "runCurrent": 200,
+          "holdCurrent": 200,
+          "holdDelay": 8,
+          "powerDownDelay": 20,
+          "highSensitivityCurrentScale": true,
+          "chopperOffTime": 3,
+          "hysteresisStart": 5,
+          "hysteresisEnd": 0,
+          "blankTime": 1,
+          "microsteps": 8,
+          "interpolationEnabled": true,
+          "stealthChopEnabled": true,
+          "stealthChopThreshold": 0,
+          "pwmFrequency": 2,
+          "pwmRegulation": 4,
+          "pwmLimit": 8,
+          "standstillMode": 0,
+          "automaticCurrentScaling": true,
+          "automaticGradientAdaptation": false,
+          "pwmOffset": 128,
+          "pwmGradient": 0,
+          "coolStepEnabled": false,
+          "coolStepLowerThreshold": 1,
+          "coolStepUpperThreshold": 0,
+          "coolStepCurrentIncrement": 0,
+          "coolStepMeasurementCount": 0,
+          "coolStepThreshold": 0
+        }
+      },
+      "health": {
+        "allTestsCompletedNaturally": true,
+        "allSequencesReturnedToStart": true,
+        "rhoNeverMovedInwardOfStart": true,
+        "otherAxisStationary": true,
+        "plannerHealthy": true,
+        "allDriverUartResponsesValid": true,
+        "allDriversFaultFree": true
+      },
+      "acoustic": {
+        "qualificationMeasurementValid": false,
+        "levelValidForComparison": false,
+        "loudestConservative95MotorExcessUpperBoundAWeightedDbfs": null,
+        "totalRecordedSound": {
+          "measurementValid": false,
+          "withinTier": false,
+          "status": "inconclusive-invalid-measurement",
+          "loudestRawMotionUpper95AWeightedDbfs": -53.0,
+          "loudestRawIdleUpper95AWeightedDbfs": -50.51,
+          "wholeStepTransientRequired": true,
+          "wholeStepTransientMeasurementValid": true,
+          "loudestWholeStep100msAWeightedDbfs": -40.98741,
+          "ceilingAWeightedDbfs": -60.0,
+          "confidenceScope": "median/p95 bounds are per-window 95%, not simultaneous profile coverage; whole-STEP maximum is a screening statistic, not a confidence bound",
+          "limitation": "A raw exceedance does not identify room versus motor noise; whole-STEP ~100 ms screening is not a validated audibility guarantee"
+        }
+      },
+      "repeats": [
+        {
+          "returnError": 0.0,
+          "expectedFinalError": 0.0,
+          "gainFingerprintStable": true,
+          "timingQuality": {
+            "valid": true,
+            "sampleCount": 343,
+            "p95GapS": 0.15877,
+            "cadenceP95GapS": 0.151838,
+            "maximumGapS": 0.307058,
+            "maximumClassificationCriticalGapS": 0.0,
+            "interpolatedSteadyGapCount": 2,
+            "motionStartBracketS": 0.104963,
+            "motionStopBracketS": 0.141639,
+            "motionStartCount": 2,
+            "motionStopCount": 2,
+            "exactStepMotionEventCount": 2,
+            "exactStepMotionEventsValid": true,
+            "exactStepMotionIntervals": [
+              {
+                "epoch": 38,
+                "startHostS": 5.8069880000000005,
+                "stopHostS": 10.432743,
+                "startUncertaintyS": 0.011399,
+                "stopUncertaintyS": 0.009896
+              },
+              {
+                "epoch": 39,
+                "startHostS": 15.966256000000001,
+                "stopHostS": 20.590567,
+                "startUncertaintyS": 0.013599,
+                "stopUncertaintyS": 0.0097755
+              }
+            ],
+            "maximumRequestRttS": 0.075186,
+            "invalidReasons": [],
+            "audioEpochUncertaintyS": 0.010038060708902776,
+            "audioPrimingBlocksDiscarded": 3,
+            "audioDurationS": 31.050667,
+            "hostAudioDurationS": 31.05167,
+            "audioDurationSkewS": 0.001003
+          },
+          "metrics": {
+            "raw_gate_median_upper_95_a_weighted_dbfs": [
+              -53.18,
+              -53.0
+            ],
+            "broadband_gate_excess_upper_95_a_weighted_dbfs": [
+              -54.21,
+              -53.55
+            ],
+            "raw_gate_pre_idle_median_upper_95_a_weighted_dbfs": [
+              -60.55,
+              -55.85
+            ],
+            "raw_gate_post_idle_median_upper_95_a_weighted_dbfs": [
+              -52.85,
+              -54.26
+            ],
+            "all_local_background_stable": false,
+            "local_background_drift_db": [
+              2.22,
+              4.49
+            ],
+            "gate_cruise_durations_s": [
+              3.797,
+              3.861
+            ],
+            "whole_step_transient": {
+              "valid": true,
+              "invalidReasons": [],
+              "requestedWindowS": 0.1,
+              "gates": [
+                {
+                  "epoch": 38,
+                  "valid": true,
+                  "startHostS": 5.8069880000000005,
+                  "stopHostS": 10.432743,
+                  "max100msAWeightedDbfs": -44.536218,
+                  "max100msHostS": 7.233051,
+                  "preIdle100msMedianAWeightedDbfs": -62.161494,
+                  "postIdle100msMedianAWeightedDbfs": -57.961213,
+                  "preIdle100msMaxAWeightedDbfs": -54.357597,
+                  "postIdle100msMaxAWeightedDbfs": -40.257608,
+                  "max100msGainOverAdjacentIdleMaxDb": -4.27861
+                },
+                {
+                  "epoch": 39,
+                  "valid": true,
+                  "startHostS": 15.966256000000001,
+                  "stopHostS": 20.590567,
+                  "max100msAWeightedDbfs": -46.072567,
+                  "max100msHostS": 20.118384,
+                  "preIdle100msMedianAWeightedDbfs": -62.309362,
+                  "postIdle100msMedianAWeightedDbfs": -57.036053,
+                  "preIdle100msMaxAWeightedDbfs": -48.329993,
+                  "postIdle100msMaxAWeightedDbfs": -45.50626,
+                  "max100msGainOverAdjacentIdleMaxDb": -0.566306
+                }
+              ],
+              "limitation": "Conservative ~100 ms FFT-power screening, not a validated audibility guarantee; raw noise does not establish motor attribution",
+              "windowFrames": 5,
+              "windowS": 0.106667,
+              "signalSupportS": 0.170667
+            }
+          }
+        },
+        {
+          "returnError": 0.0,
+          "expectedFinalError": 0.0,
+          "gainFingerprintStable": true,
+          "timingQuality": {
+            "valid": true,
+            "sampleCount": 346,
+            "p95GapS": 0.156148,
+            "cadenceP95GapS": 0.153967,
+            "maximumGapS": 0.272727,
+            "maximumClassificationCriticalGapS": 0.0,
+            "interpolatedSteadyGapCount": 2,
+            "motionStartBracketS": 0.081733,
+            "motionStopBracketS": 0.143488,
+            "motionStartCount": 2,
+            "motionStopCount": 2,
+            "exactStepMotionEventCount": 2,
+            "exactStepMotionEventsValid": true,
+            "exactStepMotionIntervals": [
+              {
+                "epoch": 40,
+                "startHostS": 5.916105,
+                "stopHostS": 10.540021,
+                "startUncertaintyS": 0.010686,
+                "stopUncertaintyS": 0.010977
+              },
+              {
+                "epoch": 41,
+                "startHostS": 16.038785,
+                "stopHostS": 20.663923,
+                "startUncertaintyS": 0.011021,
+                "stopUncertaintyS": 0.0109945
+              }
+            ],
+            "maximumRequestRttS": 0.06656,
+            "invalidReasons": [],
+            "audioEpochUncertaintyS": 0.010008311122655869,
+            "audioPrimingBlocksDiscarded": 3,
+            "audioDurationS": 31.056,
+            "hostAudioDurationS": 31.054808,
+            "audioDurationSkewS": 0.001192
+          },
+          "metrics": {
+            "raw_gate_median_upper_95_a_weighted_dbfs": [
+              -59.4,
+              -62.11
+            ],
+            "broadband_gate_excess_upper_95_a_weighted_dbfs": [
+              -62.92,
+              -66.88
+            ],
+            "raw_gate_pre_idle_median_upper_95_a_weighted_dbfs": [
+              -50.51,
+              -63.63
+            ],
+            "raw_gate_post_idle_median_upper_95_a_weighted_dbfs": [
+              -61.09,
+              -62.66
+            ],
+            "all_local_background_stable": false,
+            "local_background_drift_db": [
+              9.51,
+              0.99
+            ],
+            "gate_cruise_durations_s": [
+              3.861,
+              3.861
+            ],
+            "whole_step_transient": {
+              "valid": true,
+              "invalidReasons": [],
+              "requestedWindowS": 0.1,
+              "gates": [
+                {
+                  "epoch": 40,
+                  "valid": true,
+                  "startHostS": 5.916105,
+                  "stopHostS": 10.540021,
+                  "max100msAWeightedDbfs": -40.98741,
+                  "max100msHostS": 6.385772,
+                  "preIdle100msMedianAWeightedDbfs": -52.100222,
+                  "postIdle100msMedianAWeightedDbfs": -61.902827,
+                  "preIdle100msMaxAWeightedDbfs": -40.871648,
+                  "postIdle100msMaxAWeightedDbfs": -54.461322,
+                  "max100msGainOverAdjacentIdleMaxDb": -0.115762
+                },
+                {
+                  "epoch": 41,
+                  "valid": true,
+                  "startHostS": 16.038785,
+                  "stopHostS": 20.663923,
+                  "max100msAWeightedDbfs": -58.109765,
+                  "max100msHostS": 16.241772,
+                  "preIdle100msMedianAWeightedDbfs": -63.717884,
+                  "postIdle100msMedianAWeightedDbfs": -62.800568,
+                  "preIdle100msMaxAWeightedDbfs": -62.687237,
+                  "postIdle100msMaxAWeightedDbfs": -39.640208,
+                  "max100msGainOverAdjacentIdleMaxDb": -18.469557
+                }
+              ],
+              "limitation": "Conservative ~100 ms FFT-power screening, not a validated audibility guarantee; raw noise does not establish motor attribution",
+              "windowFrames": 5,
+              "windowS": 0.106667,
+              "signalSupportS": 0.170667
+            }
+          }
+        }
+      ]
+    },
+    {
+      "recordedAt": "20260916T013301Z",
+      "label": "v6-u8-275ma-f2",
+      "settings": {
+        "motion": {
+          "rMaxVelocity": 6,
+          "rMaxAccel": 20,
+          "rMaxJerk": 100,
+          "tMaxVelocity": 0.225,
+          "tMaxAccel": 2,
+          "tMaxJerk": 10
+        },
+        "rhoDriver": {
+          "runCurrent": 275,
+          "holdCurrent": 275,
+          "holdDelay": 8,
+          "powerDownDelay": 20,
+          "highSensitivityCurrentScale": true,
+          "chopperOffTime": 3,
+          "hysteresisStart": 5,
+          "hysteresisEnd": 0,
+          "blankTime": 1,
+          "microsteps": 8,
+          "interpolationEnabled": true,
+          "stealthChopEnabled": true,
+          "stealthChopThreshold": 0,
+          "pwmFrequency": 2,
+          "pwmRegulation": 4,
+          "pwmLimit": 8,
+          "standstillMode": 0,
+          "automaticCurrentScaling": true,
+          "automaticGradientAdaptation": false,
+          "pwmOffset": 128,
+          "pwmGradient": 0,
+          "coolStepEnabled": false,
+          "coolStepLowerThreshold": 1,
+          "coolStepUpperThreshold": 0,
+          "coolStepCurrentIncrement": 0,
+          "coolStepMeasurementCount": 0,
+          "coolStepThreshold": 0
+        }
+      },
+      "health": {
+        "allTestsCompletedNaturally": true,
+        "allSequencesReturnedToStart": true,
+        "rhoNeverMovedInwardOfStart": true,
+        "otherAxisStationary": true,
+        "plannerHealthy": true,
+        "allDriverUartResponsesValid": true,
+        "allDriversFaultFree": true
+      },
+      "acoustic": {
+        "qualificationMeasurementValid": false,
+        "levelValidForComparison": false,
+        "loudestConservative95MotorExcessUpperBoundAWeightedDbfs": null,
+        "totalRecordedSound": {
+          "measurementValid": false,
+          "withinTier": false,
+          "status": "inconclusive-invalid-measurement",
+          "loudestRawMotionUpper95AWeightedDbfs": -54.76,
+          "loudestRawIdleUpper95AWeightedDbfs": -55.13,
+          "wholeStepTransientRequired": true,
+          "wholeStepTransientMeasurementValid": true,
+          "loudestWholeStep100msAWeightedDbfs": -43.279634,
+          "ceilingAWeightedDbfs": -60.0,
+          "confidenceScope": "median/p95 bounds are per-window 95%, not simultaneous profile coverage; whole-STEP maximum is a screening statistic, not a confidence bound",
+          "limitation": "A raw exceedance does not identify room versus motor noise; whole-STEP ~100 ms screening is not a validated audibility guarantee"
+        }
+      },
+      "repeats": [
+        {
+          "returnError": 0.0,
+          "expectedFinalError": 0.0,
+          "gainFingerprintStable": true,
+          "timingQuality": {
+            "valid": true,
+            "sampleCount": 348,
+            "p95GapS": 0.153481,
+            "cadenceP95GapS": 0.152056,
+            "maximumGapS": 0.26033,
+            "maximumClassificationCriticalGapS": 0.0,
+            "interpolatedSteadyGapCount": 1,
+            "motionStartBracketS": 0.091865,
+            "motionStopBracketS": 0.087708,
+            "motionStartCount": 2,
+            "motionStopCount": 2,
+            "exactStepMotionEventCount": 2,
+            "exactStepMotionEventsValid": true,
+            "exactStepMotionIntervals": [
+              {
+                "epoch": 42,
+                "startHostS": 5.699496,
+                "stopHostS": 10.322066,
+                "startUncertaintyS": 0.013837,
+                "stopUncertaintyS": 0.010629
+              },
+              {
+                "epoch": 43,
+                "startHostS": 15.820295999999999,
+                "stopHostS": 20.443709,
+                "startUncertaintyS": 0.0113375,
+                "stopUncertaintyS": 0.010355
+              }
+            ],
+            "maximumRequestRttS": 0.074505,
+            "invalidReasons": [],
+            "audioEpochUncertaintyS": 0.010039328704588115,
+            "audioPrimingBlocksDiscarded": 3,
+            "audioDurationS": 30.805333,
+            "hostAudioDurationS": 30.80797,
+            "audioDurationSkewS": 0.002637
+          },
+          "metrics": {
+            "raw_gate_median_upper_95_a_weighted_dbfs": [
+              -60.77,
+              -56.28
+            ],
+            "broadband_gate_excess_upper_95_a_weighted_dbfs": [
+              -68.88,
+              -58.33
+            ],
+            "raw_gate_pre_idle_median_upper_95_a_weighted_dbfs": [
+              -60.63,
+              -59.87
+            ],
+            "raw_gate_post_idle_median_upper_95_a_weighted_dbfs": [
+              -60.08,
+              -55.69
+            ],
+            "all_local_background_stable": false,
+            "local_background_drift_db": [
+              0.26,
+              4.17
+            ],
+            "gate_cruise_durations_s": [
+              3.861,
+              3.84
+            ],
+            "whole_step_transient": {
+              "valid": true,
+              "invalidReasons": [],
+              "requestedWindowS": 0.1,
+              "gates": [
+                {
+                  "epoch": 42,
+                  "valid": true,
+                  "startHostS": 5.699496,
+                  "stopHostS": 10.322066,
+                  "max100msAWeightedDbfs": -55.011035,
+                  "max100msHostS": 7.786701,
+                  "preIdle100msMedianAWeightedDbfs": -60.523201,
+                  "postIdle100msMedianAWeightedDbfs": -60.789634,
+                  "preIdle100msMaxAWeightedDbfs": -52.580654,
+                  "postIdle100msMaxAWeightedDbfs": -49.736288,
+                  "max100msGainOverAdjacentIdleMaxDb": -5.274747
+                },
+                {
+                  "epoch": 43,
+                  "valid": true,
+                  "startHostS": 15.820295999999999,
+                  "stopHostS": 20.443709,
+                  "max100msAWeightedDbfs": -53.419198,
+                  "max100msHostS": 19.925367,
+                  "preIdle100msMedianAWeightedDbfs": -60.246011,
+                  "postIdle100msMedianAWeightedDbfs": -56.349535,
+                  "preIdle100msMaxAWeightedDbfs": -49.736288,
+                  "postIdle100msMaxAWeightedDbfs": -51.719144,
+                  "max100msGainOverAdjacentIdleMaxDb": -3.68291
+                }
+              ],
+              "limitation": "Conservative ~100 ms FFT-power screening, not a validated audibility guarantee; raw noise does not establish motor attribution",
+              "windowFrames": 5,
+              "windowS": 0.106667,
+              "signalSupportS": 0.170667
+            }
+          }
+        },
+        {
+          "returnError": 0.0,
+          "expectedFinalError": 0.0,
+          "gainFingerprintStable": true,
+          "timingQuality": {
+            "valid": true,
+            "sampleCount": 347,
+            "p95GapS": 0.149823,
+            "cadenceP95GapS": 0.148012,
+            "maximumGapS": 0.257585,
+            "maximumClassificationCriticalGapS": 0.0,
+            "interpolatedSteadyGapCount": 2,
+            "motionStartBracketS": 0.096453,
+            "motionStopBracketS": 0.145951,
+            "motionStartCount": 2,
+            "motionStopCount": 2,
+            "exactStepMotionEventCount": 2,
+            "exactStepMotionEventsValid": true,
+            "exactStepMotionIntervals": [
+              {
+                "epoch": 44,
+                "startHostS": 5.686665,
+                "stopHostS": 10.313423,
+                "startUncertaintyS": 0.0136535,
+                "stopUncertaintyS": 0.0107935
+              },
+              {
+                "epoch": 45,
+                "startHostS": 15.901793999999999,
+                "stopHostS": 20.52778,
+                "startUncertaintyS": 0.0132835,
+                "stopUncertaintyS": 0.0095175
+              }
+            ],
+            "maximumRequestRttS": 0.297156,
+            "invalidReasons": [],
+            "audioEpochUncertaintyS": 0.010012323609553278,
+            "audioPrimingBlocksDiscarded": 3,
+            "audioDurationS": 30.944,
+            "hostAudioDurationS": 30.948215,
+            "audioDurationSkewS": 0.004215
+          },
+          "metrics": {
+            "raw_gate_median_upper_95_a_weighted_dbfs": [
+              -54.76,
+              -60.14
+            ],
+            "broadband_gate_excess_upper_95_a_weighted_dbfs": [
+              -56.46,
+              -63.23
+            ],
+            "raw_gate_pre_idle_median_upper_95_a_weighted_dbfs": [
+              -55.9,
+              -58.71
+            ],
+            "raw_gate_post_idle_median_upper_95_a_weighted_dbfs": [
+              -60.64,
+              -61.37
+            ],
+            "all_local_background_stable": false,
+            "local_background_drift_db": [
+              0.15,
+              2.4
+            ],
+            "gate_cruise_durations_s": [
+              3.819,
+              3.861
+            ],
+            "whole_step_transient": {
+              "valid": true,
+              "invalidReasons": [],
+              "requestedWindowS": 0.1,
+              "gates": [
+                {
+                  "epoch": 44,
+                  "valid": true,
+                  "startHostS": 5.686665,
+                  "stopHostS": 10.313423,
+                  "max100msAWeightedDbfs": -43.279634,
+                  "max100msHostS": 6.999771,
+                  "preIdle100msMedianAWeightedDbfs": -61.071131,
+                  "postIdle100msMedianAWeightedDbfs": -61.400281,
+                  "preIdle100msMaxAWeightedDbfs": -44.231494,
+                  "postIdle100msMaxAWeightedDbfs": -54.630551,
+                  "max100msGainOverAdjacentIdleMaxDb": 0.95186
+                },
+                {
+                  "epoch": 45,
+                  "valid": true,
+                  "startHostS": 15.901793999999999,
+                  "stopHostS": 20.52778,
+                  "max100msAWeightedDbfs": -50.711273,
+                  "max100msHostS": 18.135771,
+                  "preIdle100msMedianAWeightedDbfs": -60.561386,
+                  "postIdle100msMedianAWeightedDbfs": -63.129264,
+                  "preIdle100msMaxAWeightedDbfs": -48.230808,
+                  "postIdle100msMaxAWeightedDbfs": -52.424615,
+                  "max100msGainOverAdjacentIdleMaxDb": -2.480466
+                }
+              ],
+              "limitation": "Conservative ~100 ms FFT-power screening, not a validated audibility guarantee; raw noise does not establish motor attribution",
+              "windowFrames": 5,
+              "windowS": 0.106667,
+              "signalSupportS": 0.170667
+            }
+          }
+        }
+      ]
+    },
+    {
+      "recordedAt": "20260916T013503Z",
+      "label": "v6-u8-150ma-f2",
+      "settings": {
+        "motion": {
+          "rMaxVelocity": 6,
+          "rMaxAccel": 20,
+          "rMaxJerk": 100,
+          "tMaxVelocity": 0.225,
+          "tMaxAccel": 2,
+          "tMaxJerk": 10
+        },
+        "rhoDriver": {
+          "runCurrent": 150,
+          "holdCurrent": 150,
+          "holdDelay": 8,
+          "powerDownDelay": 20,
+          "highSensitivityCurrentScale": true,
+          "chopperOffTime": 3,
+          "hysteresisStart": 5,
+          "hysteresisEnd": 0,
+          "blankTime": 1,
+          "microsteps": 8,
+          "interpolationEnabled": true,
+          "stealthChopEnabled": true,
+          "stealthChopThreshold": 0,
+          "pwmFrequency": 2,
+          "pwmRegulation": 4,
+          "pwmLimit": 8,
+          "standstillMode": 0,
+          "automaticCurrentScaling": true,
+          "automaticGradientAdaptation": false,
+          "pwmOffset": 128,
+          "pwmGradient": 0,
+          "coolStepEnabled": false,
+          "coolStepLowerThreshold": 1,
+          "coolStepUpperThreshold": 0,
+          "coolStepCurrentIncrement": 0,
+          "coolStepMeasurementCount": 0,
+          "coolStepThreshold": 0
+        }
+      },
+      "health": {
+        "allTestsCompletedNaturally": true,
+        "allSequencesReturnedToStart": true,
+        "rhoNeverMovedInwardOfStart": true,
+        "otherAxisStationary": true,
+        "plannerHealthy": true,
+        "allDriverUartResponsesValid": true,
+        "allDriversFaultFree": true
+      },
+      "acoustic": {
+        "qualificationMeasurementValid": true,
+        "levelValidForComparison": true,
+        "loudestConservative95MotorExcessUpperBoundAWeightedDbfs": -66.76,
+        "totalRecordedSound": {
+          "measurementValid": true,
+          "withinTier": false,
+          "status": "inconclusive-total-above-tier",
+          "loudestRawMotionUpper95AWeightedDbfs": -62.33,
+          "loudestRawIdleUpper95AWeightedDbfs": -63.56,
+          "wholeStepTransientRequired": true,
+          "wholeStepTransientMeasurementValid": true,
+          "loudestWholeStep100msAWeightedDbfs": -57.156944,
+          "ceilingAWeightedDbfs": -60.0,
+          "confidenceScope": "median/p95 bounds are per-window 95%, not simultaneous profile coverage; whole-STEP maximum is a screening statistic, not a confidence bound",
+          "limitation": "A raw exceedance does not identify room versus motor noise; whole-STEP ~100 ms screening is not a validated audibility guarantee"
+        }
+      },
+      "repeats": [
+        {
+          "returnError": 0.0,
+          "expectedFinalError": 0.0,
+          "gainFingerprintStable": true,
+          "timingQuality": {
+            "valid": true,
+            "sampleCount": 354,
+            "p95GapS": 0.150116,
+            "cadenceP95GapS": 0.145571,
+            "maximumGapS": 0.262567,
+            "maximumClassificationCriticalGapS": 0.0,
+            "interpolatedSteadyGapCount": 1,
+            "motionStartBracketS": 0.086953,
+            "motionStopBracketS": 0.166529,
+            "motionStartCount": 2,
+            "motionStopCount": 2,
+            "exactStepMotionEventCount": 2,
+            "exactStepMotionEventsValid": true,
+            "exactStepMotionIntervals": [
+              {
+                "epoch": 46,
+                "startHostS": 5.818849,
+                "stopHostS": 10.443652,
+                "startUncertaintyS": 0.013301,
+                "stopUncertaintyS": 0.010312
+              },
+              {
+                "epoch": 47,
+                "startHostS": 15.977322,
+                "stopHostS": 20.603354,
+                "startUncertaintyS": 0.011941,
+                "stopUncertaintyS": 0.0123045
+              }
+            ],
+            "maximumRequestRttS": 0.076493,
+            "invalidReasons": [],
+            "audioEpochUncertaintyS": 0.01000425917096436,
+            "audioPrimingBlocksDiscarded": 3,
+            "audioDurationS": 31.093333,
+            "hostAudioDurationS": 31.091834,
+            "audioDurationSkewS": 0.001499
+          },
+          "metrics": {
+            "raw_gate_median_upper_95_a_weighted_dbfs": [
+              -63.12,
+              -62.33
+            ],
+            "broadband_gate_excess_upper_95_a_weighted_dbfs": [
+              -69.81,
+              -67.1
+            ],
+            "raw_gate_pre_idle_median_upper_95_a_weighted_dbfs": [
+              -63.56,
+              -63.89
+            ],
+            "raw_gate_post_idle_median_upper_95_a_weighted_dbfs": [
+              -63.89,
+              -63.62
+            ],
+            "all_local_background_stable": true,
+            "local_background_drift_db": [
+              0.22,
+              0.24
+            ],
+            "gate_cruise_durations_s": [
+              3.861,
+              3.861
+            ],
+            "whole_step_transient": {
+              "valid": true,
+              "invalidReasons": [],
+              "requestedWindowS": 0.1,
+              "gates": [
+                {
+                  "epoch": 46,
+                  "valid": true,
+                  "startHostS": 5.818849,
+                  "stopHostS": 10.443652,
+                  "max100msAWeightedDbfs": -61.942409,
+                  "max100msHostS": 9.64734,
+                  "preIdle100msMedianAWeightedDbfs": -63.855362,
+                  "postIdle100msMedianAWeightedDbfs": -63.989464,
+                  "preIdle100msMaxAWeightedDbfs": -62.612186,
+                  "postIdle100msMaxAWeightedDbfs": -63.062301,
+                  "max100msGainOverAdjacentIdleMaxDb": 0.669777
+                },
+                {
+                  "epoch": 47,
+                  "valid": true,
+                  "startHostS": 15.977322,
+                  "stopHostS": 20.603354,
+                  "max100msAWeightedDbfs": -59.042525,
+                  "max100msHostS": 16.708673,
+                  "preIdle100msMedianAWeightedDbfs": -63.946176,
+                  "postIdle100msMedianAWeightedDbfs": -63.796197,
+                  "preIdle100msMaxAWeightedDbfs": -63.121155,
+                  "postIdle100msMaxAWeightedDbfs": -61.694161,
+                  "max100msGainOverAdjacentIdleMaxDb": 2.651635
+                }
+              ],
+              "limitation": "Conservative ~100 ms FFT-power screening, not a validated audibility guarantee; raw noise does not establish motor attribution",
+              "windowFrames": 5,
+              "windowS": 0.106667,
+              "signalSupportS": 0.170667
+            }
+          }
+        },
+        {
+          "returnError": 0.0,
+          "expectedFinalError": 0.0,
+          "gainFingerprintStable": true,
+          "timingQuality": {
+            "valid": true,
+            "sampleCount": 355,
+            "p95GapS": 0.149949,
+            "cadenceP95GapS": 0.149232,
+            "maximumGapS": 0.257281,
+            "maximumClassificationCriticalGapS": 0.0,
+            "interpolatedSteadyGapCount": 1,
+            "motionStartBracketS": 0.082569,
+            "motionStopBracketS": 0.139368,
+            "motionStartCount": 2,
+            "motionStopCount": 2,
+            "exactStepMotionEventCount": 2,
+            "exactStepMotionEventsValid": true,
+            "exactStepMotionIntervals": [
+              {
+                "epoch": 48,
+                "startHostS": 5.929031,
+                "stopHostS": 10.554192,
+                "startUncertaintyS": 0.0103925,
+                "stopUncertaintyS": 0.0104325
+              },
+              {
+                "epoch": 49,
+                "startHostS": 16.041266999999998,
+                "stopHostS": 20.663598999999998,
+                "startUncertaintyS": 0.012534,
+                "stopUncertaintyS": 0.011407
+              }
+            ],
+            "maximumRequestRttS": 0.074923,
+            "invalidReasons": [],
+            "audioEpochUncertaintyS": 0.010040492159314454,
+            "audioPrimingBlocksDiscarded": 3,
+            "audioDurationS": 31.008,
+            "hostAudioDurationS": 31.008649,
+            "audioDurationSkewS": 0.000649
+          },
+          "metrics": {
+            "raw_gate_median_upper_95_a_weighted_dbfs": [
+              -62.92,
+              -62.48
+            ],
+            "broadband_gate_excess_upper_95_a_weighted_dbfs": [
+              -68.79,
+              -66.76
+            ],
+            "raw_gate_pre_idle_median_upper_95_a_weighted_dbfs": [
+              -63.96,
+              -64.3
+            ],
+            "raw_gate_post_idle_median_upper_95_a_weighted_dbfs": [
+              -63.68,
+              -63.9
+            ],
+            "all_local_background_stable": true,
+            "local_background_drift_db": [
+              0.1,
+              0.31
+            ],
+            "gate_cruise_durations_s": [
+              3.883,
+              3.84
+            ],
+            "whole_step_transient": {
+              "valid": true,
+              "invalidReasons": [],
+              "requestedWindowS": 0.1,
+              "gates": [
+                {
+                  "epoch": 48,
+                  "valid": true,
+                  "startHostS": 5.929031,
+                  "stopHostS": 10.554192,
+                  "max100msAWeightedDbfs": -60.019465,
+                  "max100msHostS": 9.103998,
+                  "preIdle100msMedianAWeightedDbfs": -64.129104,
+                  "postIdle100msMedianAWeightedDbfs": -64.093624,
+                  "preIdle100msMaxAWeightedDbfs": -62.925853,
+                  "postIdle100msMaxAWeightedDbfs": -62.948861,
+                  "max100msGainOverAdjacentIdleMaxDb": 2.906388
+                },
+                {
+                  "epoch": 49,
+                  "valid": true,
+                  "startHostS": 16.041266999999998,
+                  "stopHostS": 20.663598999999998,
+                  "max100msAWeightedDbfs": -57.156944,
+                  "max100msHostS": 17.445331,
+                  "preIdle100msMedianAWeightedDbfs": -64.317385,
+                  "postIdle100msMedianAWeightedDbfs": -64.072095,
+                  "preIdle100msMaxAWeightedDbfs": -63.363512,
+                  "postIdle100msMaxAWeightedDbfs": -60.735576,
+                  "max100msGainOverAdjacentIdleMaxDb": 3.578631
+                }
+              ],
+              "limitation": "Conservative ~100 ms FFT-power screening, not a validated audibility guarantee; raw noise does not establish motor attribution",
+              "windowFrames": 5,
+              "windowS": 0.106667,
+              "signalSupportS": 0.170667
+            }
+          }
+        }
+      ]
+    },
+    {
+      "recordedAt": "20260916T013655Z",
+      "label": "v6-quiet-ab-u8-200ma-f2",
+      "settings": {
+        "motion": {
+          "rMaxVelocity": 6,
+          "rMaxAccel": 20,
+          "rMaxJerk": 100,
+          "tMaxVelocity": 0.225,
+          "tMaxAccel": 2,
+          "tMaxJerk": 10
+        },
+        "rhoDriver": {
+          "runCurrent": 200,
+          "holdCurrent": 200,
+          "holdDelay": 8,
+          "powerDownDelay": 20,
+          "highSensitivityCurrentScale": true,
+          "chopperOffTime": 3,
+          "hysteresisStart": 5,
+          "hysteresisEnd": 0,
+          "blankTime": 1,
+          "microsteps": 8,
+          "interpolationEnabled": true,
+          "stealthChopEnabled": true,
+          "stealthChopThreshold": 0,
+          "pwmFrequency": 2,
+          "pwmRegulation": 4,
+          "pwmLimit": 8,
+          "standstillMode": 0,
+          "automaticCurrentScaling": true,
+          "automaticGradientAdaptation": false,
+          "pwmOffset": 128,
+          "pwmGradient": 0,
+          "coolStepEnabled": false,
+          "coolStepLowerThreshold": 1,
+          "coolStepUpperThreshold": 0,
+          "coolStepCurrentIncrement": 0,
+          "coolStepMeasurementCount": 0,
+          "coolStepThreshold": 0
+        }
+      },
+      "health": {
+        "allTestsCompletedNaturally": true,
+        "allSequencesReturnedToStart": true,
+        "rhoNeverMovedInwardOfStart": true,
+        "otherAxisStationary": true,
+        "plannerHealthy": true,
+        "allDriverUartResponsesValid": true,
+        "allDriversFaultFree": true
+      },
+      "acoustic": {
+        "qualificationMeasurementValid": true,
+        "levelValidForComparison": true,
+        "loudestConservative95MotorExcessUpperBoundAWeightedDbfs": -65.82,
+        "totalRecordedSound": {
+          "measurementValid": true,
+          "withinTier": false,
+          "status": "inconclusive-total-above-tier",
+          "loudestRawMotionUpper95AWeightedDbfs": -61.31,
+          "loudestRawIdleUpper95AWeightedDbfs": -60.75,
+          "wholeStepTransientRequired": true,
+          "wholeStepTransientMeasurementValid": true,
+          "loudestWholeStep100msAWeightedDbfs": -28.43306,
+          "ceilingAWeightedDbfs": -60.0,
+          "confidenceScope": "median/p95 bounds are per-window 95%, not simultaneous profile coverage; whole-STEP maximum is a screening statistic, not a confidence bound",
+          "limitation": "A raw exceedance does not identify room versus motor noise; whole-STEP ~100 ms screening is not a validated audibility guarantee"
+        }
+      },
+      "repeats": [
+        {
+          "returnError": 0.0,
+          "expectedFinalError": 0.0,
+          "gainFingerprintStable": true,
+          "timingQuality": {
+            "valid": true,
+            "sampleCount": 350,
+            "p95GapS": 0.149681,
+            "cadenceP95GapS": 0.1493,
+            "maximumGapS": 0.249604,
+            "maximumClassificationCriticalGapS": 0.0,
+            "interpolatedSteadyGapCount": 0,
+            "motionStartBracketS": 0.07552,
+            "motionStopBracketS": 0.130171,
+            "motionStartCount": 2,
+            "motionStopCount": 2,
+            "exactStepMotionEventCount": 2,
+            "exactStepMotionEventsValid": true,
+            "exactStepMotionIntervals": [
+              {
+                "epoch": 50,
+                "startHostS": 5.701559,
+                "stopHostS": 10.323795,
+                "startUncertaintyS": 0.013091,
+                "stopUncertaintyS": 0.0106705
+              },
+              {
+                "epoch": 51,
+                "startHostS": 15.802496999999999,
+                "stopHostS": 20.427702999999998,
+                "startUncertaintyS": 0.0112725,
+                "stopUncertaintyS": 0.0102055
+              }
+            ],
+            "maximumRequestRttS": 0.156102,
+            "invalidReasons": [],
+            "audioEpochUncertaintyS": 0.01001061661168933,
+            "audioPrimingBlocksDiscarded": 3,
+            "audioDurationS": 30.965333,
+            "hostAudioDurationS": 30.968131,
+            "audioDurationSkewS": 0.002798
+          },
+          "metrics": {
+            "raw_gate_median_upper_95_a_weighted_dbfs": [
+              -62.17,
+              -61.49
+            ],
+            "broadband_gate_excess_upper_95_a_weighted_dbfs": [
+              -70.08,
+              -65.82
+            ],
+            "raw_gate_pre_idle_median_upper_95_a_weighted_dbfs": [
+              -62.27,
+              -61.1
+            ],
+            "raw_gate_post_idle_median_upper_95_a_weighted_dbfs": [
+              -60.75,
+              -63.09
+            ],
+            "all_local_background_stable": true,
+            "local_background_drift_db": [
+              0.84,
+              1.69
+            ],
+            "gate_cruise_durations_s": [
+              3.84,
+              3.84
+            ],
+            "whole_step_transient": {
+              "valid": true,
+              "invalidReasons": [],
+              "requestedWindowS": 0.1,
+              "gates": [
+                {
+                  "epoch": 50,
+                  "valid": true,
+                  "startHostS": 5.701559,
+                  "stopHostS": 10.323795,
+                  "max100msAWeightedDbfs": -28.43306,
+                  "max100msHostS": 5.609764,
+                  "preIdle100msMedianAWeightedDbfs": -62.660615,
+                  "postIdle100msMedianAWeightedDbfs": -61.747674,
+                  "preIdle100msMaxAWeightedDbfs": -25.197612,
+                  "postIdle100msMaxAWeightedDbfs": -55.830558,
+                  "max100msGainOverAdjacentIdleMaxDb": -3.235448
+                },
+                {
+                  "epoch": 51,
+                  "valid": true,
+                  "startHostS": 15.802496999999999,
+                  "stopHostS": 20.427702999999998,
+                  "max100msAWeightedDbfs": -56.809015,
+                  "max100msHostS": 17.897764,
+                  "preIdle100msMedianAWeightedDbfs": -61.698942,
+                  "postIdle100msMedianAWeightedDbfs": -63.204051,
+                  "preIdle100msMaxAWeightedDbfs": -58.652402,
+                  "postIdle100msMaxAWeightedDbfs": -62.327156,
+                  "max100msGainOverAdjacentIdleMaxDb": 1.843387
+                }
+              ],
+              "limitation": "Conservative ~100 ms FFT-power screening, not a validated audibility guarantee; raw noise does not establish motor attribution",
+              "windowFrames": 5,
+              "windowS": 0.106667,
+              "signalSupportS": 0.170667
+            }
+          }
+        },
+        {
+          "returnError": 0.0,
+          "expectedFinalError": 0.0,
+          "gainFingerprintStable": true,
+          "timingQuality": {
+            "valid": true,
+            "sampleCount": 356,
+            "p95GapS": 0.14917,
+            "cadenceP95GapS": 0.147665,
+            "maximumGapS": 0.306606,
+            "maximumClassificationCriticalGapS": 0.0,
+            "interpolatedSteadyGapCount": 2,
+            "motionStartBracketS": 0.089201,
+            "motionStopBracketS": 0.136054,
+            "motionStartCount": 2,
+            "motionStopCount": 2,
+            "exactStepMotionEventCount": 2,
+            "exactStepMotionEventsValid": true,
+            "exactStepMotionIntervals": [
+              {
+                "epoch": 52,
+                "startHostS": 5.839483,
+                "stopHostS": 10.463492,
+                "startUncertaintyS": 0.0108685,
+                "stopUncertaintyS": 0.0110255
+              },
+              {
+                "epoch": 53,
+                "startHostS": 16.039449,
+                "stopHostS": 20.663052999999998,
+                "startUncertaintyS": 0.012096,
+                "stopUncertaintyS": 0.0129275
+              }
+            ],
+            "maximumRequestRttS": 0.058774,
+            "invalidReasons": [],
+            "audioEpochUncertaintyS": 0.010042415689677,
+            "audioPrimingBlocksDiscarded": 3,
+            "audioDurationS": 31.12,
+            "hostAudioDurationS": 31.11903,
+            "audioDurationSkewS": 0.00097
+          },
+          "metrics": {
+            "raw_gate_median_upper_95_a_weighted_dbfs": [
+              -61.93,
+              -61.31
+            ],
+            "broadband_gate_excess_upper_95_a_weighted_dbfs": [
+              -71.34,
+              -66.48
+            ],
+            "raw_gate_pre_idle_median_upper_95_a_weighted_dbfs": [
+              -61.01,
+              -61.98
+            ],
+            "raw_gate_post_idle_median_upper_95_a_weighted_dbfs": [
+              -62.08,
+              -62.68
+            ],
+            "all_local_background_stable": true,
+            "local_background_drift_db": [
+              1.12,
+              0.24
+            ],
+            "gate_cruise_durations_s": [
+              3.84,
+              3.861
+            ],
+            "whole_step_transient": {
+              "valid": true,
+              "invalidReasons": [],
+              "requestedWindowS": 0.1,
+              "gates": [
+                {
+                  "epoch": 52,
+                  "valid": true,
+                  "startHostS": 5.839483,
+                  "stopHostS": 10.463492,
+                  "max100msAWeightedDbfs": -60.341606,
+                  "max100msHostS": 6.143591,
+                  "preIdle100msMedianAWeightedDbfs": -61.353825,
+                  "postIdle100msMedianAWeightedDbfs": -62.438869,
+                  "preIdle100msMaxAWeightedDbfs": -59.948726,
+                  "postIdle100msMaxAWeightedDbfs": -59.740981,
+                  "max100msGainOverAdjacentIdleMaxDb": -0.600625
+                },
+                {
+                  "epoch": 53,
+                  "valid": true,
+                  "startHostS": 16.039449,
+                  "stopHostS": 20.663052999999998,
+                  "max100msAWeightedDbfs": -57.316932,
+                  "max100msHostS": 18.132925,
+                  "preIdle100msMedianAWeightedDbfs": -62.568667,
+                  "postIdle100msMedianAWeightedDbfs": -62.721224,
+                  "preIdle100msMaxAWeightedDbfs": -59.740981,
+                  "postIdle100msMaxAWeightedDbfs": -61.519411,
+                  "max100msGainOverAdjacentIdleMaxDb": 2.424049
+                }
+              ],
+              "limitation": "Conservative ~100 ms FFT-power screening, not a validated audibility guarantee; raw noise does not establish motor attribution",
+              "windowFrames": 5,
+              "windowS": 0.106667,
+              "signalSupportS": 0.170667
+            }
+          }
+        }
+      ]
+    },
+    {
+      "recordedAt": "20260916T013835Z",
+      "label": "v6-u8-150ma-f2-reg1",
+      "settings": {
+        "motion": {
+          "rMaxVelocity": 6,
+          "rMaxAccel": 20,
+          "rMaxJerk": 100,
+          "tMaxVelocity": 0.225,
+          "tMaxAccel": 2,
+          "tMaxJerk": 10
+        },
+        "rhoDriver": {
+          "runCurrent": 150,
+          "holdCurrent": 150,
+          "holdDelay": 8,
+          "powerDownDelay": 20,
+          "highSensitivityCurrentScale": true,
+          "chopperOffTime": 3,
+          "hysteresisStart": 5,
+          "hysteresisEnd": 0,
+          "blankTime": 1,
+          "microsteps": 8,
+          "interpolationEnabled": true,
+          "stealthChopEnabled": true,
+          "stealthChopThreshold": 0,
+          "pwmFrequency": 2,
+          "pwmRegulation": 1,
+          "pwmLimit": 8,
+          "standstillMode": 0,
+          "automaticCurrentScaling": true,
+          "automaticGradientAdaptation": false,
+          "pwmOffset": 128,
+          "pwmGradient": 0,
+          "coolStepEnabled": false,
+          "coolStepLowerThreshold": 1,
+          "coolStepUpperThreshold": 0,
+          "coolStepCurrentIncrement": 0,
+          "coolStepMeasurementCount": 0,
+          "coolStepThreshold": 0
+        }
+      },
+      "health": {
+        "allTestsCompletedNaturally": true,
+        "allSequencesReturnedToStart": true,
+        "rhoNeverMovedInwardOfStart": true,
+        "otherAxisStationary": true,
+        "plannerHealthy": true,
+        "allDriverUartResponsesValid": true,
+        "allDriversFaultFree": true
+      },
+      "acoustic": {
+        "qualificationMeasurementValid": true,
+        "levelValidForComparison": true,
+        "loudestConservative95MotorExcessUpperBoundAWeightedDbfs": -67.32,
+        "totalRecordedSound": {
+          "measurementValid": true,
+          "withinTier": false,
+          "status": "inconclusive-total-above-tier",
+          "loudestRawMotionUpper95AWeightedDbfs": -61.75,
+          "loudestRawIdleUpper95AWeightedDbfs": -62.18,
+          "wholeStepTransientRequired": true,
+          "wholeStepTransientMeasurementValid": true,
+          "loudestWholeStep100msAWeightedDbfs": -56.961093,
+          "ceilingAWeightedDbfs": -60.0,
+          "confidenceScope": "median/p95 bounds are per-window 95%, not simultaneous profile coverage; whole-STEP maximum is a screening statistic, not a confidence bound",
+          "limitation": "A raw exceedance does not identify room versus motor noise; whole-STEP ~100 ms screening is not a validated audibility guarantee"
+        }
+      },
+      "repeats": [
+        {
+          "returnError": 0.0,
+          "expectedFinalError": 0.0,
+          "gainFingerprintStable": true,
+          "timingQuality": {
+            "valid": true,
+            "sampleCount": 350,
+            "p95GapS": 0.153516,
+            "cadenceP95GapS": 0.150745,
+            "maximumGapS": 0.249747,
+            "maximumClassificationCriticalGapS": 0.0,
+            "interpolatedSteadyGapCount": 0,
+            "motionStartBracketS": 0.082103,
+            "motionStopBracketS": 0.075117,
+            "motionStartCount": 2,
+            "motionStopCount": 2,
+            "exactStepMotionEventCount": 2,
+            "exactStepMotionEventsValid": true,
+            "exactStepMotionIntervals": [
+              {
+                "epoch": 54,
+                "startHostS": 5.880925,
+                "stopHostS": 10.503719,
+                "startUncertaintyS": 0.014329,
+                "stopUncertaintyS": 0.0117745
+              },
+              {
+                "epoch": 55,
+                "startHostS": 16.009309,
+                "stopHostS": 20.633444,
+                "startUncertaintyS": 0.0102825,
+                "stopUncertaintyS": 0.009592
+              }
+            ],
+            "maximumRequestRttS": 0.078696,
+            "invalidReasons": [],
+            "audioEpochUncertaintyS": 0.010012230244465172,
+            "audioPrimingBlocksDiscarded": 3,
+            "audioDurationS": 30.917333,
+            "hostAudioDurationS": 30.919199,
+            "audioDurationSkewS": 0.001866
+          },
+          "metrics": {
+            "raw_gate_median_upper_95_a_weighted_dbfs": [
+              -62.54,
+              -61.92
+            ],
+            "broadband_gate_excess_upper_95_a_weighted_dbfs": [
+              -70.0,
+              -67.32
+            ],
+            "raw_gate_pre_idle_median_upper_95_a_weighted_dbfs": [
+              -63.23,
+              -62.98
+            ],
+            "raw_gate_post_idle_median_upper_95_a_weighted_dbfs": [
+              -62.74,
+              -62.91
+            ],
+            "all_local_background_stable": true,
+            "local_background_drift_db": [
+              0.19,
+              0.06
+            ],
+            "gate_cruise_durations_s": [
+              3.84,
+              3.883
+            ],
+            "whole_step_transient": {
+              "valid": true,
+              "invalidReasons": [],
+              "requestedWindowS": 0.1,
+              "gates": [
+                {
+                  "epoch": 54,
+                  "valid": true,
+                  "startHostS": 5.880925,
+                  "stopHostS": 10.503719,
+                  "max100msAWeightedDbfs": -60.601985,
+                  "max100msHostS": 9.332749,
+                  "preIdle100msMedianAWeightedDbfs": -63.369804,
+                  "postIdle100msMedianAWeightedDbfs": -63.105018,
+                  "preIdle100msMaxAWeightedDbfs": -62.488082,
+                  "postIdle100msMaxAWeightedDbfs": -60.927524,
+                  "max100msGainOverAdjacentIdleMaxDb": 0.325539
+                },
+                {
+                  "epoch": 55,
+                  "valid": true,
+                  "startHostS": 16.009309,
+                  "stopHostS": 20.633444,
+                  "max100msAWeightedDbfs": -59.082893,
+                  "max100msHostS": 17.460749,
+                  "preIdle100msMedianAWeightedDbfs": -63.194096,
+                  "postIdle100msMedianAWeightedDbfs": -63.233491,
+                  "preIdle100msMaxAWeightedDbfs": -58.885905,
+                  "postIdle100msMaxAWeightedDbfs": -61.686036,
+                  "max100msGainOverAdjacentIdleMaxDb": -0.196988
+                }
+              ],
+              "limitation": "Conservative ~100 ms FFT-power screening, not a validated audibility guarantee; raw noise does not establish motor attribution",
+              "windowFrames": 5,
+              "windowS": 0.106667,
+              "signalSupportS": 0.170667
+            }
+          }
+        },
+        {
+          "returnError": 0.0,
+          "expectedFinalError": 0.0,
+          "gainFingerprintStable": true,
+          "timingQuality": {
+            "valid": true,
+            "sampleCount": 355,
+            "p95GapS": 0.150344,
+            "cadenceP95GapS": 0.146633,
+            "maximumGapS": 0.26885,
+            "maximumClassificationCriticalGapS": 0.0,
+            "interpolatedSteadyGapCount": 2,
+            "motionStartBracketS": 0.091462,
+            "motionStopBracketS": 0.16304,
+            "motionStartCount": 2,
+            "motionStopCount": 2,
+            "exactStepMotionEventCount": 2,
+            "exactStepMotionEventsValid": true,
+            "exactStepMotionIntervals": [
+              {
+                "epoch": 56,
+                "startHostS": 5.621216,
+                "stopHostS": 10.244898999999998,
+                "startUncertaintyS": 0.0111835,
+                "stopUncertaintyS": 0.0098145
+              },
+              {
+                "epoch": 57,
+                "startHostS": 15.768932999999999,
+                "stopHostS": 20.391029,
+                "startUncertaintyS": 0.011817,
+                "stopUncertaintyS": 0.0104665
+              }
+            ],
+            "maximumRequestRttS": 0.054771,
+            "invalidReasons": [],
+            "audioEpochUncertaintyS": 0.010061396742239595,
+            "audioPrimingBlocksDiscarded": 3,
+            "audioDurationS": 30.949333,
+            "hostAudioDurationS": 30.95185,
+            "audioDurationSkewS": 0.002517
+          },
+          "metrics": {
+            "raw_gate_median_upper_95_a_weighted_dbfs": [
+              -62.26,
+              -61.75
+            ],
+            "broadband_gate_excess_upper_95_a_weighted_dbfs": [
+              -68.91,
+              -67.61
+            ],
+            "raw_gate_pre_idle_median_upper_95_a_weighted_dbfs": [
+              -62.58,
+              -62.46
+            ],
+            "raw_gate_post_idle_median_upper_95_a_weighted_dbfs": [
+              -62.95,
+              -62.18
+            ],
+            "all_local_background_stable": true,
+            "local_background_drift_db": [
+              0.13,
+              0.21
+            ],
+            "gate_cruise_durations_s": [
+              3.883,
+              3.84
+            ],
+            "whole_step_transient": {
+              "valid": true,
+              "invalidReasons": [],
+              "requestedWindowS": 0.1,
+              "gates": [
+                {
+                  "epoch": 56,
+                  "valid": true,
+                  "startHostS": 5.621216,
+                  "stopHostS": 10.244898999999998,
+                  "max100msAWeightedDbfs": -60.98584,
+                  "max100msHostS": 9.920718,
+                  "preIdle100msMedianAWeightedDbfs": -62.925092,
+                  "postIdle100msMedianAWeightedDbfs": -63.06847,
+                  "preIdle100msMaxAWeightedDbfs": -61.078551,
+                  "postIdle100msMaxAWeightedDbfs": -61.906992,
+                  "max100msGainOverAdjacentIdleMaxDb": 0.092711
+                },
+                {
+                  "epoch": 57,
+                  "valid": true,
+                  "startHostS": 15.768932999999999,
+                  "stopHostS": 20.391029,
+                  "max100msAWeightedDbfs": -56.961093,
+                  "max100msHostS": 17.878051,
+                  "preIdle100msMedianAWeightedDbfs": -62.764604,
+                  "postIdle100msMedianAWeightedDbfs": -62.62726,
+                  "preIdle100msMaxAWeightedDbfs": -61.653963,
+                  "postIdle100msMaxAWeightedDbfs": -49.208195,
+                  "max100msGainOverAdjacentIdleMaxDb": -7.752899
+                }
+              ],
+              "limitation": "Conservative ~100 ms FFT-power screening, not a validated audibility guarantee; raw noise does not establish motor attribution",
+              "windowFrames": 5,
+              "windowS": 0.106667,
+              "signalSupportS": 0.170667
+            }
+          }
+        }
+      ]
+    },
+    {
+      "recordedAt": "20260916T014022Z",
+      "label": "v6-u8-150ma-f2-tbl0",
+      "settings": {
+        "motion": {
+          "rMaxVelocity": 6,
+          "rMaxAccel": 20,
+          "rMaxJerk": 100,
+          "tMaxVelocity": 0.225,
+          "tMaxAccel": 2,
+          "tMaxJerk": 10
+        },
+        "rhoDriver": {
+          "runCurrent": 150,
+          "holdCurrent": 150,
+          "holdDelay": 8,
+          "powerDownDelay": 20,
+          "highSensitivityCurrentScale": true,
+          "chopperOffTime": 3,
+          "hysteresisStart": 5,
+          "hysteresisEnd": 0,
+          "blankTime": 0,
+          "microsteps": 8,
+          "interpolationEnabled": true,
+          "stealthChopEnabled": true,
+          "stealthChopThreshold": 0,
+          "pwmFrequency": 2,
+          "pwmRegulation": 4,
+          "pwmLimit": 8,
+          "standstillMode": 0,
+          "automaticCurrentScaling": true,
+          "automaticGradientAdaptation": false,
+          "pwmOffset": 128,
+          "pwmGradient": 0,
+          "coolStepEnabled": false,
+          "coolStepLowerThreshold": 1,
+          "coolStepUpperThreshold": 0,
+          "coolStepCurrentIncrement": 0,
+          "coolStepMeasurementCount": 0,
+          "coolStepThreshold": 0
+        }
+      },
+      "health": {
+        "allTestsCompletedNaturally": true,
+        "allSequencesReturnedToStart": true,
+        "rhoNeverMovedInwardOfStart": true,
+        "otherAxisStationary": true,
+        "plannerHealthy": true,
+        "allDriverUartResponsesValid": true,
+        "allDriversFaultFree": true
+      },
+      "acoustic": {
+        "qualificationMeasurementValid": true,
+        "levelValidForComparison": true,
+        "loudestConservative95MotorExcessUpperBoundAWeightedDbfs": -67.98,
+        "totalRecordedSound": {
+          "measurementValid": true,
+          "withinTier": false,
+          "status": "inconclusive-total-above-tier",
+          "loudestRawMotionUpper95AWeightedDbfs": -63.16,
+          "loudestRawIdleUpper95AWeightedDbfs": -63.67,
+          "wholeStepTransientRequired": true,
+          "wholeStepTransientMeasurementValid": true,
+          "loudestWholeStep100msAWeightedDbfs": -57.124217,
+          "ceilingAWeightedDbfs": -60.0,
+          "confidenceScope": "median/p95 bounds are per-window 95%, not simultaneous profile coverage; whole-STEP maximum is a screening statistic, not a confidence bound",
+          "limitation": "A raw exceedance does not identify room versus motor noise; whole-STEP ~100 ms screening is not a validated audibility guarantee"
+        }
+      },
+      "repeats": [
+        {
+          "returnError": 0.0,
+          "expectedFinalError": 0.0,
+          "gainFingerprintStable": true,
+          "timingQuality": {
+            "valid": true,
+            "sampleCount": 346,
+            "p95GapS": 0.157015,
+            "cadenceP95GapS": 0.154876,
+            "maximumGapS": 0.249612,
+            "maximumClassificationCriticalGapS": 0.0,
+            "interpolatedSteadyGapCount": 0,
+            "motionStartBracketS": 0.081346,
+            "motionStopBracketS": 0.157946,
+            "motionStartCount": 2,
+            "motionStopCount": 2,
+            "exactStepMotionEventCount": 2,
+            "exactStepMotionEventsValid": true,
+            "exactStepMotionIntervals": [
+              {
+                "epoch": 58,
+                "startHostS": 5.715488000000001,
+                "stopHostS": 10.34088,
+                "startUncertaintyS": 0.0116065,
+                "stopUncertaintyS": 0.010942
+              },
+              {
+                "epoch": 59,
+                "startHostS": 15.867192000000001,
+                "stopHostS": 20.492467,
+                "startUncertaintyS": 0.01354,
+                "stopUncertaintyS": 0.0099745
+              }
+            ],
+            "maximumRequestRttS": 0.083065,
+            "invalidReasons": [],
+            "audioEpochUncertaintyS": 0.010003439141437412,
+            "audioPrimingBlocksDiscarded": 3,
+            "audioDurationS": 30.8,
+            "hostAudioDurationS": 30.803004,
+            "audioDurationSkewS": 0.003004
+          },
+          "metrics": {
+            "raw_gate_median_upper_95_a_weighted_dbfs": [
+              -63.78,
+              -63.16
+            ],
+            "broadband_gate_excess_upper_95_a_weighted_dbfs": [
+              -71.29,
+              -67.98
+            ],
+            "raw_gate_pre_idle_median_upper_95_a_weighted_dbfs": [
+              -63.67,
+              -64.47
+            ],
+            "raw_gate_post_idle_median_upper_95_a_weighted_dbfs": [
+              -64.4,
+              -63.84
+            ],
+            "all_local_background_stable": true,
+            "local_background_drift_db": [
+              0.82,
+              0.74
+            ],
+            "gate_cruise_durations_s": [
+              3.861,
+              3.861
+            ],
+            "whole_step_transient": {
+              "valid": true,
+              "invalidReasons": [],
+              "requestedWindowS": 0.1,
+              "gates": [
+                {
+                  "epoch": 58,
+                  "valid": true,
+                  "startHostS": 5.715488000000001,
+                  "stopHostS": 10.34088,
+                  "max100msAWeightedDbfs": -63.185774,
+                  "max100msHostS": 6.854893,
+                  "preIdle100msMedianAWeightedDbfs": -63.837085,
+                  "postIdle100msMedianAWeightedDbfs": -64.593266,
+                  "preIdle100msMaxAWeightedDbfs": -60.416386,
+                  "postIdle100msMaxAWeightedDbfs": -63.344526,
+                  "max100msGainOverAdjacentIdleMaxDb": -2.769388
+                },
+                {
+                  "epoch": 59,
+                  "valid": true,
+                  "startHostS": 15.867192000000001,
+                  "stopHostS": 20.492467,
+                  "max100msAWeightedDbfs": -57.124217,
+                  "max100msHostS": 20.486893,
+                  "preIdle100msMedianAWeightedDbfs": -64.627743,
+                  "postIdle100msMedianAWeightedDbfs": -63.987081,
+                  "preIdle100msMaxAWeightedDbfs": -63.023163,
+                  "postIdle100msMaxAWeightedDbfs": -52.973097,
+                  "max100msGainOverAdjacentIdleMaxDb": -4.15112
+                }
+              ],
+              "limitation": "Conservative ~100 ms FFT-power screening, not a validated audibility guarantee; raw noise does not establish motor attribution",
+              "windowFrames": 5,
+              "windowS": 0.106667,
+              "signalSupportS": 0.170667
+            }
+          }
+        }
+      ]
+    },
+    {
+      "recordedAt": "20260916T014142Z",
+      "label": "v6-u8-100ma-f2-tbl0",
+      "settings": {
+        "motion": {
+          "rMaxVelocity": 6,
+          "rMaxAccel": 20,
+          "rMaxJerk": 100,
+          "tMaxVelocity": 0.225,
+          "tMaxAccel": 2,
+          "tMaxJerk": 10
+        },
+        "rhoDriver": {
+          "runCurrent": 100,
+          "holdCurrent": 100,
+          "holdDelay": 8,
+          "powerDownDelay": 20,
+          "highSensitivityCurrentScale": true,
+          "chopperOffTime": 3,
+          "hysteresisStart": 5,
+          "hysteresisEnd": 0,
+          "blankTime": 0,
+          "microsteps": 8,
+          "interpolationEnabled": true,
+          "stealthChopEnabled": true,
+          "stealthChopThreshold": 0,
+          "pwmFrequency": 2,
+          "pwmRegulation": 4,
+          "pwmLimit": 8,
+          "standstillMode": 0,
+          "automaticCurrentScaling": true,
+          "automaticGradientAdaptation": false,
+          "pwmOffset": 128,
+          "pwmGradient": 0,
+          "coolStepEnabled": false,
+          "coolStepLowerThreshold": 1,
+          "coolStepUpperThreshold": 0,
+          "coolStepCurrentIncrement": 0,
+          "coolStepMeasurementCount": 0,
+          "coolStepThreshold": 0
+        }
+      },
+      "health": {
+        "allTestsCompletedNaturally": true,
+        "allSequencesReturnedToStart": true,
+        "rhoNeverMovedInwardOfStart": true,
+        "otherAxisStationary": true,
+        "plannerHealthy": true,
+        "allDriverUartResponsesValid": true,
+        "allDriversFaultFree": true
+      },
+      "acoustic": {
+        "qualificationMeasurementValid": true,
+        "levelValidForComparison": true,
+        "loudestConservative95MotorExcessUpperBoundAWeightedDbfs": -65.14,
+        "totalRecordedSound": {
+          "measurementValid": true,
+          "withinTier": false,
+          "status": "inconclusive-total-above-tier",
+          "loudestRawMotionUpper95AWeightedDbfs": -62.01,
+          "loudestRawIdleUpper95AWeightedDbfs": -64.07,
+          "wholeStepTransientRequired": true,
+          "wholeStepTransientMeasurementValid": true,
+          "loudestWholeStep100msAWeightedDbfs": -58.346238,
+          "ceilingAWeightedDbfs": -60.0,
+          "confidenceScope": "median/p95 bounds are per-window 95%, not simultaneous profile coverage; whole-STEP maximum is a screening statistic, not a confidence bound",
+          "limitation": "A raw exceedance does not identify room versus motor noise; whole-STEP ~100 ms screening is not a validated audibility guarantee"
+        }
+      },
+      "repeats": [
+        {
+          "returnError": 0.0,
+          "expectedFinalError": 0.0,
+          "gainFingerprintStable": true,
+          "timingQuality": {
+            "valid": true,
+            "sampleCount": 355,
+            "p95GapS": 0.151542,
+            "cadenceP95GapS": 0.151343,
+            "maximumGapS": 0.247729,
+            "maximumClassificationCriticalGapS": 0.0,
+            "interpolatedSteadyGapCount": 0,
+            "motionStartBracketS": 0.089596,
+            "motionStopBracketS": 0.07671,
+            "motionStartCount": 2,
+            "motionStopCount": 2,
+            "exactStepMotionEventCount": 2,
+            "exactStepMotionEventsValid": true,
+            "exactStepMotionIntervals": [
+              {
+                "epoch": 60,
+                "startHostS": 5.904272000000001,
+                "stopHostS": 10.527959000000001,
+                "startUncertaintyS": 0.013005,
+                "stopUncertaintyS": 0.00987
+              },
+              {
+                "epoch": 61,
+                "startHostS": 16.024492,
+                "stopHostS": 20.649241,
+                "startUncertaintyS": 0.011877,
+                "stopUncertaintyS": 0.010054
+              }
+            ],
+            "maximumRequestRttS": 0.091042,
+            "invalidReasons": [],
+            "audioEpochUncertaintyS": 0.010040032668039203,
+            "audioPrimingBlocksDiscarded": 3,
+            "audioDurationS": 30.970667,
+            "hostAudioDurationS": 30.976129,
+            "audioDurationSkewS": 0.005462
+          },
+          "metrics": {
+            "raw_gate_median_upper_95_a_weighted_dbfs": [
+              -63.46,
+              -62.01
+            ],
+            "broadband_gate_excess_upper_95_a_weighted_dbfs": [
+              -69.04,
+              -65.14
+            ],
+            "raw_gate_pre_idle_median_upper_95_a_weighted_dbfs": [
+              -64.48,
+              -64.5
+            ],
+            "raw_gate_post_idle_median_upper_95_a_weighted_dbfs": [
+              -64.07,
+              -64.66
+            ],
+            "all_local_background_stable": true,
+            "local_background_drift_db": [
+              0.29,
+              0.04
+            ],
+            "gate_cruise_durations_s": [
+              3.883,
+              3.861
+            ],
+            "whole_step_transient": {
+              "valid": true,
+              "invalidReasons": [],
+              "requestedWindowS": 0.1,
+              "gates": [
+                {
+                  "epoch": 60,
+                  "valid": true,
+                  "startHostS": 5.904272000000001,
+                  "stopHostS": 10.527959000000001,
+                  "max100msAWeightedDbfs": -62.371264,
+                  "max100msHostS": 6.311575,
+                  "preIdle100msMedianAWeightedDbfs": -64.711628,
+                  "postIdle100msMedianAWeightedDbfs": -64.481781,
+                  "preIdle100msMaxAWeightedDbfs": -63.789724,
+                  "postIdle100msMaxAWeightedDbfs": -63.473169,
+                  "max100msGainOverAdjacentIdleMaxDb": 1.101905
+                },
+                {
+                  "epoch": 61,
+                  "valid": true,
+                  "startHostS": 16.024492,
+                  "stopHostS": 20.649241,
+                  "max100msAWeightedDbfs": -58.346238,
+                  "max100msHostS": 17.447575,
+                  "preIdle100msMedianAWeightedDbfs": -64.711367,
+                  "postIdle100msMedianAWeightedDbfs": -64.733148,
+                  "preIdle100msMaxAWeightedDbfs": -62.904441,
+                  "postIdle100msMaxAWeightedDbfs": -63.856353,
+                  "max100msGainOverAdjacentIdleMaxDb": 4.558203
+                }
+              ],
+              "limitation": "Conservative ~100 ms FFT-power screening, not a validated audibility guarantee; raw noise does not establish motor attribution",
+              "windowFrames": 5,
+              "windowS": 0.106667,
+              "signalSupportS": 0.170667
+            }
+          }
+        }
+      ]
+    },
+    {
+      "recordedAt": "20260916T014247Z",
+      "label": "v6-u8-150ma-f3-tbl0",
+      "settings": {
+        "motion": {
+          "rMaxVelocity": 6,
+          "rMaxAccel": 20,
+          "rMaxJerk": 100,
+          "tMaxVelocity": 0.225,
+          "tMaxAccel": 2,
+          "tMaxJerk": 10
+        },
+        "rhoDriver": {
+          "runCurrent": 150,
+          "holdCurrent": 150,
+          "holdDelay": 8,
+          "powerDownDelay": 20,
+          "highSensitivityCurrentScale": true,
+          "chopperOffTime": 3,
+          "hysteresisStart": 5,
+          "hysteresisEnd": 0,
+          "blankTime": 0,
+          "microsteps": 8,
+          "interpolationEnabled": true,
+          "stealthChopEnabled": true,
+          "stealthChopThreshold": 0,
+          "pwmFrequency": 3,
+          "pwmRegulation": 4,
+          "pwmLimit": 8,
+          "standstillMode": 0,
+          "automaticCurrentScaling": true,
+          "automaticGradientAdaptation": false,
+          "pwmOffset": 128,
+          "pwmGradient": 0,
+          "coolStepEnabled": false,
+          "coolStepLowerThreshold": 1,
+          "coolStepUpperThreshold": 0,
+          "coolStepCurrentIncrement": 0,
+          "coolStepMeasurementCount": 0,
+          "coolStepThreshold": 0
+        }
+      },
+      "health": {
+        "allTestsCompletedNaturally": true,
+        "allSequencesReturnedToStart": true,
+        "rhoNeverMovedInwardOfStart": true,
+        "otherAxisStationary": true,
+        "plannerHealthy": true,
+        "allDriverUartResponsesValid": true,
+        "allDriversFaultFree": true
+      },
+      "acoustic": {
+        "qualificationMeasurementValid": true,
+        "levelValidForComparison": true,
+        "loudestConservative95MotorExcessUpperBoundAWeightedDbfs": -65.36,
+        "totalRecordedSound": {
+          "measurementValid": true,
+          "withinTier": false,
+          "status": "inconclusive-total-above-tier",
+          "loudestRawMotionUpper95AWeightedDbfs": -61.09,
+          "loudestRawIdleUpper95AWeightedDbfs": -61.02,
+          "wholeStepTransientRequired": true,
+          "wholeStepTransientMeasurementValid": true,
+          "loudestWholeStep100msAWeightedDbfs": -58.115181,
+          "ceilingAWeightedDbfs": -60.0,
+          "confidenceScope": "median/p95 bounds are per-window 95%, not simultaneous profile coverage; whole-STEP maximum is a screening statistic, not a confidence bound",
+          "limitation": "A raw exceedance does not identify room versus motor noise; whole-STEP ~100 ms screening is not a validated audibility guarantee"
+        }
+      },
+      "repeats": [
+        {
+          "returnError": 0.0,
+          "expectedFinalError": 0.0,
+          "gainFingerprintStable": true,
+          "timingQuality": {
+            "valid": true,
+            "sampleCount": 354,
+            "p95GapS": 0.148775,
+            "cadenceP95GapS": 0.14815,
+            "maximumGapS": 0.265552,
+            "maximumClassificationCriticalGapS": 0.0,
+            "interpolatedSteadyGapCount": 1,
+            "motionStartBracketS": 0.106314,
+            "motionStopBracketS": 0.158888,
+            "motionStartCount": 2,
+            "motionStopCount": 2,
+            "exactStepMotionEventCount": 2,
+            "exactStepMotionEventsValid": true,
+            "exactStepMotionIntervals": [
+              {
+                "epoch": 62,
+                "startHostS": 5.818336,
+                "stopHostS": 10.438812,
+                "startUncertaintyS": 0.0133285,
+                "stopUncertaintyS": 0.011641
+              },
+              {
+                "epoch": 63,
+                "startHostS": 15.942155000000001,
+                "stopHostS": 20.565884999999998,
+                "startUncertaintyS": 0.011618,
+                "stopUncertaintyS": 0.010235
+              }
+            ],
+            "maximumRequestRttS": 0.062203,
+            "invalidReasons": [],
+            "audioEpochUncertaintyS": 0.010053046736866236,
+            "audioPrimingBlocksDiscarded": 3,
+            "audioDurationS": 30.986667,
+            "hostAudioDurationS": 30.986562,
+            "audioDurationSkewS": 0.000105
+          },
+          "metrics": {
+            "raw_gate_median_upper_95_a_weighted_dbfs": [
+              -61.09,
+              -62.55
+            ],
+            "broadband_gate_excess_upper_95_a_weighted_dbfs": [
+              -65.36,
+              -67.14
+            ],
+            "raw_gate_pre_idle_median_upper_95_a_weighted_dbfs": [
+              -61.12,
+              -63.4
+            ],
+            "raw_gate_post_idle_median_upper_95_a_weighted_dbfs": [
+              -61.02,
+              -64.02
+            ],
+            "all_local_background_stable": true,
+            "local_background_drift_db": [
+              0.69,
+              0.59
+            ],
+            "gate_cruise_durations_s": [
+              3.883,
+              3.861
+            ],
+            "whole_step_transient": {
+              "valid": true,
+              "invalidReasons": [],
+              "requestedWindowS": 0.1,
+              "gates": [
+                {
+                  "epoch": 62,
+                  "valid": true,
+                  "startHostS": 5.818336,
+                  "stopHostS": 10.438812,
+                  "max100msAWeightedDbfs": -58.115181,
+                  "max100msHostS": 8.175085,
+                  "preIdle100msMedianAWeightedDbfs": -62.197528,
+                  "postIdle100msMedianAWeightedDbfs": -61.144182,
+                  "preIdle100msMaxAWeightedDbfs": -58.648809,
+                  "postIdle100msMaxAWeightedDbfs": -57.738308,
+                  "max100msGainOverAdjacentIdleMaxDb": -0.376873
+                },
+                {
+                  "epoch": 63,
+                  "valid": true,
+                  "startHostS": 15.942155000000001,
+                  "stopHostS": 20.565884999999998,
+                  "max100msAWeightedDbfs": -59.115596,
+                  "max100msHostS": 17.391085,
+                  "preIdle100msMedianAWeightedDbfs": -63.800543,
+                  "postIdle100msMedianAWeightedDbfs": -64.282939,
+                  "preIdle100msMaxAWeightedDbfs": -59.023781,
+                  "postIdle100msMaxAWeightedDbfs": -63.149614,
+                  "max100msGainOverAdjacentIdleMaxDb": -0.091815
+                }
+              ],
+              "limitation": "Conservative ~100 ms FFT-power screening, not a validated audibility guarantee; raw noise does not establish motor attribution",
+              "windowFrames": 5,
+              "windowS": 0.106667,
+              "signalSupportS": 0.170667
+            }
+          }
+        }
+      ]
+    },
+    {
+      "recordedAt": "20260916T014350Z",
+      "label": "v6-u8-275ma-f2-tbl0-quiet",
+      "settings": {
+        "motion": {
+          "rMaxVelocity": 6,
+          "rMaxAccel": 20,
+          "rMaxJerk": 100,
+          "tMaxVelocity": 0.225,
+          "tMaxAccel": 2,
+          "tMaxJerk": 10
+        },
+        "rhoDriver": {
+          "runCurrent": 275,
+          "holdCurrent": 275,
+          "holdDelay": 8,
+          "powerDownDelay": 20,
+          "highSensitivityCurrentScale": true,
+          "chopperOffTime": 3,
+          "hysteresisStart": 5,
+          "hysteresisEnd": 0,
+          "blankTime": 0,
+          "microsteps": 8,
+          "interpolationEnabled": true,
+          "stealthChopEnabled": true,
+          "stealthChopThreshold": 0,
+          "pwmFrequency": 2,
+          "pwmRegulation": 4,
+          "pwmLimit": 8,
+          "standstillMode": 0,
+          "automaticCurrentScaling": true,
+          "automaticGradientAdaptation": false,
+          "pwmOffset": 128,
+          "pwmGradient": 0,
+          "coolStepEnabled": false,
+          "coolStepLowerThreshold": 1,
+          "coolStepUpperThreshold": 0,
+          "coolStepCurrentIncrement": 0,
+          "coolStepMeasurementCount": 0,
+          "coolStepThreshold": 0
+        }
+      },
+      "health": {
+        "allTestsCompletedNaturally": true,
+        "allSequencesReturnedToStart": true,
+        "rhoNeverMovedInwardOfStart": true,
+        "otherAxisStationary": true,
+        "plannerHealthy": true,
+        "allDriverUartResponsesValid": true,
+        "allDriversFaultFree": true
+      },
+      "acoustic": {
+        "qualificationMeasurementValid": true,
+        "levelValidForComparison": true,
+        "loudestConservative95MotorExcessUpperBoundAWeightedDbfs": -67.75,
+        "totalRecordedSound": {
+          "measurementValid": true,
+          "withinTier": true,
+          "status": "pass",
+          "loudestRawMotionUpper95AWeightedDbfs": -63.3,
+          "loudestRawIdleUpper95AWeightedDbfs": -64.41,
+          "wholeStepTransientRequired": true,
+          "wholeStepTransientMeasurementValid": true,
+          "loudestWholeStep100msAWeightedDbfs": -60.801044,
+          "ceilingAWeightedDbfs": -60.0,
+          "confidenceScope": "median/p95 bounds are per-window 95%, not simultaneous profile coverage; whole-STEP maximum is a screening statistic, not a confidence bound",
+          "limitation": "A raw exceedance does not identify room versus motor noise; whole-STEP ~100 ms screening is not a validated audibility guarantee"
+        }
+      },
+      "repeats": [
+        {
+          "returnError": 0.0,
+          "expectedFinalError": 0.0,
+          "gainFingerprintStable": true,
+          "timingQuality": {
+            "valid": true,
+            "sampleCount": 354,
+            "p95GapS": 0.151043,
+            "cadenceP95GapS": 0.150019,
+            "maximumGapS": 0.272047,
+            "maximumClassificationCriticalGapS": 0.0,
+            "interpolatedSteadyGapCount": 1,
+            "motionStartBracketS": 0.142084,
+            "motionStopBracketS": 0.074536,
+            "motionStartCount": 2,
+            "motionStopCount": 2,
+            "exactStepMotionEventCount": 2,
+            "exactStepMotionEventsValid": true,
+            "exactStepMotionIntervals": [
+              {
+                "epoch": 64,
+                "startHostS": 5.8603060000000005,
+                "stopHostS": 10.485916,
+                "startUncertaintyS": 0.0120885,
+                "stopUncertaintyS": 0.010156
+              },
+              {
+                "epoch": 65,
+                "startHostS": 16.034937999999997,
+                "stopHostS": 20.659292,
+                "startUncertaintyS": 0.0104885,
+                "stopUncertaintyS": 0.01031
+              }
+            ],
+            "maximumRequestRttS": 0.077794,
+            "invalidReasons": [],
+            "audioEpochUncertaintyS": 0.010008354196324945,
+            "audioPrimingBlocksDiscarded": 3,
+            "audioDurationS": 31.008,
+            "hostAudioDurationS": 31.015514,
+            "audioDurationSkewS": 0.007514
+          },
+          "metrics": {
+            "raw_gate_median_upper_95_a_weighted_dbfs": [
+              -64.09,
+              -63.3
+            ],
+            "broadband_gate_excess_upper_95_a_weighted_dbfs": [
+              -70.7,
+              -67.75
+            ],
+            "raw_gate_pre_idle_median_upper_95_a_weighted_dbfs": [
+              -64.42,
+              -65.02
+            ],
+            "raw_gate_post_idle_median_upper_95_a_weighted_dbfs": [
+              -65.01,
+              -64.53
+            ],
+            "all_local_background_stable": true,
+            "local_background_drift_db": [
+              0.49,
+              0.29
+            ],
+            "gate_cruise_durations_s": [
+              3.84,
+              3.861
+            ],
+            "whole_step_transient": {
+              "valid": true,
+              "invalidReasons": [],
+              "requestedWindowS": 0.1,
+              "gates": [
+                {
+                  "epoch": 64,
+                  "valid": true,
+                  "startHostS": 5.8603060000000005,
+                  "stopHostS": 10.485916,
+                  "max100msAWeightedDbfs": -60.828911,
+                  "max100msHostS": 9.003302,
+                  "preIdle100msMedianAWeightedDbfs": -64.595098,
+                  "postIdle100msMedianAWeightedDbfs": -64.913953,
+                  "preIdle100msMaxAWeightedDbfs": -63.775482,
+                  "postIdle100msMaxAWeightedDbfs": -64.031103,
+                  "max100msGainOverAdjacentIdleMaxDb": 2.946571
+                },
+                {
+                  "epoch": 65,
+                  "valid": true,
+                  "startHostS": 16.034937999999997,
+                  "stopHostS": 20.659292,
+                  "max100msAWeightedDbfs": -60.801044,
+                  "max100msHostS": 16.768636,
+                  "preIdle100msMedianAWeightedDbfs": -65.074803,
+                  "postIdle100msMedianAWeightedDbfs": -64.736601,
+                  "preIdle100msMaxAWeightedDbfs": -63.799922,
+                  "postIdle100msMaxAWeightedDbfs": -64.106635,
+                  "max100msGainOverAdjacentIdleMaxDb": 2.998878
+                }
+              ],
+              "limitation": "Conservative ~100 ms FFT-power screening, not a validated audibility guarantee; raw noise does not establish motor attribution",
+              "windowFrames": 5,
+              "windowS": 0.106667,
+              "signalSupportS": 0.170667
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
