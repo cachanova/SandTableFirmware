@@ -6,6 +6,71 @@ the telemetry-aligned analysis in `scripts/acoustic_tuner.py`.
 
 ## Current assembled main-only retune (2026-09-15)
 
+### Endpoint diagnosis, 2026-09-16
+
+The 200 mA / u8 / frequency 2 / TBL 1 / PWM_REG 4 profile at 2 mm/s
+completed the diagnostic path 0 -> 1 -> 11 -> 1 mm. Whole-STEP short-window
+maxima were -65.42 / -64.67 / -64.97 dBFS. No FFT frame exceeded -60 dBFS.
+The driver emitted 8,400 pulses, matching 21 mm at 400 steps/mm. Timing and
+driver checks passed. This isolates a quiet interior window; it does not
+qualify travel down to zero. The 1 mm setup leg also lacks enough sustained
+cruise for the aggregate qualification check. SG reached zero during the quiet
+final deceleration, so that low-speed sample alone does not establish contact.
+
+A 4 mm/s follow-up over 1..51 mm had raw cruise upper bounds of -64.46 and
+-64.73 dBFS, but an outbound short-window peak of -53.77 dBFS and a return
+peak of -60.23 dBFS. The outbound peak occurred during interior travel, so
+endpoint clearance alone does not yet qualify faster motion. Keep this run
+unqualified pending attribution and repetition; do not substitute its quiet
+cruise medians for whole-motion sound.
+The independent review located the main burst around 14.6..17.6 mm outward;
+the return through those positions did not reproduce it. It also found 32 new
+STEP timing outliers over 40,400 pulses, all outward (847 us maximum lateness,
+804 us interval error, 911 us maximum callback gap). One retained outlier
+overlapped the burst; most preceded it. There were no queue underruns.
+Dispatch disturbance, direction-dependent loading and room noise remain
+competing explanations. The latest-only outlier stream cannot establish full
+event-by-event attribution. Investigate this before increasing speed further.
+
+After a bounded homing audit, raising normal requested current to 450 mA
+(within the existing CS14 cap) made the zero-return burst worse: -43.21 dBFS
+over the short whole-STEP window, compared with earlier -49 to -50 dBFS at
+200 mA. The peak occurred near the final zero endpoint, 13.77 dB above the
+louder adjacent-idle maximum. Room/hold noise changed during this trial;
+do not use its cruise medians as a clean current A/B comparison. Planner and
+driver checks passed, but this profile is rejected for quiet motion.
+
+I proposed a 1 mm normal-motion clearance to the operator. That choice is
+pending; no production minimum radius, zero, or homing parameter changed.
+Further offset tests are diagnostics only. A final quiet profile must state
+its tested range and pass repeated range, acceleration and stress checks.
+Boot homing remains OFF in the installed service image during this work.
+
+The host now recognizes `HOMING_FAILED` as stopped only after checking an
+inactive timer, planner and STEP epoch plus an empty queue. It preserves the
+failed state and coordinates. Homing cleanup attempts both stop and recorder
+shutdown without hiding the original exception. The acoustic
+`--rho-leave-at-window` option permits one offset `verify` test, retains the
+absolute coordinate ledger and forbids automatic-gradient preconditioning.
+It leaves the carriage at the specified window start. Use the separate known
+position fields for a subsequent near-home audit, e.g. `--rho-start-mm 1
+--companion-start-mm 0`; the generic known-start CLI requires zero or >=10 mm.
+
+The first clearance artifact mislabeled its +1 mm finish as a return to its
+starting zero. Keep the original and its reporting erratum together. The
+host now reports `returnError` relative to the start and `expectedFinalError`
+relative to the intended endpoint. Neither clearance trial can qualify a
+production profile. Evidence: `clearance-diagnostic/`, `endpoint-current/`,
+and the 00:56 / 00:58 endpoint audits. All 96 host tests pass.
+
+The final 01:00 UTC endpoint audit passed with contact ledger positions
+2415 / 2399 / 2470 steps (0.1775 mm span). Audio rises were only 1.3-1.6 dB;
+the camera agreed with the saved home reference, and I accepted the completed
+homing result through `/api/home/confirm`. The board is stopped at rho 0,
+with requested run/hold current 200 mA and normal speed restored to 2 mm/s,
+acceleration 20 mm/s², jerk 100 mm/s³. These are provisional settings, not a
+qualified zero-inclusive sound profile. CW remains disabled; theta is unchanged.
+
 **Position recovered on 2026-09-16 at 00:43 UTC.** The operator reported a
 small outward offset and turned on the light. I ran the existing short-bound
 Home route without changing the homing settings or assigning logical zero.

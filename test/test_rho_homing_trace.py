@@ -4,6 +4,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 import numpy as np
 
@@ -16,6 +17,7 @@ from rho_homing_tuner import (  # noqa: E402
     phase_report,
     require_expected_motors,
     validate_trial,
+    cleanup_failed_trial,
 )
 from rho_homing_replay import replay_artifact, replay_phase  # noqa: E402
 from rho_homing_consensus import contact_scatter  # noqa: E402
@@ -28,6 +30,19 @@ def snapshot(cycle: int, total: int, first: int) -> dict:
 
 
 class HomingTraceCollectorTest(unittest.TestCase):
+    def test_cleanup_preserves_original_error_and_attempts_both_actions(self):
+        board, recorder = Mock(), Mock()
+        board.recovering_stop.side_effect = RuntimeError("stop transport")
+        recorder.stop.side_effect = RuntimeError("recorder")
+        with self.assertRaisesRegex(ValueError, "original rejection"):
+            try:
+                raise ValueError("original rejection")
+            except ValueError:
+                errors = cleanup_failed_trial(board, recorder)
+                self.assertEqual(len(errors), 2)
+                raise
+        recorder.stop.assert_called_once()
+
     def test_joins_overlapping_ring_windows(self) -> None:
         collector = HomingTraceCollector()
         collector.add(snapshot(3, 0, 0))

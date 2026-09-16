@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,19 @@ TRANSIENT_DRIVER_SETTINGS = {
     "chopperOffTime",
     "chopconfRaw",
 }
+
+
+def cleanup_failed_trial(board: Board, recorder: TimestampedRecorder) -> list[str]:
+    """Attempt both safety actions without replacing the original trial error."""
+    errors = []
+    for label, action in (("stop", board.recovering_stop), ("recording", recorder.stop)):
+        try:
+            action()
+        except BaseException as error:
+            errors.append(f"{label}: {error}")
+    if errors:
+        print("Homing cleanup errors: " + "; ".join(errors), file=sys.stderr)
+    return errors
 
 
 def configured_motor_axes(homing_profile: dict[str, Any]) -> tuple[int, ...]:
@@ -481,10 +495,7 @@ def run(args: argparse.Namespace) -> int:
             board.post("/api/home")
         request_stop = time.monotonic()
     except BaseException:
-        try:
-            board.recovering_stop()
-        finally:
-            recorder.stop()
+        cleanup_failed_trial(board, recorder)
         raise
     home_start_host = (request_start + request_stop) / 2.0
     terminal_status: dict[str, Any] | None = None
@@ -515,9 +526,10 @@ def run(args: argparse.Namespace) -> int:
             "/api/tuning/homing/trace", timeout_s=5.0
         ))
     except BaseException as exc:
-        board.recovering_stop()
+        cleanup_errors = cleanup_failed_trial(board, recorder)
         aborted = {
             "kind": "rho-homing-aborted", "error": str(exc),
+            "cleanupErrors": cleanup_errors,
             "audio": str(audio_path), "lastStatus": status,
             "lastTraceResponse": latest_trace,
             "collectedTrace": trace_collector.samples,
@@ -525,11 +537,15 @@ def run(args: argparse.Namespace) -> int:
             "knownRhoStartMm": rho_start_mm,
             "knownCompanionStartMm": companion_start_mm,
         }
-        (output_dir / f"{prefix}-aborted.json").write_text(json.dumps(aborted, indent=2))
-        save_result(output_dir, aborted)
+        try:
+            (output_dir / f"{prefix}-aborted.json").write_text(json.dumps(aborted, indent=2))
+            save_result(output_dir, aborted)
+        except Exception as error:
+            print(f"Could not preserve aborted homing evidence: {error}", file=sys.stderr)
         raise
     finally:
-        recorder.stop()
+        if sys.exc_info()[0] is None:
+            recorder.stop()
 
     trace = trace_collector.result()
     audio_times, audio_levels = frame_a_levels(audio_path)

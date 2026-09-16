@@ -63,13 +63,16 @@ DEFAULT_ACCEPTABLE_NEAR_TONE_CEILING_DBFS = -58.45
 
 
 def rho_segment_targets(profile: str, excursion_mm: float,
-                        window_start_mm: float = 0.0) -> tuple[float, ...]:
+                        window_start_mm: float = 0.0,
+                        leave_at_window: bool = False) -> tuple[float, ...]:
+    if leave_at_window and (profile != "verify" or window_start_mm <= 0):
+        raise ValueError("Leaving at an offset requires a positive verify window")
     if window_start_mm:
         if profile not in ("verify", "screen", "gated", "ramp"):
             raise ValueError("Offset windows require a segmented screen, gate, verify or ramp")
         core = rho_segment_targets(profile, excursion_mm)
         return ((window_start_mm,) + tuple(window_start_mm + target for target in core)
-                + (0.0,))
+                + (() if leave_at_window else (0.0,)))
     if profile == "range":
         return tuple(index * excursion_mm / 8.0
                      for index in (*range(1, 9), *range(7, -1, -1)))
@@ -1500,6 +1503,15 @@ class Board:
                 status = self.get("/api/status")
                 if status.get("state") in {"IDLE", "INITIALIZED", "UNINITIALIZED"}:
                     return
+                if status.get("state") == "HOMING_FAILED":
+                    sample = self.get("/api/motion/telemetry")
+                    planner = sample.get("planner", {})
+                    if (sample.get("state") == "HOMING_FAILED"
+                            and planner.get("timerActive") is False
+                            and planner.get("running") is False
+                            and planner.get("queueDepth") == 0
+                            and sample.get("stepMotion", {}).get("active") is False):
+                        return  # Stopped, not homed; preserve failure and coordinates.
             except requests.RequestException as error:
                 last_error = error
             time.sleep(0.25)
@@ -2691,7 +2703,8 @@ def _run_timed_repeat_impl(
         else RHO_TEST_MAX_EXCURSION_MM
     )
     segmented_targets = (
-        rho_segment_targets(profile, args.rho_excursion_mm, args.rho_window_start_mm)
+        rho_segment_targets(profile, args.rho_excursion_mm, args.rho_window_start_mm,
+                            getattr(args, "rho_leave_at_window", False))
         if axis.name == "rho" and profile in RHO_SEGMENTED_PROFILES
         else theta_segment_targets(profile, args.theta_excursion_deg)
         if axis.name == "theta"
@@ -2971,13 +2984,19 @@ def _run_timed_repeat_impl(
         raise RuntimeError(f"ESP32 telemetry did not confirm {axis.name} motion")
 
     final_position = float(telemetry[-1]["position"][axis.name])
+    expected_final_position = (
+        args.rho_window_start_mm
+        if axis.name == "rho" and getattr(args, "rho_leave_at_window", False)
+        else start_position
+    )
     return_error = abs(final_position - start_position)
+    expected_final_error = abs(final_position - expected_final_position)
     return_tolerance = RHO_POSITION_TOLERANCE_MM if axis.name == "rho" else 0.001
     position_unit = "mm" if axis.name == "rho" else "rad"
-    if return_error > return_tolerance:
+    if expected_final_error > return_tolerance:
         raise RuntimeError(
-            f"{axis.name.capitalize()} {profile} finished {return_error:.4f} "
-            f"{position_unit} from its starting position"
+            f"{axis.name.capitalize()} {profile} finished {expected_final_error:.4f} "
+            f"{position_unit} from its expected final position"
         )
     if axis.name == "rho":
         minimum_position = min(float(sample["position"]["rho"]) for sample in telemetry)
@@ -3068,6 +3087,8 @@ def _run_timed_repeat_impl(
         "axis": axis.name,
         "startPosition": round(start_position, 6),
         "finalPosition": round(final_position, 6),
+        "expectedFinalPosition": expected_final_position,
+        "expectedFinalError": round(expected_final_error, 6),
         "returnError": round(return_error, 6),
         "initialPlannerUnderruns": start_sample["planner"]["underruns"],
         "rhoExcursionMm": rho_envelope_mm if axis.name == "rho" else None,
@@ -3099,6 +3120,8 @@ def _run_timed_repeat_impl(
         "axis": axis.name,
         "startPosition": round(start_position, 6),
         "finalPosition": round(final_position, 6),
+        "expectedFinalPosition": expected_final_position,
+        "expectedFinalError": round(expected_final_error, 6),
         "returnError": round(return_error, 6),
         "initialPlannerUnderruns": start_sample["planner"]["underruns"],
         "telemetry": telemetry,
@@ -3288,6 +3311,10 @@ def cmd_trial(args: argparse.Namespace) -> int:
     if args.rho_window_start_mm and (
             axis.name != "rho" or args.profile not in ("verify", "screen", "gated", "ramp")):
         raise ValueError("Rho offset windows require a rho verify/screen/gated/ramp profile")
+    if args.rho_leave_at_window and (
+            axis.name != "rho" or args.profile != "verify"
+            or args.rho_window_start_mm <= 0 or args.repeats != 1):
+        raise ValueError("Leaving at a window requires one rho offset verify repeat")
     if not 1.0 <= args.theta_excursion_deg <= THETA_TEST_MAX_EXCURSION_DEG:
         raise ValueError(
             f"--theta-excursion-deg must be between 1 and "
@@ -3314,6 +3341,8 @@ def cmd_trial(args: argparse.Namespace) -> int:
     board.post("/api/speed", {"speed": 10})
     tuning = apply_requested_settings(board, args)
     driver_settings = tuning[axis.driver_key]
+    if args.rho_leave_at_window and driver_settings.get("automaticGradientAdaptation"):
+        raise ValueError("Clearance diagnostics forbid unrecorded AT#2 return-to-zero motion; disable automatic gradient")
     status = board.get("/api/status")
     if status.get("state") != "IDLE":
         raise RuntimeError(f"Board must be IDLE for a trial; state is {status.get('state')}")
@@ -3427,7 +3456,8 @@ def cmd_trial(args: argparse.Namespace) -> int:
         )
         required_pair_count = (
             len(
-                rho_segment_targets(profile, args.rho_excursion_mm, args.rho_window_start_mm)
+                rho_segment_targets(profile, args.rho_excursion_mm, args.rho_window_start_mm,
+                                    args.rho_leave_at_window)
                 if axis.name == "rho"
                 else theta_segment_targets(profile, args.theta_excursion_deg)
             )
@@ -4288,6 +4318,10 @@ def build_parser() -> argparse.ArgumentParser:
             "out/back pair, screens use two, qualification uses four, and "
             "ramp uses a fixed 5/15/45/90 degree ladder"
         ),
+    )
+    trial.add_argument(
+        "--rho-leave-at-window", action="store_true",
+        help="diagnostic only: one offset verify ends at its window start, preserving absolute zero",
     )
     trial.add_argument("--repeats", type=int, default=3)
     trial.add_argument("--pre-idle", type=float, default=5.0)

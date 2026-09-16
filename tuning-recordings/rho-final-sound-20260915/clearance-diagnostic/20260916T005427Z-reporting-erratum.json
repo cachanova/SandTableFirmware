@@ -1,0 +1,13 @@
+{
+  "source": "20260916T005427Z-clearance-1to11-u8-200ma-v2-result.json",
+  "reason": "First clearance diagnostic used expected endpoint for returnError, mislabeling return-to-start. Original artifacts preserved.",
+  "startPositionMm": 0.0,
+  "finalPositionMm": 1.0,
+  "expectedFinalPositionMm": 1.0,
+  "correctedReturnErrorMm": 1.0,
+  "expectedFinalErrorMm": 0.0,
+  "correctedAllSequencesReturnedToStart": false,
+  "qualificationEligible": false,
+  "subsequentHomeAudit": "../endpoint-audits/20260916T005600Z-rho-home-p85-n5-start-r1-cw0mm-result.json",
+  "subsequentHomeAcceptance": "Camera agreed with saved home reference; accepted HOMING_REVIEW through /api/home/confirm successful=true, without manual zero assignment."
+}

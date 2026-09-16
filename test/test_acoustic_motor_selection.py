@@ -9,10 +9,41 @@ from unittest.mock import patch, Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from acoustic_tuner import (motor_participates, interpolation_readback_confirmed,
+                            Board,
                             CruiseDriverGuard, planner_repeat_healthy,
                             rho_segment_targets, rho_profile_distance_mm,
                             repeat_confirmation_satisfied, save_timing_plot, AXES,
                             precondition_rho_stealthchop, motion_driver_poll_phase)
+
+
+class StoppedFailureTest(unittest.TestCase):
+    def test_stopped_homing_failure_preserves_failure(self):
+        board = Board("http://unused")
+        board.stop = Mock()
+        telemetry = dict(state="HOMING_FAILED", planner=dict(timerActive=False,
+                         running=False, queueDepth=0), stepMotion=dict(active=False))
+        board.get = Mock(side_effect=[dict(state="HOMING_FAILED"), telemetry])
+        board.recovering_stop()
+        self.assertEqual(board.get.call_count, 2)
+        board.stop.assert_called_once()
+
+    def test_incomplete_or_active_failed_telemetry_is_not_stopped(self):
+        for sample in ({}, dict(state="HOMING_FAILED", planner=dict(timerActive=True,
+                        running=False, queueDepth=0), stepMotion=dict(active=False))):
+            board = Board("http://unused")
+            board.stop = Mock()
+            board.get = Mock(side_effect=[dict(state="HOMING_FAILED"), sample])
+            with patch("acoustic_tuner.time.monotonic", side_effect=[0, 0, 31]), \
+                 patch("acoustic_tuner.time.sleep"):
+                with self.assertRaisesRegex(RuntimeError, "confirm stopped"):
+                    board.recovering_stop()
+
+    def test_clearance_diagnostic_preserves_absolute_coordinates(self):
+        self.assertEqual(rho_segment_targets("verify", 10, 1, True), (1, 11, 1))
+        self.assertEqual(rho_segment_targets("verify", 10, 1), (1, 11, 1, 0))
+        for profile, start in (("screen", 1), ("verify", 0)):
+            with self.assertRaises(ValueError):
+                rho_segment_targets(profile, 10, start, True)
 
 
 class CalibrationCleanupTest(unittest.TestCase):
