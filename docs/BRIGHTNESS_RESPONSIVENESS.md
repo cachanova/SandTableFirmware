@@ -71,6 +71,39 @@ Without `--load`, only LED requests and initial/final status are fetched.
   mock server sent only 19% then 100%, never exceeded one in-flight command,
   acknowledged 100%, and cleared drag state when released outside the slider.
 
-Hardware deployment and after-change measurements are pending a pause in the
-current drawing. The baseline alone does not establish whether the observed
-blackout came from PWM configuration, request ordering, or the MOSFET circuit.
+## Hardware validation and remaining delay
+
+The user authorized stopping the current drawing, OTA deployment, restarting
+`Spiral8.thr`, and merging after validation. Firmware `3543fe4` uploaded
+successfully and completed automatic homing. Brightness was restored to 100%
+and speed to 10; Spiral8 was restarted without a clearing pass.
+
+| Check | Result |
+| --- | --- |
+| Duty sweep, 0/1/16/33/50/99/100/0/100% | Every target and PWM register matched; no write errors |
+| 30-second stationary load, images/pages/two SSE clients | Passed, no reset or new errors; both streams received 30 events |
+| Byte-addressable heap during stationary load | Minimum 23,104 bytes; 23 expected busy responses preserved admission control |
+| 30 LED commands during Spiral8 + concurrent status/files | All succeeded; p50 41.288 ms, p95 72.890 ms, max 1098.437 ms |
+| Slowest command in that run | Handler 263 us, PWM call 125 us, LED-lock wait 11 us |
+| Live Chromium page, rapid drag and release outside slider | Four POSTs, at most one outstanding, final 100% acknowledged; no JS exceptions |
+| Motion after testing | Zero planner underruns, zero recorded step-timing outliers |
+| Final LED diagnostics | GPIO4, 5 kHz, raw duty 256, zero write errors; maximum handler 877 us, lock wait 18 us |
+
+The 30-command comparison has a better p95 but retains a one-second outlier;
+these short samples do not prove that all end-to-end latency is fixed.
+A separate 30-command transport probe recorded two requests with TCP
+retransmissions. The slowest spent 1043.99 ms in TCP connection establishment,
+then 22.92 ms waiting for response headers (1067.22 ms total). Thus at least one
+remaining second-long delay occurs before the brightness handler is reachable,
+not while applying PWM. This does not identify which network hop dropped the
+packet, nor establish the cause of the reported physical blackout.
+
+Existing browser tabs must reload to receive the new request handling. The
+running table was left drawing Spiral8 at speed 10 and brightness 100%.
+
+Machine-readable summary: [results.json](brightness-responsiveness/results.json).
+Full temporary artifacts, including before/after requests, the duty sweep,
+stress report, browser result, transport counters, final telemetry, and the
+matching firmware binary/ELF, are in `/tmp/brightness-campaign-artifacts/`.
+Firmware SHA-256:
+`31711bfb80c35a4f3e31362c7326d91bca50d1f13fc7b2d45d6711d5d0e839f6`.
