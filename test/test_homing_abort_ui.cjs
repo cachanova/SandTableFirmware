@@ -15,7 +15,7 @@ assert.match(source, /id="btn-home-abort"[^>]*>Abort homing<\/button>/);
 assert.match(source, /'btn-home-abort'\).addEventListener\('click', \(\) => this.abortHoming\(\)\)/);
 assert.match(source.match(/<button[^>]*id="btn-home-abort"[^>]*>/)[0], /\bdisabled\b/);
 
-function setup(fetchImpl) {
+function setup(fetchImpl, {route = '/api/home/abort', confirm} = {}) {
     const elements = {};
     let cleared = false;
     let requests = 0;
@@ -26,12 +26,13 @@ function setup(fetchImpl) {
         clearTimeout: () => { cleared = true; },
         fetch: (url, options) => {
             requests++;
-            assert.equal(url, '/api/home/abort');
+            assert.equal(url, route);
             assert.equal(options.method, 'POST');
             return fetchImpl(context, options);
         },
         // Any confirmation dialog is a regression: abort must send first.
-        confirm: () => { throw new Error('Unexpected confirmation'); }
+        confirm: confirm || (() => { throw new Error('Unexpected confirmation'); }),
+        alert: message => { context.alertMessage = message; }
     });
     vm.runInContext(script, context);
     context.Controller.prototype.init = () => {};
@@ -57,6 +58,66 @@ async function check(name, fetchImpl, expected, disabled) {
 }
 
 (async () => {
+    {
+        const h = setup(() => { throw new Error('Unexpected home request'); });
+        await h.controller.homeDevice();
+        for (const state of ['UNINITIALIZED', 'RUNNING', 'CLEARING', 'PAUSED',
+            'STOPPING', 'PREPARING', 'HOMING', 'HOMING_REVIEW', 'UNKNOWN']) {
+            h.controller.updateUI({state});
+            assert.equal(h.elements['btn-home'].disabled, true, state);
+            await h.controller.homeDevice();
+        }
+        for (const state of ['IDLE', 'INITIALIZED', 'HOMING_FAILED']) {
+            h.controller.updateUI({state});
+            assert.equal(h.elements['btn-home'].disabled, false, state);
+            assert.equal(h.elements['btn-home'].textContent, state === 'IDLE' ? 'Re-home' : 'Home');
+        }
+        assert.equal(h.requestCount(), 0);
+        console.log('PASS: re-home is available when idle and rejects busy states');
+    }
+    {
+        const h = setup(() => { throw new Error('Unexpected home request'); }, {confirm: () => false});
+        h.controller.updateUI({state: 'IDLE'});
+        h.controller.clearPath = () => { throw new Error('Cancelled homing must preserve the trace'); };
+        await h.controller.homeDevice();
+        assert.equal(h.requestCount(), 0);
+        assert.equal(h.elements['btn-home'].disabled, false);
+        console.log('PASS: cancelling re-home preserves the trace');
+    }
+    {
+        let cleared = 0;
+        const h = setup(async context => {
+            context.controller.updateUI({state: 'IDLE'});
+            assert.equal(context.elements['btn-home'].disabled, true);
+            assert.equal(context.elements['btn-home-retry'].disabled, true);
+            await context.controller.homeDevice();
+            return {ok: true, json: async () => ({success: true})};
+        }, {route: '/api/home', confirm: () => true});
+        h.controller.updateUI({state: 'IDLE'});
+        h.controller.clearPath = () => cleared++;
+        await h.controller.homeDevice();
+        assert.equal(h.requestCount(), 1);
+        assert.equal(cleared, 1);
+        assert.equal(h.controller.homeInFlight, false);
+        assert.equal(h.elements['btn-home'].disabled, true);
+        assert.equal(h.elements['btn-home-abort'].disabled, false);
+        console.log('PASS: re-home sends once and enables abort despite a failed status poll');
+    }
+    {
+        let cleared = 0;
+        const h = setup(async context => {
+            context.controller.updateUI({state: 'RUNNING'});
+            return {ok: false, status: 409, json: async () => ({success: false, message: 'System must be idle to home'})};
+        }, {route: '/api/home', confirm: () => true});
+        h.controller.updateUI({state: 'IDLE'});
+        h.controller.clearPath = () => cleared++;
+        await h.controller.homeDevice();
+        assert.equal(h.requestCount(), 1);
+        assert.equal(cleared, 0);
+        assert.equal(h.elements['btn-home'].disabled, true);
+        assert.equal(h.controller.homeInFlight, false);
+        console.log('PASS: a busy response leaves re-home disabled and preserves the trace');
+    }
     const {controller, elements, requestCount} = setup(() => { throw new Error('Unexpected abort request'); });
     assert.equal(controller.homingActive, false);
     await controller.abortHoming();

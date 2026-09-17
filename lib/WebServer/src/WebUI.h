@@ -447,7 +447,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 <button class="t-btn t-main" id="btn-start" disabled>Start</button>
                 <button class="t-btn" id="btn-pause">Pause</button>
                 <button class="t-btn" id="btn-stop">Stop</button>
-                <button class="t-btn" id="btn-home">Home</button>
+                <button class="t-btn" id="btn-home" disabled>Home</button>
                 <button class="t-btn" id="btn-home-abort" style="color: var(--danger); border-color: var(--danger);" disabled>Abort homing</button>
             </div>
             <p id="home-abort-status" role="alert" aria-live="assertive"></p>
@@ -636,6 +636,8 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 this.apiBase = '/api';
                 this.statusInterval = null;
                 this.homingActive = false;
+                this.canHome = false;
+                this.homeInFlight = false;
                 this.errorsInterval = null;
                 this.lastPatternName = '';
                 this.selectedPattern = null;
@@ -906,11 +908,11 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 document.getElementById('btn-start').addEventListener('click', () => { this.clearPath(); this.startPattern(); });
                 document.getElementById('btn-pause').addEventListener('click', () => this.pausePattern());
                 document.getElementById('btn-stop').addEventListener('click', () => this.stopPattern());
-                document.getElementById('btn-home').addEventListener('click', () => { this.clearPath(); this.homeDevice(); });
+                document.getElementById('btn-home').addEventListener('click', () => this.homeDevice());
                 document.getElementById('btn-home-abort').addEventListener('click', () => this.abortHoming());
                 document.getElementById('btn-home-confirm').addEventListener('click', () => this.confirmHome(true));
                 document.getElementById('btn-home-reject').addEventListener('click', () => this.confirmHome(false));
-                document.getElementById('btn-home-retry').addEventListener('click', () => { this.clearPath(); this.homeDevice(); });
+                document.getElementById('btn-home-retry').addEventListener('click', () => this.homeDevice());
 
                 document.getElementById('btn-add-to-playlist').addEventListener('click', () => this.addToPlaylist());
                 document.getElementById('btn-add-all-to-playlist').addEventListener('click', () => this.addAllToPlaylist());
@@ -1038,10 +1040,27 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             }
 
             async homeDevice() {
-                if (!confirm('Run sensorless homing? Keep clear of the mechanism and watch the carriage. You will be asked to verify the result.')) return;
-                const response = await fetch(this.apiBase + '/home', { method: 'POST' });
-                const result = await response.json();
-                if (!result.success) alert('Failed: ' + (result.message || 'Unknown error'));
+                if (!this.canHome || this.homeInFlight) return;
+                if (!confirm('Run sensorless homing? Keep clear of the mechanism and watch the carriage.')) return;
+                this.homeInFlight = true;
+                document.getElementById('btn-home').disabled = true;
+                document.getElementById('btn-home-retry').disabled = true;
+                try {
+                    await this.requestJSON('/home', {method: 'POST'});
+                    this.canHome = false;
+                    this.homingActive = true;
+                    document.getElementById('btn-home-abort').disabled = !!this.abortInFlight;
+                    document.getElementById('home-abort-status').textContent = '';
+                    this.clearPath();
+                } catch (error) {
+                    alert(error.status ? error.message
+                        : 'No acknowledgement from the table. Homing is unconfirmed; check its status before retrying.');
+                } finally {
+                    await this.pollStatusOnce().catch(() => {});
+                    this.homeInFlight = false;
+                    document.getElementById('btn-home').disabled = !this.canHome;
+                    document.getElementById('btn-home-retry').disabled = !this.canHome;
+                }
             }
 
             async confirmHome(successful) {
@@ -1591,7 +1610,11 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 }
                 homingDetails.textContent = homingPasses.join(' | ');
 
-                document.getElementById('btn-home').disabled = !['INITIALIZED', 'HOMING_FAILED'].includes(status.state);
+                this.canHome = ['IDLE', 'INITIALIZED', 'HOMING_FAILED'].includes(status.state);
+                const homeButton = document.getElementById('btn-home');
+                homeButton.textContent = status.state === 'IDLE' ? 'Re-home' : 'Home';
+                homeButton.disabled = !this.canHome || this.homeInFlight;
+                retryButton.disabled = !this.canHome || this.homeInFlight;
                 document.getElementById('btn-start').disabled = this.startInFlight || status.state !== 'IDLE' || !this.storageAvailable;
 
                 if (status.fileListRevision !== undefined && status.fileListRevision !== this.fileListRevision) {

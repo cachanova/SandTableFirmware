@@ -35,12 +35,10 @@ At a high level the firmware is organized around three FreeRTOS tasks pinned acr
    pio run -t uploadfs
    ```
 5. Connect to the device IP and open the Web UI.
-6. With the current main-only hardware, place RHO at its physical center stop
-   and use **Set Home** on the manual page. Pattern motion remains locked until
-   the operator establishes the origin.
-
-Automatic homing stays disabled (`Config::kAutoHomeOnBoot = false`) until the
-assembled mechanism passes unknown-origin and cold-start qualification.
+6. Wait for automatic homing to finish. To home again, use **Re-home** on the
+   dashboard whenever the table is **IDLE**. Stop playback first if it is running
+   or paused. Use **Abort homing** to cancel; **Home** retries after an abort or
+   failure. Pattern motion stays locked until homing succeeds.
 
 ## Configuration
 Key settings in `lib/Config/src/Config.h`:
