@@ -1,5 +1,11 @@
 # Presence hardware test attempt — 2026-09-16
 
+After testing, main advanced to `47eb654` with sound-profile documentation only,
+including the selected 200 mA RHO hold setting. The presence branch was rebased
+again onto that main. No firmware, script, or test source changed in this final
+rebase; the installed image is unchanged. Deployment commit IDs below are the
+pre-rebase IDs; the final installed source is now `77da374` (formerly `f0d965e`).
+
 ## Recovery and follow-up (supersedes the initial offline state)
 
 The operator power-cycled the table. The presence firmware came online, automatic
@@ -88,8 +94,8 @@ The device was left IDLE, receiving/calibrated, with `fade_light_on` selected an
 both brightness target and actual output at 50%. The library is unchanged. An
 earlier tuning comparison matched; at the final comparison, only RHO hold current
 had changed from 350 to 200 mA. This session sent no tuning-write requests, so
-that current value was preserved rather than overwritten. Its origin was not
-investigated as part of the brightness change.
+that current value was preserved rather than overwritten. Concurrent main commit
+`47eb654` subsequently documented that selected 200 mA hold setting.
 
 The unresolved qualification is a sustained heavy multi-client run meeting the
 8 KiB conservative reserve criterion, plus longer soak/reconnect and actual
