@@ -1441,7 +1441,12 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     const abort = new AbortController();
                     const cancel = () => abort.abort();
                     if (signal) signal.addEventListener('abort', cancel, { once: true });
-                    const timeout = setTimeout(() => abort.abort(), 8000);
+                    let timeout;
+                    const madeProgress = () => {
+                        clearTimeout(timeout);
+                        timeout = setTimeout(() => abort.abort(), 8000);
+                    };
+                    madeProgress();
                     try {
                         const response = await fetch(url, { cache: 'default', signal: abort.signal });
                         if (response.status === 503) {
@@ -1464,7 +1469,27 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                         if (!response.ok) {
                             return null;
                         }
-                        const blob = await response.blob();
+                        let blob;
+                        if (response.body && response.body.getReader) {
+                            const reader = response.body.getReader();
+                            const chunks = [];
+                            madeProgress(); // Headers arrived; now watch body progress.
+                            try {
+                                while (true) {
+                                    const { done, value } = await reader.read();
+                                    if (done) break;
+                                    if (value.length) {
+                                        chunks.push(value);
+                                        madeProgress();
+                                    }
+                                }
+                                blob = new Blob(chunks, { type: 'image/png' });
+                            } finally {
+                                reader.releaseLock();
+                            }
+                        } else {
+                            blob = await response.blob();
+                        }
                         return { src: URL.createObjectURL(blob), revoke: true };
                     } catch (error) {
                         if (attempt === retries || (signal && signal.aborted)) return null;

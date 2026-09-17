@@ -16,6 +16,7 @@ let objectId = 0;
 const container = { innerHTML: '', querySelectorAll: () => [], removeEventListener() {} };
 const context = vm.createContext({
     AbortController,
+    Blob,
     document: { getElementById: () => container },
     IntersectionObserver: class {
         constructor(callback, options) { this.callback = callback; this.options = options; this.targets = []; observers.push(this); }
@@ -290,4 +291,43 @@ const ok = { ok: true, blob: async () => ({}) };
     assert.equal(timers.size, 0, 'rerender cancels both deadline and retry timer');
     assert.equal(requests.length, beforeRetirement, 'old generation cannot retry after rerender');
     console.log('PASS: replacing the pattern list cleans up pending retry work');
+
+    // Large images take longer than eight seconds on the table. Only a stalled
+    // body should time out; each nonempty chunk replaces the old deadline.
+    const download = controller.fetchPatternImageUrl('/large.png', 0);
+    const downloadRequest = requests.at(-1);
+    let resolveRead, rejectRead, released = false;
+    const reader = {
+        read: () => new Promise((resolve, reject) => { resolveRead = resolve; rejectRead = reject; }),
+        releaseLock: () => { released = true; }
+    };
+    downloadRequest.options.signal.addEventListener('abort', () => rejectRead?.(new Error('Body stalled')));
+    downloadRequest.resolve({ ok: true, body: { getReader: () => reader } });
+    await flush();
+    for (let chunk = 0; chunk < 5; ++chunk) {
+        const oldDeadline = [...timers.keys()][0];
+        resolveRead({ done: false, value: new Uint8Array([chunk]) }); await flush();
+        assert.equal(timers.has(oldDeadline), false, 'body progress replaces the deadline');
+        assert.equal(timers.size, 1);
+        assert.equal(downloadRequest.options.signal.aborted, false);
+    }
+    resolveRead({ done: true });
+    assert.equal((await download).revoke, true);
+    assert.equal(released, true);
+    assert.equal(timers.size, 0);
+
+    released = false;
+    const stalled = controller.fetchPatternImageUrl('/stalled.png', 0);
+    const stalledRequest = requests.at(-1);
+    stalledRequest.options.signal.addEventListener('abort', () => rejectRead?.(new Error('Body stalled')));
+    stalledRequest.resolve({ ok: true, body: { getReader: () => reader } }); await flush();
+    const deadline = [...timers.keys()][0];
+    resolveRead({ done: false, value: new Uint8Array(0) }); await flush();
+    assert.equal(timers.has(deadline), true, 'empty chunks cannot keep a stalled image alive');
+    timers.get(deadline)(); await flush();
+    assert.equal(await stalled, null);
+    assert.equal(stalledRequest.options.signal.aborted, true);
+    assert.equal(released, true);
+    assert.equal(timers.size, 0);
+    console.log('PASS: large image body progress extends its deadline; stalled bodies abort and release the reader');
 })().catch(error => { console.error(error); process.exitCode = 1; });

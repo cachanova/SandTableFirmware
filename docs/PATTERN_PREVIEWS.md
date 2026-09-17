@@ -114,6 +114,12 @@ one network event can otherwise spend several seconds processing many file chunk
 These changes retain timeout protection for stalled work rather than imposing a
 total transfer deadline.
 
+The browser also applies its eight-second preview deadline to stalled progress.
+It reads the PNG response incrementally and restarts the deadline when bytes
+arrive. A full Shell preview took longer than the former absolute deadline on
+the device, causing four canceled downloads and a permanently hidden overlay.
+Cancellation, bounded retries, and thumbnail/overlay serialization still apply.
+
 `GET /api/system/crash` retains this boot's previous panic frames after the console
 ring wraps, includes watchdog resets, and reports the running firmware's MD5.
 Match that fingerprint to the uploaded binary before decoding addresses with its
