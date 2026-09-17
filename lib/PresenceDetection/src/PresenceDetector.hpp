@@ -9,6 +9,7 @@ public:
     static constexpr uint16_t kBaselineSamples = 80;
     static constexpr uint16_t kNoiseSamples = 80;
     static constexpr uint32_t kOccupancyHoldMs = 60000;
+    static constexpr uint32_t kSampleFreshMs = 3000;
 
     enum class Phase : uint8_t {
         UNCALIBRATED,
@@ -31,14 +32,16 @@ public:
 
     PresenceDetector();
 
-    bool startCalibration();
+    bool startCalibration(uint32_t nowMs = 0);
+    void invalidate();
+    void tick(uint32_t nowMs);
     void setSuppressed(bool suppressed);
     bool addPowers(const float* powers, size_t count, uint32_t nowMs);
     Status status(uint32_t nowMs) const;
 
 private:
     static constexpr float kMinimumThreshold = 0.02f;
-    static constexpr float kBaselineAdaptation = 0.001f;
+    static constexpr float kBaselineAdaptation = 0.02f;
     static constexpr uint8_t kMotionEnterSamples = 3;
     static constexpr uint8_t kMotionExitSamples = 8;
 
@@ -50,6 +53,9 @@ private:
     bool m_suppressed = false;
     bool m_motion = false;
     bool m_everDetectedMotion = false;
+    bool m_haveSample = false;
+    bool m_reseedBaseline = false;
+    uint32_t m_lastSampleMs = 0;
     size_t m_binCount = 0;
     float m_baseline[kMaxBins]{};
     uint16_t m_phaseSamples = 0;

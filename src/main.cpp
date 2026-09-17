@@ -222,7 +222,7 @@ void setup() {
 
     // CSI uses the existing Wi-Fi link as an ambient motion sensor. Presence
     // may affect lighting, but is never allowed to start or stop motion.
-    presenceSensor.begin(WiFi.gatewayIP());
+    presenceSensor.begin();
 
     // Setup OTA updates
 #ifdef SISYPHUS_SKIP_OTA

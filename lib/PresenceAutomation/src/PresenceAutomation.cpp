@@ -8,6 +8,8 @@ void PresenceAutomation::setAction(PresenceAction action) {
 
 void PresenceAutomation::cancelFade() {
     m_fading = false;
+    // A manual override also consumes any as-yet-unobserved active event.
+    m_previousMovement = true;
 }
 
 bool PresenceAutomation::update(bool movementDetected,
@@ -17,7 +19,7 @@ bool PresenceAutomation::update(bool movementDetected,
     const bool movementStarted = movementDetected && !m_previousMovement;
     m_previousMovement = movementDetected;
 
-    if (movementStarted && m_action == PresenceAction::FADE_LIGHT_ON &&
+    if (movementStarted && !m_fading && m_action == PresenceAction::FADE_LIGHT_ON &&
         currentBrightness < kFadeTarget) {
         m_fading = true;
         m_fadeStart = currentBrightness;

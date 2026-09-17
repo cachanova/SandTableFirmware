@@ -2,7 +2,7 @@
 #include "SisyphusWebServer.hpp"
 #include "WebUI.h"
 #include "ManualUI.h"
-#include "TuningUI.h"
+#include "SettingsUI.h"
 #include "FileUI.h"
 #include "JsonHelpers.hpp"
 #include "BufferedResponse.hpp"
@@ -284,22 +284,22 @@ void SisyphusWebServer::begin(PolarControl *polarControl,
         handleStatus(request);
     });
 
-    m_server.on("/api/presence", HTTP_GET, [this](AsyncWebServerRequest *request) {
+    m_server.on(AsyncURIMatcher::exact("/api/presence"), HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handlePresenceGet(request);
     });
 
-    m_server.on("/api/presence/calibrate", HTTP_POST, [this](AsyncWebServerRequest *request) {
+    m_server.on(AsyncURIMatcher::exact("/api/presence/calibrate"), HTTP_POST, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handlePresenceCalibrate(request);
     });
 
-    m_server.on("/api/settings/presence", HTTP_GET, [this](AsyncWebServerRequest *request) {
+    m_server.on(AsyncURIMatcher::exact("/api/settings/presence"), HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handlePresenceSettingsGet(request);
     });
 
-    m_server.on("/api/settings/presence", HTTP_POST, [this](AsyncWebServerRequest *request) {
+    m_server.on(AsyncURIMatcher::exact("/api/settings/presence"), HTTP_POST, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handlePresenceSettingsSet(request);
     });
@@ -938,14 +938,17 @@ static void formatPositionEvent(char* buffer, size_t capacity,
 void SisyphusWebServer::updatePresenceAutomation() {
     if (m_presenceSensor == nullptr || m_ledController == nullptr) return;
 
-    const PresenceStatus status = m_presenceSensor->getStatus();
-    const bool movementDetected = status.available && status.receiving &&
-        status.calibrated && !status.suppressed && status.motion;
-
     SemaphoreGuard stateLock(m_stateMutex);
+    const PresenceStatus status = m_presenceSensor->getStatus();
+    const bool valid = status.available && status.receiving &&
+        status.calibrated && !status.suppressed;
+    if (!valid) {
+        m_presenceAutomation.cancelFade();
+        return;
+    }
     m_presenceAutomation.setAction(m_presenceSensor->getAction());
     uint8_t nextBrightness = m_ledController->getBrightness();
-    if (m_presenceAutomation.update(movementDetected, nextBrightness,
+    if (m_presenceAutomation.update(status.motion, nextBrightness,
                                     millis(), nextBrightness)) {
         m_ledController->setBrightness(nextBrightness);
     }
@@ -1382,11 +1385,13 @@ void SisyphusWebServer::handlePresenceSettingsSet(
         return;
     }
 
+    SemaphoreGuard stateLock(m_stateMutex);
     if (!m_presenceSensor->setAction(action)) {
         request->send(500, "application/json",
             "{\"success\":false,\"message\":\"Presence action could not be saved\"}");
         return;
     }
+    m_presenceAutomation.setAction(action);
     request->send(200, "application/json", "{\"success\":true}");
 }
 

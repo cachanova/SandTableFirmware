@@ -20,6 +20,7 @@
 #include "RhoRollingSearch.hpp"
 #include "PresenceAutomation.hpp"
 #include "PresenceDetector.hpp"
+#include "CsiFeatures.hpp"
 
 // Directly include implementations for native build to resolve linker errors
 // This mimics a unity build
@@ -1563,7 +1564,7 @@ bool testPresenceDetectionCalibrationAndHold() {
               << " occupied=" << status.occupied
               << " score=" << status.score << std::endl;
     passed &= status.motion && status.occupied && status.score > 1.0f;
-    for (int sample = 0; sample < 80; ++sample) {
+    for (int sample = 0; sample < 160; ++sample) {
         nowMs += 100;
         passed &= detector.addPowers(quiet, PresenceDetector::kMaxBins, nowMs);
     }
@@ -1619,6 +1620,103 @@ bool testPresenceLightAutomation() {
     return passed;
 }
 
+bool testPresenceRecovery() {
+    std::cout << "\n=== Test: Presence Recovery And Input Validation ===" << std::endl;
+    bool passed = true;
+    int8_t bytes[CsiFeatures::kBytes]{};
+    float powers[CsiFeatures::kBins]{};
+    passed &= !CsiFeatures::extract(bytes, sizeof(bytes), powers);
+    bytes[0] = 127; // invalid first word and DC must not contribute
+    bytes[2] = 127;
+    bytes[64] = 127; // guard carrier
+    passed &= !CsiFeatures::extract(bytes, sizeof(bytes), powers);
+    bytes[4] = 3;
+    bytes[5] = 4;
+    bytes[126] = -3;
+    bytes[127] = -4;
+    passed &= CsiFeatures::extract(bytes, sizeof(bytes), powers);
+    passed &= powers[0] == 25 && powers[CsiFeatures::kBins - 1] == 25;
+    passed &= !CsiFeatures::extract(bytes, sizeof(bytes) - 2, powers);
+
+    PresenceDetector detector;
+    float quiet[] = {100, 100, 100, 100};
+    float changed[] = {20, 180, 20, 180};
+    uint32_t now = UINT32_MAX - 2000; // cover clock wrap during calibration
+    passed &= detector.startCalibration(now);
+    passed &= !detector.startCalibration(now);
+    detector.addPowers(quiet, 4, now += 100);
+    detector.setSuppressed(true);
+    passed &= detector.status(now).phase == PresenceDetector::Phase::UNCALIBRATED;
+    detector.setSuppressed(false);
+    passed &= detector.startCalibration(now);
+    for (int i = 0; i < PresenceDetector::kBaselineSamples; ++i)
+        detector.addPowers(quiet, 4, now += 100);
+    passed &= detector.status(now).phase == PresenceDetector::Phase::NOISE;
+    detector.setSuppressed(true);
+    passed &= detector.status(now).phase == PresenceDetector::Phase::UNCALIBRATED;
+    detector.setSuppressed(false);
+    passed &= detector.startCalibration(now);
+    detector.tick(now += PresenceDetector::kSampleFreshMs + 1);
+    passed &= detector.status(now).phase == PresenceDetector::Phase::UNCALIBRATED;
+    passed &= detector.startCalibration(now);
+    for (int i = 0; i < 160; ++i) passed &= detector.addPowers(quiet, 4, now += 100);
+    passed &= detector.status(now).phase == PresenceDetector::Phase::READY;
+    float louder[] = {200, 200, 200, 200};
+    for (int i = 0; i < 5; ++i) detector.addPowers(louder, 4, now += 100);
+    passed &= !detector.status(now).motion; // uniform gain is not movement
+    for (int i = 0; i < 5; ++i) detector.addPowers(changed, 4, now += 100);
+    passed &= detector.status(now).motion;
+    // A stationary channel change must eventually stop being called movement.
+    for (int i = 0; i < 300; ++i) detector.addPowers(changed, 4, now += 100);
+    passed &= !detector.status(now).motion && detector.status(now).occupied;
+    // Occupancy hold expires with continued valid, quiet samples.
+    for (int i = 0; i < 610; ++i) detector.addPowers(changed, 4, now += 100);
+    passed &= !detector.status(now).occupied;
+    for (int i = 0; i < 5; ++i) detector.addPowers(quiet, 4, now += 100);
+    passed &= detector.status(now).motion;
+    now += PresenceDetector::kSampleFreshMs + 1;
+    passed &= !detector.status(now).motion && !detector.status(now).occupied;
+    detector.addPowers(quiet, 4, now);
+    for (int i = 0; i < 5; ++i) detector.addPowers(quiet, 4, now += 100);
+    passed &= !detector.status(now).motion;
+    // Wrong dimensions, NaN, negative and zero-power data cannot keep it fresh.
+    float invalid[] = {NAN, 1, 1, 1};
+    passed &= !detector.addPowers(quiet, 3, now + 1);
+    passed &= !detector.addPowers(invalid, 4, now + 1);
+    invalid[0] = -1;
+    passed &= !detector.addPowers(invalid, 4, now + 1);
+    float zero[4]{};
+    passed &= !detector.addPowers(zero, 4, now + 1);
+    detector.setSuppressed(true);
+    passed &= !detector.status(now).occupied;
+    detector.setSuppressed(false);
+    for (int i = 0; i < 5; ++i) detector.addPowers(changed, 4, now += 100);
+    passed &= !detector.status(now).motion;
+    detector.invalidate();
+    passed &= detector.status(now).phase == PresenceDetector::Phase::UNCALIBRATED;
+
+    PresenceAutomation automation;
+    automation.setAction(PresenceAction::FADE_LIGHT_ON);
+    uint8_t brightness = 0;
+    const uint32_t start = UINT32_MAX - 1000;
+    automation.update(true, brightness, start, brightness);
+    automation.update(false, brightness, start + 500, brightness);
+    automation.update(true, brightness, start + 1000, brightness);
+    automation.update(true, brightness, start + 2000, brightness);
+    passed &= brightness == 255 && !automation.isFading();
+    automation.update(false, 0, 3000, brightness);
+    automation.update(true, 0, 3100, brightness);
+    automation.setAction(PresenceAction::NONE);
+    passed &= !automation.isFading();
+    automation.setAction(PresenceAction::FADE_LIGHT_ON);
+    passed &= !automation.update(true, 0, 3200, brightness);
+    automation.update(false, 0, 3300, brightness);
+    automation.cancelFade(); // manual override before a pending active event
+    passed &= !automation.update(true, 0, 3400, brightness);
+    std::cout << (passed ? "PASS" : "FAIL") << ": presence recovery" << std::endl;
+    return passed;
+}
+
 int main(int argc, char* argv[]) {
     std::cout << "========================================" << std::endl;
     std::cout << "MotionPlanner Desktop Test Harness" << std::endl;
@@ -1636,6 +1734,7 @@ int main(int argc, char* argv[]) {
     allPassed &= testRhoAcousticProfiles();
     allPassed &= testPresenceDetectionCalibrationAndHold();
     allPassed &= testPresenceLightAutomation();
+    allPassed &= testPresenceRecovery();
     allPassed &= testSpeedMultiplierScalesSpatialVelocity();
     allPassed &= testControlledSpeedTransition();
     allPassed &= testSynchronizedBoundaryVelocity();

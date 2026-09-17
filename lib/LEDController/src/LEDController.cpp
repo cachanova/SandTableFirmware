@@ -24,7 +24,7 @@ void LEDController::begin() {
     ledcWrite(PWM_CHANNEL, m_brightness);
 #endif
 
-    LOG("LED Controller initialized on GPIO %d with brightness %d\r\n", m_pin, m_brightness);
+    LOG("LED Controller initialized on GPIO %d with brightness %d\r\n", m_pin, m_brightness.load());
 }
 
 void LEDController::setBrightness(uint8_t brightness) {

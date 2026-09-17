@@ -32,7 +32,7 @@ class PresenceSensor {
 public:
     PresenceSensor();
 
-    bool begin(const IPAddress& pingTarget);
+    bool begin();
     void loop(bool mechanismMoving);
     bool startCalibration();
     PresenceAction getAction() const;
@@ -42,13 +42,14 @@ public:
 private:
     static constexpr size_t kCsiBytes = 128;
     static constexpr uint32_t kSettleMs = 5000;
-    static constexpr uint32_t kSampleFreshMs = 3000;
+    static constexpr uint32_t kSampleFreshMs = PresenceDetector::kSampleFreshMs;
     static constexpr uint32_t kMinimumSampleIntervalMs = 50;
 
     struct CsiSample {
         uint32_t atMs;
         uint16_t len;
         int8_t rssi;
+        uint8_t channel;
         uint8_t source[6];
         int8_t bytes[kCsiBytes];
     };
@@ -57,6 +58,7 @@ private:
     bool startPing(const IPAddress& target);
     void loadAction();
     void updateAccessPoint();
+    void stopPing();
     bool processSample(const CsiSample& sample);
 
     QueueHandle_t m_queue = nullptr;
@@ -68,11 +70,17 @@ private:
         static_cast<uint8_t>(PresenceAction::FADE_LIGHT_ON)};
     std::atomic<uint32_t> m_packets{0};
     std::atomic<uint32_t> m_dropped{0};
-    std::atomic<uint32_t> m_lastSampleMs{0};
-    std::atomic<int8_t> m_lastRssi{0};
+    // Protected together with the detector by m_detectorMutex.
+    uint32_t m_lastSampleMs = 0;
+    int8_t m_lastRssi = 0;
+    bool m_haveSample = false;
+    uint32_t m_sampleBoundaryMs = 0;
+    uint8_t m_channel = 0;
+    IPAddress m_pingTarget;
     uint8_t m_bssid[6]{};
     bool m_haveBssid = false;
     bool m_mechanismMoving = false;
+    bool m_settling = true;
     uint32_t m_suppressedUntilMs = 0;
     uint32_t m_lastAcceptedAtMs = 0;
     uint32_t m_lastApRefreshMs = 0;

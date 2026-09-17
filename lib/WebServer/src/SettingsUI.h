@@ -229,8 +229,8 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
             <p class="test-description">The ESP32 watches Wi-Fi reflections for movement while the mechanism is still. Calibrate with the room empty, then choose what a new movement detection should do.</p>
             <div class="grid">
                 <div class="form-group">
-                    <label>Movement Response</label>
-                    <select id="presence-action">
+                    <label for="presence-action">Movement Response</label>
+                    <select id="presence-action" disabled>
                         <option value="none">Do nothing</option>
                         <option value="fade_light_on">Fade light on</option>
                     </select>
@@ -245,10 +245,12 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
                 </div>
             </div>
             <div class="test-buttons">
-                <button class="btn-primary" id="btn-save-presence">Save Response</button>
-                <button class="btn-secondary" id="btn-presence-calibrate">Calibrate Empty Room</button>
+                <button class="btn-primary" id="btn-save-presence" disabled>Save Response</button>
+                <button class="btn-secondary" id="btn-presence-calibrate" disabled>Calibrate Empty Room</button>
             </div>
-            <p class="presence-feedback" id="presence-feedback">Presence actions are disabled until empty-room calibration completes.</p>
+            <p class="presence-feedback" id="presence-status-note">Presence actions are disabled until empty-room calibration completes.</p>
+            <p class="presence-feedback" id="presence-feedback" role="status" aria-live="polite"></p>
+            <p class="test-description">Fade light on raises brightness to 100% over two seconds. Manual brightness changes cancel the fade. There is no automatic turn-off. This experimental sensor detects movement, not reliable stationary occupancy.</p>
         </section>
 
         <section class="block commissioning">
@@ -568,31 +570,53 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
             }
         }
 
+        let presenceSettingsLoaded = false;
+        let calibrationPending = false;
+
+        async function presenceRequest(path, options = {}) {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 5000);
+            try {
+                const response = await fetch(apiBase + path, { ...options, signal: controller.signal });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || 'HTTP ' + response.status);
+                return data;
+            } finally {
+                clearTimeout(timeout);
+            }
+        }
+
         async function loadPresenceSettings() {
-            const response = await fetch(apiBase + '/settings/presence');
-            const data = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(data.message || 'HTTP ' + response.status);
-            document.getElementById('presence-action').value = data.action || 'fade_light_on';
+            try {
+                const data = await presenceRequest('/settings/presence');
+                if (!['none', 'fade_light_on'].includes(data.action)) throw new Error('Invalid saved response');
+                document.getElementById('presence-action').value = data.action;
+                document.getElementById('presence-action').disabled = false;
+                document.getElementById('btn-save-presence').disabled = false;
+                presenceSettingsLoaded = true;
+            } catch (err) {
+                document.getElementById('presence-feedback').textContent =
+                    'Could not load movement response. Reload this page to retry: ' + err.message;
+            }
         }
 
         async function refreshPresenceStatus() {
             const state = document.getElementById('presence-state');
             const score = document.getElementById('presence-score');
             const calibrate = document.getElementById('btn-presence-calibrate');
-            const feedback = document.getElementById('presence-feedback');
+            const feedback = document.getElementById('presence-status-note');
             try {
-                const response = await fetch(apiBase + '/presence');
-                const presence = await response.json();
-                if (!response.ok) throw new Error('HTTP ' + response.status);
+                const presence = await presenceRequest('/presence');
+                if (typeof presence.available !== 'boolean') throw new Error('Invalid sensor status');
 
                 if (!presence.available) {
                     state.textContent = 'Unavailable';
                 } else if (presence.suppressed) {
                     state.textContent = 'Suspended while table moves';
-                } else if (presence.calibrating) {
-                    state.textContent = `Calibrating ${presence.calibrationProgress || 0}%`;
                 } else if (!presence.receiving) {
                     state.textContent = 'No CSI samples';
+                } else if (presence.calibrating) {
+                    state.textContent = `Calibrating ${presence.calibrationProgress || 0}%`;
                 } else if (!presence.calibrated) {
                     state.textContent = 'Needs calibration';
                 } else if (presence.motion) {
@@ -600,12 +624,13 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
                 } else if (presence.occupied) {
                     state.textContent = 'Recently occupied';
                 } else {
-                    state.textContent = 'Ready — room clear';
+                    state.textContent = 'Ready — no recent movement';
                 }
 
-                score.textContent = presence.calibrated && Number.isFinite(presence.score)
+                score.textContent = presence.calibrated && presence.receiving &&
+                    !presence.suppressed && Number.isFinite(presence.score)
                     ? `${presence.score.toFixed(2)}× threshold` : '—';
-                calibrate.disabled = !presence.available || !presence.receiving ||
+                calibrate.disabled = calibrationPending || !presence.available || !presence.receiving ||
                     presence.suppressed || presence.calibrating;
 
                 if (presence.calibrating) {
@@ -624,18 +649,18 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
         }
 
         async function savePresenceSettings() {
+            if (!presenceSettingsLoaded) return;
             const button = document.getElementById('btn-save-presence');
             const feedback = document.getElementById('presence-feedback');
             const formData = new FormData();
             formData.append('action', document.getElementById('presence-action').value);
             button.disabled = true;
             try {
-                const response = await fetch(apiBase + '/settings/presence', {
+                const result = await presenceRequest('/settings/presence', {
                     method: 'POST', body: formData
                 });
-                const result = await response.json().catch(() => ({}));
-                if (!response.ok || !result.success) {
-                    throw new Error(result.message || 'HTTP ' + response.status);
+                if (!result.success) {
+                    throw new Error(result.message || 'Save failed');
                 }
                 feedback.textContent = 'Movement response saved.';
             } catch (err) {
@@ -646,18 +671,21 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
         }
 
         async function calibratePresence() {
-            if (!confirm('Keep the room empty and the table completely still for about 20 seconds. Start calibration?')) return;
+            if (calibrationPending) return;
+            if (!confirm('Start this from outside the room. Keep the room empty and the table completely still for about 20 seconds. Start calibration now?')) return;
+            calibrationPending = true;
+            document.getElementById('btn-presence-calibrate').disabled = true;
             const feedback = document.getElementById('presence-feedback');
             try {
-                const response = await fetch(apiBase + '/presence/calibrate', { method: 'POST' });
-                const result = await response.json().catch(() => ({}));
-                if (!response.ok || !result.success) {
-                    throw new Error(result.message || 'HTTP ' + response.status);
+                const result = await presenceRequest('/presence/calibrate', { method: 'POST' });
+                if (!result.success) {
+                    throw new Error(result.message || 'Calibration rejected');
                 }
                 feedback.textContent = 'Calibration started. Keep the room empty and still.';
-                await refreshPresenceStatus();
             } catch (err) {
                 feedback.textContent = 'Calibration could not start: ' + err.message;
+            } finally {
+                calibrationPending = false;
             }
         }
 
@@ -788,10 +816,15 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
         document.getElementById('btn-dump-rho').addEventListener('click', () => dumpDriver('rho'));
         document.getElementById('btn-dump-rho-companion').addEventListener('click', () => dumpDriver('rho-companion'));
 
-        window.onload = async () => {
-            await Promise.allSettled([loadSettings(), loadPresenceSettings()]);
+        async function pollPresence() {
             await refreshPresenceStatus();
-            setInterval(refreshPresenceStatus, 1000);
+            setTimeout(pollPresence, 1000);
+        }
+
+        window.onload = () => {
+            loadSettings();
+            loadPresenceSettings();
+            pollPresence();
         };
     </script>
 </body>

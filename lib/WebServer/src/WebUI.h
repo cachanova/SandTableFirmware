@@ -1543,20 +1543,21 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     presenceState.textContent = 'Unavailable';
                 } else if (presence.suppressed) {
                     presenceState.textContent = 'Suspended';
-                } else if (presence.calibrating) {
-                    presenceState.textContent = `Calibrating ${presence.calibrationProgress || 0}%`;
                 } else if (!presence.receiving) {
                     presenceState.textContent = 'No CSI samples';
+                } else if (presence.calibrating) {
+                    presenceState.textContent = `Calibrating ${presence.calibrationProgress || 0}%`;
                 } else if (!presence.calibrated) {
                     presenceState.textContent = 'Needs calibration';
                 } else if (presence.motion) {
                     presenceState.textContent = 'Motion';
                 } else if (presence.occupied) {
-                    presenceState.textContent = 'Occupied';
+                    presenceState.textContent = 'Recent movement';
                 } else {
-                    presenceState.textContent = 'Clear';
+                    presenceState.textContent = 'No recent movement';
                 }
-                presenceScore.textContent = presence.calibrated && Number.isFinite(presence.score)
+                presenceScore.textContent = presence.calibrated && presence.receiving &&
+                    !presence.suppressed && Number.isFinite(presence.score)
                     ? `${presence.score.toFixed(2)}× threshold` : '—';
                 const slider = document.getElementById('brightness-slider');
                 if (document.activeElement !== slider) {

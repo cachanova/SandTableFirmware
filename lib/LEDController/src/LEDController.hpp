@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <atomic>
 
 class LEDController {
 public:
@@ -10,7 +11,7 @@ public:
 
 private:
     uint8_t m_pin;
-    uint8_t m_brightness;
+    std::atomic<uint8_t> m_brightness;
     static constexpr int PWM_CHANNEL = 0;
     static constexpr int PWM_FREQ = 5000;
     static constexpr int PWM_RESOLUTION = 8; // 8-bit = 0-255
