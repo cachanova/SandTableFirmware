@@ -45,6 +45,8 @@ public:
         out.print(progress);
         out.print(",\"clearingProgress\":");
         out.print(clearingProgress);
+        out.print(",\"etaSeconds\":");
+        out.print(polarControl->getEtaSeconds());
         out.print(",\"ledBrightness\":");
         out.print(brightnessPercent);
         out.print(",\"ledTargetBrightness\":");

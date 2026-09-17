@@ -245,6 +245,9 @@ public:
   uint32_t getSegmentsCompleted() const;
   float getMaxRho() const { return R_MAX; }
   int getProgressPercent() const;
+  // Whole seconds left in the running pattern file at the current speed
+  // setting; -1 while no estimate exists (generators, clearing, no pattern).
+  int getEtaSeconds() const;
 
   void getDiagnostics(uint32_t& queueDepth, uint32_t& underruns) const;
   void getProfileData(uint32_t& maxProcessUs, uint32_t& maxIntervalUs, uint32_t& avgGenUs);
@@ -301,6 +304,11 @@ private:
       char filename[192];
       float maxRho;
       uint32_t generation = 0;
+      // Motion-limit snapshot for the preflight nominal-time total, captured
+      // under the control mutex so the file task never has to take it.
+      float tMaxVel = 0.0f;
+      float rMaxVel = 0.0f;
+      float ballMaxVel = 0.0f;
   };
 
   static void fileReadTask(void* arg);
@@ -345,6 +353,11 @@ private:
   std::atomic<uint32_t> m_lastFileLine{0};
   std::atomic<uint32_t> m_lastFilePos{0};
   std::atomic<uint32_t> m_lastFileSize{0};
+  // Preflight results for the loaded pattern: coordinate count and the
+  // nominal playback duration at speed multiplier 1 (see NominalTime.hpp).
+  // Zero while nothing is loaded or a load was rejected.
+  std::atomic<uint32_t> m_patternTotalPoints{0};
+  std::atomic<float> m_patternNominalSec{0.0f};
 
   std::atomic<State_t> m_state{UNINITIALIZED};
   std::atomic<State_t> m_motionCompletionState{IDLE};

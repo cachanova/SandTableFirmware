@@ -13,6 +13,7 @@
 #include "esp32_mock.hpp"
 #include "thr_reader.hpp"
 #include "profile_validator.hpp"
+#include "NominalTime.hpp"
 #include "RhoAcousticProfile.hpp"
 #include "StallGuardDetector.hpp"
 #include "RhoContactConsensus.hpp"
@@ -242,6 +243,78 @@ bool testControlledSpeedTransition() {
               << " rad/s, boundary jump=" << resumedBoundaryJump
               << ", final=(" << finalTheta << ", " << finalRho << ")"
               << std::endl;
+    return passed;
+}
+
+bool testNominalSegmentSeconds() {
+    std::cout << "\n=== Test: Nominal Segment Seconds ===" << std::endl;
+
+    // Theta-limited: pure rotation near center.
+    const double thetaLimited =
+        nominalSegmentSeconds(0.5, 0.0, 10.0, 10.0, T_MAX_VEL, R_MAX_VEL, 30.0);
+    // Rho-limited: pure radial move.
+    const double rhoLimited =
+        nominalSegmentSeconds(0.0, 100.0, 100.0, 200.0, T_MAX_VEL, R_MAX_VEL, 30.0);
+    // Ball-limited: rotation at large radius covers far more Cartesian
+    // distance than the theta axis limit alone suggests.
+    const double ballLimited =
+        nominalSegmentSeconds(0.3, 0.0, 400.0, 400.0, T_MAX_VEL, R_MAX_VEL, 30.0);
+    // A disabled ball limit must not contribute.
+    const double noBallLimit =
+        nominalSegmentSeconds(0.3, 0.0, 400.0, 400.0, T_MAX_VEL, R_MAX_VEL, 0.0);
+
+    const bool passed = std::abs(thetaLimited - 0.5 / T_MAX_VEL) < 1e-9 &&
+        std::abs(rhoLimited - 100.0 / R_MAX_VEL) < 1e-9 &&
+        std::abs(ballLimited - (400.0 * 0.3) / 30.0) < 1e-9 &&
+        std::abs(noBallLimit - 0.3 / T_MAX_VEL) < 1e-9;
+
+    std::cout << (passed ? "PASS" : "FAIL")
+              << ": theta=" << thetaLimited << "s, rho=" << rhoLimited
+              << "s, ball=" << ballLimited << "s, noBall=" << noBallLimit
+              << "s" << std::endl;
+    return passed;
+}
+
+bool testCompletedNominalDurationTracking() {
+    std::cout << "\n=== Test: Completed Nominal Duration Tracking ===" << std::endl;
+    resetMock();
+    MotionPlanner planner;
+    planner.init(STEPS_PER_MM_R, STEPS_PER_RAD_T, R_MAX,
+                 R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
+                 T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
+    planner.setPathLimits(30.0, 100.0, 0.1);
+    planner.resetPosition(0.0f, 200.0f);
+    // Half speed must not scale the accumulated nominal durations: they
+    // describe the pattern at multiplier 1 so the caller can divide by the
+    // current speed setting.
+    planner.setSpeedMultiplier(0.5f);
+    planner.addSegment(0.5, 200.0);
+    planner.addSegment(0.5, 300.0);
+    planner.setEndOfPattern(true);
+    planner.recalculate();
+    planner.start();
+
+    for (int i = 0; i < 2000000 && !planner.isIdle(); ++i) {
+        planner.process();
+        advanceMicros(1000);
+    }
+
+    const double expected =
+        nominalSegmentSeconds(0.5, 0.0, 200.0, 200.0, T_MAX_VEL, R_MAX_VEL, 30.0) +
+        nominalSegmentSeconds(0.0, 100.0, 200.0, 300.0, T_MAX_VEL, R_MAX_VEL, 30.0);
+    const double accumulated = planner.getCompletedNominalSec();
+    const bool tracked = planner.isIdle() && planner.getCompletedCount() == 2 &&
+        std::abs(accumulated - expected) < 1e-9;
+
+    planner.resetCompletedCount();
+    const bool resets = planner.getCompletedCount() == 0 &&
+        planner.getCompletedNominalSec() == 0.0;
+
+    const bool passed = tracked && resets;
+    std::cout << (passed ? "PASS" : "FAIL")
+              << ": accumulated=" << accumulated << "s, expected=" << expected
+              << "s, completed=" << planner.getCompletedCount()
+              << ", resets=" << (resets ? "yes" : "no") << std::endl;
     return passed;
 }
 
@@ -1757,6 +1830,8 @@ int main(int argc, char* argv[]) {
     allPassed &= testPresenceDetectionCalibrationAndHold();
     allPassed &= testPresenceLightAutomation();
     allPassed &= testPresenceRecovery();
+    allPassed &= testNominalSegmentSeconds();
+    allPassed &= testCompletedNominalDurationTracking();
     allPassed &= testSpeedMultiplierScalesSpatialVelocity();
     allPassed &= testControlledSpeedTransition();
     allPassed &= testSynchronizedBoundaryVelocity();
