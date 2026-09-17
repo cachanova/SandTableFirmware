@@ -91,20 +91,27 @@ def main():
             status = monitor_json('/api/status')
             info = monitor_json('/api/system/info')
             if status and info:
+                # Preserve the failing sample too, so a safety-stop report
+                # contains the exact heap/state values that triggered it.
+                with lock:
+                    samples.append({'at': round(time.monotonic() - start, 2),
+                                    'status': status, 'memory': info})
                 assert status['uptime'] >= previous_uptime, 'device rebooted'
                 previous_uptime = status['uptime']
                 assert status['state'] == 'IDLE', 'table state changed; stopping load'
                 assert info.get('heap8Bit', info['heap']) >= 20000, 'heap reserve guard'
                 assert info.get('largestFree8BitBlock', info['largestFreeBlock']) >= 4096, \
                     'fragmentation guard'
+                if 'minimumFree8BitHeap' in info:
+                    minimum = info['minimumFree8BitHeap']
+                    old_minimum = initial_info.get('minimumFree8BitHeap', minimum)
+                    assert not (minimum < old_minimum and minimum < 4096), \
+                        'new transient byte-heap low below 4 KiB'
                 if args.presence:
                     presence = status['presence']
                     assert presence['available'], 'CSI unavailable'
                     stale = stale + 1 if not presence['receiving'] else 0
                     assert stale < 5, 'CSI stale over five monitoring samples'
-                with lock:
-                    samples.append({'at': round(time.monotonic() - start, 2),
-                                    'status': status, 'memory': info})
             stop.wait(1)
 
     def pages():

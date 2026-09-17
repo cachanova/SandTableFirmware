@@ -4,6 +4,7 @@
 #include <freertos/stream_buffer.h>
 #include <atomic>
 #include <new>
+#include <esp_heap_caps.h>
 #include "KnownLengthResponse.hpp"
 
 // SD reads can take hundreds of milliseconds on older cards. AsyncTCP's
@@ -29,7 +30,10 @@ public:
         _contentLength = size;
         _sendContentLength = true;
         _chunked = false;
-        if (ESP.getFreeHeap() < 24576) return;
+        // Internal heap includes 32-bit-only IRAM which cannot back the byte
+        // stream, file buffers, or task stack. Admit against usable memory.
+        if (heap_caps_get_free_size(MALLOC_CAP_8BIT) < 24576 ||
+            heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < 8192) return;
         m_state = new (std::nothrow) State(path, size);
         if (!m_state) return;
         m_state->stream = xStreamBufferCreate(4096, 1);

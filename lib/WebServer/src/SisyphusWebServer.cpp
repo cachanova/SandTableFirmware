@@ -826,7 +826,7 @@ bool SisyphusWebServer::updateFileListCache() {
             return false;
         }
         while (dirent* file = readdir(root.get())) {
-            if (ESP.getFreeHeap() < 24576 ||
+            if (heap_caps_get_free_size(MALLOC_CAP_8BIT) < 24576 ||
                 heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < 4096) {
                 LOG("Pattern index deferred: memory pressure\r\n");
                 return false;
