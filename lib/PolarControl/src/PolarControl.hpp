@@ -50,6 +50,9 @@ struct MotionSettings {
   float tMaxVelocity = 0.225f;  // rad/s
   float tMaxAccel = 2.0f;       // rad/s²
   float tMaxJerk = 10.0f;       // rad/s³
+  float ballMaxVelocity = 30.0f; // mm/s, independent of radius
+  float ballMaxAccel = 100.0f;   // mm/s², includes curved-path acceleration
+  float cornerTolerance = 0.10f; // mm of geometric blending (0 = exact THR)
 };
 
 struct DriverSettings {
@@ -309,7 +312,10 @@ private:
 
   // These are calculated based on current microstep settings
   inline int getStepsPerMm() const { return 50 * m_rDriverSettings.microsteps; }
-  inline int getStepsPerRadian() const { return (int)((200.0 * m_tDriverSettings.microsteps / (2.0 * PI)) * (60.0 / 16.0)); }
+  inline double getStepsPerRadian() const {
+      return (200.0 * m_tDriverSettings.microsteps * (60.0 / 16.0)) /
+             (2.0 * 3.14159265358979323846);
+  }
 
   // Tuning settings (runtime changeable)
   MotionSettings m_motionSettings;

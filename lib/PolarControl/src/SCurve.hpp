@@ -19,89 +19,73 @@ class SCurve {
 public:
     struct Profile {
         // Phase durations (seconds)
-        float t[7];
+        double t[7];
 
         // Phase end times (cumulative)
-        float tEnd[7];
+        double tEnd[7];
 
         // Phase end positions (cumulative)
-        float posEnd[7];
+        double posEnd[7];
 
         // Velocities at phase boundaries
-        float v[8];  // v[0] = start, v[7] = end
+        double v[8]; // v[0] = start, v[7] = end
 
         // Accelerations at phase boundaries
-        float a[8];
+        double a[8];
 
         // Total time and distance
-        float totalTime;
-        float totalDistance;
+        double totalTime;
+        double totalDistance;
 
         // Constraints used
-        float jerk;
-        float maxAccel;
-        float maxVelocity;
+        double jerk;
+        double maxAccel;
+        double maxVelocity;
     };
 
     // Calculate a profile for a move
     // Returns true if successful, false if constraints can't be satisfied
-    static bool calculate(
-        float distance,       // Total distance to travel (positive)
-        float vStart,         // Starting velocity
-        float vEnd,           // Ending velocity
-        float vMax,           // Maximum velocity
-        float aMax,           // Maximum acceleration
-        float jMax,           // Maximum jerk
-        Profile& out          // Output profile
+    static bool calculate(double distance, // Total distance to travel (positive)
+                          double vStart,   // Starting velocity
+                          double vEnd,     // Ending velocity
+                          double vMax,     // Maximum velocity
+                          double aMax,     // Maximum acceleration
+                          double jMax,     // Maximum jerk
+                          Profile& out     // Output profile
     );
 
     // Get velocity at time t within the profile
-    static float getVelocity(const Profile& p, float t);
+    static double getVelocity(const Profile& p, double t);
 
     // Get position at time t within the profile
-    static float getPosition(const Profile& p, float t);
+    static double getPosition(const Profile& p, double t);
 
     // Optimized access with phase caching
-    static float getPosition(const Profile& p, float t, int& phaseIdx);
+    static double getPosition(const Profile& p, double t, int& phaseIdx);
 
     // Get acceleration at time t within the profile
-    static float getAcceleration(const Profile& p, float t);
+    static double getAcceleration(const Profile& p, double t);
 
     // Calculate maximum achievable entry velocity given distance, exit velocity, and limits
     // Returns the highest vStart that can decelerate to vEnd within the given distance
-    static float maxAchievableEntryVelocity(
-        float distance,
-        float vEnd,
-        float vMax,
-        float aMax,
-        float jMax
-    );
+    static double maxAchievableEntryVelocity(double distance, double vEnd, double vMax, double aMax,
+                                             double jMax);
 
     // Calculate maximum achievable exit velocity given distance, entry velocity, and limits
     // Returns the highest vEnd that can be reached from vStart within the given distance
-    static float maxAchievableExitVelocity(
-        float distance,
-        float vStart,
-        float vMax,
-        float aMax,
-        float jMax
-    );
+    static double maxAchievableExitVelocity(double distance, double vStart, double vMax,
+                                            double aMax, double jMax);
 
     // Calculate distance required to decelerate from vStart to vEnd
-    static float decelerationDistance(
-        float vStart,
-        float vEnd,
-        float aMax,
-        float jMax
-    );
+    static double decelerationDistance(double vStart, double vEnd, double aMax, double jMax);
 
-private:
+  private:
     // Calculate distance covered during a jerk phase
-    static float jerkPhaseDistance(float v0, float a0, float j, float t);
+    static double jerkPhaseDistance(double v0, double a0, double j, double t);
 
     // Calculate distance covered during constant accel phase
-    static float constAccelDistance(float v0, float a, float t);
+    static double constAccelDistance(double v0, double a, double t);
 
     // Calculate velocity after jerk phase
-    static float jerkPhaseVelocity(float v0, float a0, float j, float t);
+    static double jerkPhaseVelocity(double v0, double a0, double j, double t);
 };

@@ -1,15 +1,12 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
 
 # Build the native environment
 echo "Building native test environment..."
-pio run -e native > /dev/null
-if [ $? -ne 0 ]; then
-    echo "Build failed!"
-    exit 1
-fi
+pio run -e native -e native_accuracy > /dev/null
 
 PROG=".pio/build/native/program"
-FAIL_COUNT=0
 
 # 1. Run synthetic unit tests (no arguments)
 echo "========================================"
@@ -21,6 +18,9 @@ else
     echo "Synthetic Tests: FAIL"
     exit 1
 fi
+
+echo "Running production-period accuracy regressions"
+timeout 60s .pio/build/native_accuracy/program
 
 # 2. Run pattern file tests
 PATTERN_DIR="test/test_motion/patterns"
@@ -55,10 +55,4 @@ echo "Summary"
 echo "========================================"
 echo "Tested $count pattern files."
 
-if [ $FAIL_COUNT -eq 0 ]; then
-    echo "ALL TESTS PASSED"
-    exit 0
-else
-    echo "$FAIL_COUNT TESTS FAILED"
-    exit 1
-fi
+echo "ALL TESTS PASSED"

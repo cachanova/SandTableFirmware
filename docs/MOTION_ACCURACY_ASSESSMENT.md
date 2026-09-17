@@ -3,14 +3,17 @@
 Assessment baseline: `main` at `f39a7ea`, synchronized September 16–17, 2026.
 Worktree: `SisyphusTable-motion-accuracy`, branch `assess/motion-accuracy`.
 
+This is the historical baseline assessment. The fixes and their replay results
+are recorded in [the implementation report](MOTION_ACCURACY_IMPLEMENTATION.md).
+
 **Yes: there are substantial, measurable software improvements available.**
 Matching each waypoint and reaching both axis targets at the same time does
 not guarantee that the path between those waypoints matches the THR file.
 This planner has that exact problem. It also truncates the angular conversion
 factor, introducing cumulative angular error even with an ideal mechanism.
 
-This change adds an offline audit, numerical checks, replay results, and plots.
-It does not change or deploy motor firmware. Results below distinguish
+The assessment commit adds an offline audit, numerical checks, replay results,
+and plots. That commit does not change or deploy motor firmware. Results below distinguish
 commanded geometry from physical ball accuracy; no physical motion was measured
 during this assessment.
 

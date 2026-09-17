@@ -101,10 +101,25 @@ File parsing ignores empty/comment lines. Lines longer than 127 characters are s
 The Web UI accepts `.thr` plus optional `.png` uploads with the same base name. This png should be an image of the path produced by the thr with a white line and transparent backgroud. This will be overlayed on the webpage over the position viewer.
 
 ## Motion Planning
-- S-curve profiles per axis with synchronized segment durations.
-- Lookahead step generation into a queue to avoid underruns.
-- Pause and stop use controlled deceleration; pause preserves planner targets
-  that have not yet been generated.
+- One jerk-limited progress profile drives both axes along each polar THR segment.
+  Angles remain unwrapped, with double precision and exact nominal gearing.
+- Corner smoothing is bounded to 0.10 mm by default; set **Corner Smoothing** to
+  zero for the exact piecewise polar path, stopping where its direction changes.
+- Ball speed and planar acceleration are limited alongside the motor limits.
+  Defaults are 30 mm/s and 100 mm/s²; the speed slider scales velocity limits.
+- Lookahead uses integer microsecond clocks and flushes each exact motor target.
+  Pause, stop, and speed changes brake along the source curve; resume continues
+  the unfinished portion before taking the next waypoint.
+- Files are validated completely before coordinates enter the motion queue.
+  Malformed coordinates, out-of-range radius, overlong lines (over 127 bytes),
+  embedded NULs, empty files, and motor-step overflow reject the file with a line
+  number. Blank lines and `#` / `//` comments are accepted.
+- Moving from the current position to the first THR coordinate is an explicit
+  approach and can draw a connecting line. File coordinates are absolute; theta
+  is neither wrapped nor rotated to choose a shorter approach.
+
+See [motion accuracy implementation and validation](docs/MOTION_ACCURACY_IMPLEMENTATION.md)
+for measured changes, timing tradeoffs, reproduction commands, and physical checks.
 
 The [selected sound-tuned settings](docs/SOUND_TUNED_SETTINGS.md) summarize
 both axes' current profiles, including the accepted RHO 350 mA run / 200 mA

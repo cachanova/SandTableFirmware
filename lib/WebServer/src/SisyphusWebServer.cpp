@@ -2931,6 +2931,9 @@ void SisyphusWebServer::handleTuningGet(AsyncWebServerRequest *request) {
     motionObj["rMaxJerk"] = motion.rMaxJerk;
     motionObj["tMaxVelocity"] = motion.tMaxVelocity;
     motionObj["tMaxAccel"] = motion.tMaxAccel;
+    motionObj["ballMaxVelocity"] = motion.ballMaxVelocity;
+    motionObj["ballMaxAccel"] = motion.ballMaxAccel;
+    motionObj["cornerTolerance"] = motion.cornerTolerance;
     motionObj["tMaxJerk"] = motion.tMaxJerk;
 
     // Driver settings
@@ -3010,6 +3013,9 @@ void SisyphusWebServer::handleTuningMotionSet(AsyncWebServerRequest *request) {
         !parseFloatParam(request, "rMaxJerk", settings.rMaxJerk) ||
         !parseFloatParam(request, "tMaxVelocity", settings.tMaxVelocity) ||
         !parseFloatParam(request, "tMaxAccel", settings.tMaxAccel) ||
+        !parseFloatParam(request, "ballMaxVelocity", settings.ballMaxVelocity) ||
+        !parseFloatParam(request, "ballMaxAccel", settings.ballMaxAccel) ||
+        !parseFloatParam(request, "cornerTolerance", settings.cornerTolerance) ||
         !parseFloatParam(request, "tMaxJerk", settings.tMaxJerk)) {
         request->send(400, "application/json",
             "{\"success\":false,\"message\":\"Malformed numeric setting\"}");

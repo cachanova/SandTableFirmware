@@ -306,6 +306,18 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
                     <label>Theta Max Jerk (rad/s3)</label>
                     <input type="number" id="tune-tMaxJerk" min="0.01" max="200" step="0.1">
                 </div>
+                <div class="form-group">
+                    <label>Ball Max Speed (mm/s)</label>
+                    <input type="number" id="tune-ballMaxVelocity" min="0.1" max="200" step="0.1">
+                </div>
+                <div class="form-group">
+                    <label>Ball Max Acceleration (mm/s²)</label>
+                    <input type="number" id="tune-ballMaxAccel" min="0.1" max="2000" step="1">
+                </div>
+                <div class="form-group">
+                    <label>Corner Smoothing (mm; 0 follows exact path)</label>
+                    <input type="number" id="tune-cornerTolerance" min="0" max="0.25" step="0.01">
+                </div>
             </div>
             <button class="btn-primary" id="btn-save-motion">Save Motion Settings</button>
         </section>
@@ -715,6 +727,9 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
                 document.getElementById('tune-rMaxJerk').value = data.motion.rMaxJerk;
                 document.getElementById('tune-tMaxVelocity').value = data.motion.tMaxVelocity;
                 document.getElementById('tune-tMaxAccel').value = data.motion.tMaxAccel;
+                document.getElementById('tune-ballMaxVelocity').value = data.motion.ballMaxVelocity;
+                document.getElementById('tune-ballMaxAccel').value = data.motion.ballMaxAccel;
+                document.getElementById('tune-cornerTolerance').value = data.motion.cornerTolerance;
                 document.getElementById('tune-tMaxJerk').value = data.motion.tMaxJerk;
 
                 document.getElementById('tune-home-triggerPercent').value = data.homing.triggerPercent;
@@ -737,6 +752,9 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
             formData.append('rMaxJerk', document.getElementById('tune-rMaxJerk').value);
             formData.append('tMaxVelocity', document.getElementById('tune-tMaxVelocity').value);
             formData.append('tMaxAccel', document.getElementById('tune-tMaxAccel').value);
+            formData.append('ballMaxVelocity', document.getElementById('tune-ballMaxVelocity').value);
+            formData.append('ballMaxAccel', document.getElementById('tune-ballMaxAccel').value);
+            formData.append('cornerTolerance', document.getElementById('tune-cornerTolerance').value);
             formData.append('tMaxJerk', document.getElementById('tune-tMaxJerk').value);
             const response = await fetch(apiBase + '/tuning/motion', { method: 'POST', body: formData });
             const result = await response.json();

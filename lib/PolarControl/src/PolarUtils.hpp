@@ -3,8 +3,8 @@
 #include <cmath>
 
 struct PolarCord_t {
-    float theta;
-    float rho;
+    double theta;
+    double rho;
 
     bool isNan() const {
         return std::isnan(theta) || std::isnan(rho);
@@ -41,8 +41,8 @@ struct PolarVelocity_t {
 };
 
 struct CartesianCord_t {
-    float x;
-    float y;
+    double x;
+    double y;
 };
 
 class PolarUtils {

@@ -23,10 +23,13 @@ def main():
     parser.add_argument("--samples", type=int, default=32)
     parser.add_argument("--speed", type=float, default=1)
     parser.add_argument("--jobs", type=int, default=2)
-    parser.add_argument("--output", type=Path, default=ROOT / "docs/motion-accuracy")
+    parser.add_argument("--output", type=Path, default=ROOT / "docs/motion-accuracy/after")
     args = parser.parse_args()
     paths = args.patterns or sorted((ROOT / "test/test_motion/patterns").glob("*.thr")) + sorted((ROOT / "example_patterns").glob("*.thr"))
     args.output.mkdir(parents=True, exist_ok=True)
+    source_hashes = {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+                     for path in sorted((ROOT / "lib/PolarControl/src").glob("*"))
+                     if path.suffix in (".cpp", ".hpp")}
     with tempfile.TemporaryDirectory(prefix="sisyphus-accuracy-") as temp:
         binary = Path(temp) / "audit"
         subprocess.run(["g++", "-O2", "-std=c++17", "-DNATIVE_BUILD",
@@ -53,9 +56,12 @@ def main():
 
     report = {
         "baseline_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
-        "configuration": {"rho_steps_per_mm": 400, "theta_steps_per_rad": 1909,
+        "working_tree_modified": bool(subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT, text=True).strip()),
+        "source_sha256": source_hashes,
+        "configuration": {"rho_steps_per_mm": 400, "theta_steps_per_rad": 12000 / (2 * 3.141592653589793),
                           "nominal_theta_steps_per_revolution": 12000, "radius_mm": 425,
                           "rho_v_a_j": [5.5, 20, 100], "theta_v_a_j": [0.225, 2, 10],
+                          "ball_max_velocity": 30, "ball_max_acceleration": 100, "corner_tolerance_mm": 0.10,
                           "speed": args.speed, "native_timer_us": 250, "feed_interval_us": 10000},
         "method": "Real streaming planner with native timer. First-point approach excluded. Uniform time samples of each committed profile; nearest distance to its own polar segment. Maxima are sampled, not certified bounds. Shared-progress comparison is a geometric reference, not a replacement planner.",
         "results": results,

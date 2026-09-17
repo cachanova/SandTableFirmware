@@ -7,14 +7,15 @@
 #include <string>
 #include <cmath>
 #include <iostream>
+#include "ThrParser.hpp"
 
 // THR file format: theta rho (one pair per line)
 // theta: radians (can exceed 2*PI for multiple rotations)
 // rho: 0-1 scaled (multiply by maxRho for actual mm)
 
 struct ThrPosition {
-    float theta;  // radians
-    float rho;    // 0-1 normalized
+    double theta;  // radians
+    double rho;    // 0-1 normalized
 };
 
 class ThrReader {
@@ -40,23 +41,13 @@ public:
         while (std::getline(file, line)) {
             lineNum++;
 
-            const size_t first = line.find_first_not_of(" \t\r");
-            if (first == std::string::npos || line[first] == '#' ||
-                line.compare(first, 2, "//") == 0) {
-                continue;
-            }
-
-            std::replace(line.begin(), line.end(), ',', ' ');
-            std::istringstream iss(line);
-            float theta, rho;
-            std::string trailing;
-            if (!(iss >> theta >> rho) || !std::isfinite(theta) ||
-                !std::isfinite(rho) || rho < 0.0f || rho > 1.0f ||
-                ((iss >> trailing) && trailing[0] != '#')) {
+            double theta=0,rho=0;
+            const ThrLine parsed=parseThrLine(line.c_str(),1.0,theta,rho);
+            if (line.size()>127 || line.find('\0')!=std::string::npos || parsed==ThrLine::Invalid) {
                 std::cerr << "Parse error at line " << lineNum << ": " << line << std::endl;
-                m_positions.clear();
-                return false;
+                m_positions.clear(); return false;
             }
+            if (parsed==ThrLine::Ignore) continue;
 
             m_positions.push_back({theta, rho});
         }
@@ -67,7 +58,7 @@ public:
 
     // Get next position in physical units (theta in rad, rho in mm)
     // Returns NaN when end is reached
-    bool getNextPosition(float& theta, float& rho) {
+    bool getNextPosition(double& theta, double& rho) {
         if (m_currentIndex >= m_positions.size()) {
             theta = std::nanf("");
             rho = std::nanf("");
@@ -93,7 +84,7 @@ public:
     }
 
     // Get position at specific index
-    bool getPositionAt(size_t index, float& theta, float& rho) const {
+    bool getPositionAt(size_t index, double& theta, double& rho) const {
         if (index >= m_positions.size()) {
             return false;
         }
@@ -104,6 +95,6 @@ public:
 
 private:
     std::vector<ThrPosition> m_positions;
-    float m_maxRho;
+    double m_maxRho;
     size_t m_currentIndex;
 };

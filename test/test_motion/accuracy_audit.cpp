@@ -21,28 +21,12 @@ struct MotionTimingTestAccess {
     static const Segment& segment(const MotionPlanner& p, int i) { return p.m_segments[i]; }
     static int32_t thetaSteps(const MotionPlanner& p) { return p.m_executedTSteps.load(); }
     static int32_t rhoSteps(const MotionPlanner& p) { return p.m_executedRSteps.load(); }
-    static int reproduceEndpointLoss() {
-        resetMock();
-        MotionPlanner p;
-        p.init(400,1909,425,5.5,20,100,.225,2,10);
-        p.addSegment(0,1);
-        Segment& s=p.m_segments[0];
-        SCurve::calculate(1,5.5,5.5,5.5,20,100,s.rho.profile);
-        s.theta.profile={};s.theta.timeScale=s.rho.timeScale=1;
-        s.duration=s.rho.profile.totalTime;s.calculated=true;
-        s.lastGenTime=s.duration-STEP_TIMER_PERIOD_US/1000000.0f;
-        s.lastGenRhoSteps=399;
-        p.m_genSegmentIdx=0;p.m_genSegmentStartTime=0;
-        // Horizon falls after the penultimate sample but before the endpoint.
-        p.fillStepQueue(static_cast<uint32_t>((s.duration-.0001f)*1000000));
-        if (!s.generationComplete) return 0;
-        return s.rho.targetSteps-s.lastGenRhoSteps;
-    }
+
 };
 
 constexpr double pi = 3.14159265358979323846;
 constexpr double exactThetaScale = 12000.0 / (2.0 * pi);
-constexpr int thetaScale = 1909;
+constexpr double thetaScale = exactThetaScale;
 constexpr int rhoScale = 400;
 constexpr double radius = 425;
 struct Point { double t, r; };
@@ -103,25 +87,21 @@ struct Stats {
     Segment worstSegment{};
     Point worstA{},worstB{};
 };
-double fraction(const AxisProfile& a, double time) {
-    return a.profile.totalDistance>0 ? SCurve::getPosition(a.profile,
-        float(time/a.timeScale))/a.profile.totalDistance : 0;
-}
 Point sample(const Segment& s, double time) {
-    return {(s.theta.startSteps+fraction(s.theta,time)*s.theta.deltaSteps)/thetaScale,
-            (s.rho.startSteps+fraction(s.rho,time)*s.rho.deltaSteps)/rhoScale};
+    const auto p=s.path.position(s.startDistance+SCurve::getPosition(s.profile,time));
+    return {p.theta,p.rho};
 }
 void measure(const Segment& s, Point a, Point b, size_t index, Stats& out, int samples) {
-    Point qa{double(s.theta.startSteps)/thetaScale,double(s.rho.startSteps)/rhoScale};
-    Point qb{double(s.theta.targetSteps)/thetaScale,double(s.rho.targetSteps)/rhoScale};
+    Point qa{s.path.start.theta,s.path.start.rho};
+    Point qb{s.path.end.theta,s.path.end.rho};
     double shape=0,physical=0,shared=0;
     for (int i=0;i<=samples;++i) {
         Point p=sample(s,s.duration*double(i)/samples);
         shape=std::max(shape,pathDistance(p,qa,qb));
-        // Ideal mechanism using exact nominal gear ratio, not planner's
-        // integer scale. This excludes backlash, slip, and ball lag.
-        const double ts=s.theta.startSteps+std::round(fraction(s.theta,s.duration*double(i)/samples)*s.theta.deltaSteps);
-        const double rs=s.rho.startSteps+std::round(fraction(s.rho,s.duration*double(i)/samples)*s.rho.deltaSteps);
+        // Quantized commanded geometry at the exact nominal gear ratio.
+        // This excludes timing jitter, backlash, slip, and ball lag.
+        const double ts=std::round(p.t*thetaScale);
+        const double rs=std::round(p.r*rhoScale);
         physical=std::max(physical,pathDistance({ts/exactThetaScale,rs/rhoScale},a,b));
         // Geometric candidate only: common progress, exact scale, nearest
         // absolute step. It is not a streaming motion planner or timing test.
@@ -133,7 +113,7 @@ void measure(const Segment& s, Point a, Point b, size_t index, Stats& out, int s
     out.shape.push_back(shape); out.physical.push_back(physical); out.shared.push_back(shared);
     out.duration+=s.duration;
     out.maxEndpoint=std::max(out.maxEndpoint,distance(xy(b),xy({s.theta.targetSteps/exactThetaScale,s.rho.targetSteps/double(rhoScale)})));
-    if (s.thetaExitVel<1e-6 && s.rhoExitVel<1e-6) ++out.stops;
+    if (s.exitVelocity<1e-6) ++out.stops;
     if (shape>out.worst) {
         out.worst=shape;out.worstIndex=index;out.worstSegment=s;out.worstA=a;out.worstB=b;
     }
@@ -173,17 +153,12 @@ void selfTest() {
         maxError=std::max(maxError,pathDistance({dt*u,50+dr*u},{0,50},{dt,350}));
     }
     require(maxError<.001,"shared profile geometry");
-    // Numerical reproductions of production hazards, not claimed fixes.
-    volatile float longTime=1024.0f, firmwareInterval=50.0f/1000000.0f;
-    require(longTime+firmwareInterval==longTime,"float horizon reproduction");
-    const double closure=distance(xy({2*pi,425}),xy({int(float(2*pi)*thetaScale)/exactThetaScale,425}));
-    const int endpointLoss=MotionTimingTestAccess::reproduceEndpointLoss();
-    require(endpointLoss==1,"horizon endpoint-loss reproduction");
+    const double closure=distance(xy({2*pi,425}),xy({std::llround(2*pi*thetaScale)/exactThetaScale,425}));
+    require(closure<1e-9,"full revolution closure");
     std::cout<<"{\"self_test\":\"pass\",\"shared_profile_error_mm\":"<<maxError
              <<",\"shared_rest_to_rest_seconds\":"<<scalar.totalTime
-             <<",\"integer_scale_one_turn_closure_mm\":"<<closure
-             <<",\"float_50us_increment_stalls_at_seconds\":1024"
-             <<",\"horizon_endpoint_lost_steps\":"<<endpointLoss<<"}\n";
+             <<",\"full_turn_closure_mm\":"<<closure<<"}\n";
+
 }
 
 int main(int argc,char** argv) try {
@@ -197,8 +172,9 @@ int main(int argc,char** argv) try {
     MotionPlanner planner;
     planner.init(rhoScale,thetaScale,radius,5.5,20,100,.225,2,10);
     planner.setSpeedMultiplier(speed);
+    planner.setPathLimits(30,100,.10);
     // Exclude travel to the first point: it is not a THR segment.
-    planner.resetPosition(float(points[0].t),float(float(points[0].r/radius)*radius));
+    planner.resetPosition(points[0].t,points[0].r);
     std::array<size_t,SEGMENT_BUFFER_SIZE> source{};
     size_t next=1, measured=0;
     bool started=false;
@@ -209,7 +185,7 @@ int main(int argc,char** argv) try {
         while (next<points.size() && planner.hasSpace()) {
             const int slot=MotionTimingTestAccess::head(planner);
             const auto& p=points[next];
-            if (!planner.addSegment(float(p.t),float(float(p.r/radius)*radius))) throw std::runtime_error("point rejected");
+            if (!planner.addSegment(p.t,p.r)) throw std::runtime_error("point rejected");
             if (MotionTimingTestAccess::head(planner)!=slot) source[slot]=next;
             else ++stats.duplicates;
             ++next;added=true;
@@ -235,10 +211,11 @@ int main(int argc,char** argv) try {
         throw std::runtime_error("segment coverage mismatch");
     PlannerTelemetry telemetry; planner.getTelemetry(telemetry);
     const auto& last=points.back();
-    const int expectedT=int(float(last.t)*thetaScale);
-    const int expectedR=int(float(float(last.r/radius)*radius)*rhoScale);
+    const int expectedT=std::llround(last.t*thetaScale);
+    const int expectedR=std::llround(last.r*rhoScale);
     const int finalTError=MotionTimingTestAccess::thetaSteps(planner)-expectedT;
     const int finalRError=MotionTimingTestAccess::rhoSteps(planner)-expectedR;
+    if(finalTError || finalRError) throw std::runtime_error("endpoint step ledger mismatch");
     std::cout<<std::setprecision(10)<<"{\"points\":"<<points.size()<<",\"segments\":"<<stats.shape.size()
              <<",\"samples_per_segment\":"<<samples+1<<",\"speed\":"<<speed
              <<",\"duplicates\":"<<stats.duplicates<<",\"planned_seconds\":"<<stats.duration
@@ -251,8 +228,8 @@ int main(int argc,char** argv) try {
     const auto& s=stats.worstSegment;
     for (int i=0;i<=128;++i) {
         auto actual=xy(sample(s,s.duration*double(i)/128));
-        auto desired=xy(lerp({s.theta.startSteps/double(thetaScale),s.rho.startSteps/double(rhoScale)},
-                             {s.theta.targetSteps/double(thetaScale),s.rho.targetSteps/double(rhoScale)},double(i)/128));
+        auto desired=xy(lerp({s.path.start.theta,s.path.start.rho},
+                             {s.path.end.theta,s.path.end.rho},double(i)/128));
         if(i)std::cout<<",";
         std::cout<<"["<<desired.x<<","<<desired.y<<","<<actual.x<<","<<actual.y<<"]";
     }

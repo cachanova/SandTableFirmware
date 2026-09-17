@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <atomic>
 #include "SCurve.hpp"
+#include "PolarPath.hpp"
 #include "FastGPIO.hpp"
 #include "Profiler.hpp"
 
@@ -33,7 +34,9 @@
 static constexpr int SEGMENT_BUFFER_SIZE = 32;
 static constexpr int STEP_QUEUE_SIZE = 512;
 static constexpr float MIN_SEGMENT_DURATION = 0.010f;  // 10ms minimum
-#ifdef NATIVE_BUILD
+#ifdef SISYPHUS_TEST_STEP_TIMER_PERIOD_US
+static constexpr uint32_t STEP_TIMER_PERIOD_US = SISYPHUS_TEST_STEP_TIMER_PERIOD_US;
+#elif defined(NATIVE_BUILD)
 // Native tests use limits below 1,000 steps/s. A 4kHz callback preserves every
 // possible test step while avoiding billions of empty callbacks for patterns
 // representing many hours of table motion.
@@ -56,50 +59,31 @@ enum class FillStopReason : uint32_t {
     TimeBudget = 3,
 };
 
-// Per-axis motion profile
+// Integer motor ledgers are separate from the continuous THR geometry.
 struct AxisProfile {
-    int32_t startSteps;        // Starting position in steps
-    int32_t targetSteps;       // Absolute target in steps
-    int32_t deltaSteps;        // Signed delta from start
-    float deltaUnits;          // Delta in physical units (rad or mm)
-    int8_t direction;          // +1 or -1 (0 if no motion)
-    SCurve::Profile profile;   // 7-phase S-curve
-    float timeScale;           // Ratio: duration / profile.totalTime
+    int32_t startSteps = 0, targetSteps = 0, deltaSteps = 0;
+    double deltaUnits = 0;
+    int8_t direction = 0;
 };
 
-// A motion segment with synchronized theta/rho profiles
 struct Segment {
-    float targetTheta;         // Target theta position (radians, unwrapped)
-    float targetRho;           // Target rho position (mm)
-
-    AxisProfile theta;         // Theta axis profile
-    AxisProfile rho;           // Rho axis profile
-
-    float duration;            // Synchronized duration (same for both axes)
-
-    // Velocity continuity
-    float thetaEntryVel;       // Entry velocity for theta (rad/s)
-    float thetaExitVel;        // Exit velocity for theta (rad/s)
-    float rhoEntryVel;         // Entry velocity for rho (mm/s)
-    float rhoExitVel;          // Exit velocity for rho (mm/s)
-
-    bool calculated;           // True if profile has been calculated
-    bool executing;            // True if currently being executed
-    bool generationComplete;   // True if all steps for this segment have been generated
-
-    // Execution state (phase tracking)
-    int thetaPhaseIdx = 0;
-    int rhoPhaseIdx = 0;
-
-    // Generation state (to prevent duplicate steps)
-    float lastGenTime = 0.0f;
-    int32_t lastGenThetaSteps = 0;
-    int32_t lastGenRhoSteps = 0;
+    double targetTheta = 0, targetRho = 0;
+    AxisProfile theta, rho;
+    PolarPath path;
+    SCurve::Profile profile{};
+    double startDistance = 0, endDistance = 0;
+    double entryVelocity = 0, exitVelocity = 0;
+    double maxVelocity = 0, maxAcceleration = 0, maxJerk = 0;
+    double duration = 0;
+    uint64_t durationUs = 0, nextSampleUs = 0;
+    bool calculated = false, executing = false, generationComplete = false;
+    bool geometryLocked = false, braking = false, limitsCalculated = false;
+    int32_t lastGenThetaSteps = 0, lastGenRhoSteps = 0;
 };
 
 // Step event for the hardware-timer queue (mock task timer in native tests).
 struct StepEvent {
-    uint32_t executeTime;      // Microsecond timestamp (relative to segment start)
+    uint32_t executeTime;      // Absolute low 32 bits of the microsecond timestamp
     uint8_t stepMask;          // bit 0 = theta, bit 1 = rho
     uint8_t dirMask;           // direction bits: bit 0 = theta dir, bit 1 = rho dir
 };
@@ -142,7 +126,7 @@ struct PlannerTelemetry {
     uint32_t lastCallbackGapUs = 0;
 };
 
-// Motion planner with independent axis control and S-curve profiles
+// Shared-progress polar path planner with jerk-limited scalar motion.
 class MotionPlanner {
 public:
     MotionPlanner();
@@ -154,13 +138,12 @@ public:
     // maxRho: maximum rho position in mm
     // rMaxVel/rMaxAccel/rMaxJerk: rho limits (mm/s, mm/s², mm/s³)
     // tMaxVel/tMaxAccel/tMaxJerk: theta limits (rad/s, rad/s², rad/s³)
-    void init(int stepsPerMmR, int stepsPerRadT, float maxRho,
-              float rMaxVel, float rMaxAccel, float rMaxJerk,
-              float tMaxVel, float tMaxAccel, float tMaxJerk,
+    void init(double stepsPerMmR, double stepsPerRadT, float maxRho, float rMaxVel, float rMaxAccel,
+              float rMaxJerk, float tMaxVel, float tMaxAccel, float tMaxJerk,
               bool resetPosition = true);
 
     // Add a segment to the buffer (returns false if buffer full)
-    bool addSegment(float theta, float rho);
+    bool addSegment(double theta, double rho);
 
     // Recalculate profiles for all pending segments
     void recalculate();
@@ -168,8 +151,13 @@ public:
     // Start motion execution
     void start();
 
-    // Stop motion execution (decelerate to stop)
-    void stop();
+    // Stop immediately and clear queued motion. Use stopGracefully for braking.
+    void stop(bool clearResume = true);
+    void discardResume() {
+        m_resumeReady = false;
+        m_resumeCaptured = false;
+        m_resumeTargetCount = 0;
+    }
 
     // Dedicated constant-rate rho pulse source for sensorless homing. This
     // bypasses coordinate limits while retaining sole ownership of STEP/DIR.
@@ -186,7 +174,7 @@ public:
     }
 
     // Gracefully stop motion by interrupting current segment and decelerating to zero
-    void stopGracefully();
+    void stopGracefully(bool preserveForResume = false);
 
     // Main processing loop - call frequently (~50Hz or faster)
     // Fills the step queue and manages segment transitions
@@ -202,7 +190,13 @@ public:
     bool isIdle() const;
 
     // Get current position in physical units
-    void getCurrentPosition(float& theta, float& rho) const;
+    void getCurrentPosition(double& theta, double& rho) const;
+    void getCurrentPosition(float& theta, float& rho) const {
+        double t, r;
+        getCurrentPosition(t, r);
+        theta = t;
+        rho = r;
+    }
 
     // Get current velocity in physical units (theta rad/s, rho mm/s)
     void getCurrentVelocity(float& thetaVel, float& rhoVel) const;
@@ -212,11 +206,13 @@ public:
 
     // Reset both logical axes after a separately controlled homing move.
     // This must only be called while the planner is stopped.
-    void resetPosition(float theta = 0.0f, float rho = 0.0f);
+    void resetPosition(double theta = 0, double rho = 0);
 
-    // Copy targets that have not yet been fully generated. Used to resume a
-    // pattern after inserting a controlled braking segment.
-    size_t copyPendingTargets(float* theta, float* rho, size_t capacity) const;
+    // After stopGracefully(true), copy the targets remaining after its planned
+    // stop, including the original endpoint of a partially traversed curve.
+    size_t copyPendingTargets(double* theta, double* rho, size_t capacity) const;
+    // Configure path limits only while stopped with an empty segment buffer.
+    void setPathLimits(double ballVelocity, double ballAcceleration, double cornerTolerance);
 
     // Set speed multiplier (0.1 to 1.0, scales velocity only)
     void setSpeedMultiplier(float mult);
@@ -254,6 +250,7 @@ public:
 private:
 #ifdef NATIVE_BUILD
     friend struct MotionTimingTestAccess;
+    friend struct MotionAccuracyTestAccess;
 #endif
     // Single writer: the normal hardware ISR (mock task callback on native). Atomic payload
     // fields plus a versioned bounded snapshot avoid C++ data races and torn
@@ -285,13 +282,23 @@ private:
                                       AxisStepTimingTelemetry& out);
 
     // Physical parameters
-    int m_stepsPerMmR;
-    int m_stepsPerRadT;
+    double m_stepsPerMmR;
+    double m_stepsPerRadT;
     float m_maxRho;
 
     // Motion limits (base values before speed scaling)
     float m_rMaxVel, m_rMaxAccel, m_rMaxJerk;
     float m_tMaxVel, m_tMaxAccel, m_tMaxJerk;
+
+    double m_ballMaxVelocity = 0, m_ballMaxAcceleration = 0;
+    double m_cornerTolerance = 0;
+    SCurve::Profile m_brakeProfile{};
+    double m_brakeStartTime = 0, m_brakeStartDistance = 0;
+    PolarPath m_resumePath;
+    double m_resumeStartDistance = 0;
+    PathPoint m_resumeTargets[SEGMENT_BUFFER_SIZE];
+    size_t m_resumeTargetCount = 0;
+    bool m_resumeReady = false, m_resumeCaptured = false;
 
     // Speed multiplier (applied to velocity only)
     float m_speedMultiplier;
@@ -304,7 +311,7 @@ private:
     
     // Generation tracking
     int m_genSegmentIdx;             // Next segment to generate steps for
-    uint32_t m_genSegmentStartTime;  // Theoretical start time of the generating segment
+    uint64_t m_genSegmentStartTime;  // Theoretical start time of the generating segment
 
     // Position tracking (in steps)
     // These are the three distinct position values mentioned in the plan:
@@ -319,8 +326,8 @@ private:
     std::atomic<int32_t> m_executedRSteps;
 
     // Target positions in physical units (for the last added segment)
-    float m_targetTheta;
-    float m_targetRho;
+    double m_targetTheta;
+    double m_targetRho;
 
     // Step event queue (circular buffer)
     StepEvent m_stepQueue[STEP_QUEUE_SIZE];
@@ -336,7 +343,7 @@ private:
     bool m_lastQueuedEventTimeValid = false; // Producer-only; zero is a valid timestamp.
 
     // Timing
-    uint32_t m_segmentStartTime;     // Microseconds when current segment started
+    uint64_t m_segmentStartTime;     // Microseconds when current segment started
     float m_segmentElapsed;          // Time elapsed in current segment
 
     // State
@@ -381,6 +388,10 @@ private:
 
     // Internal methods
     void calculateSegmentProfile(Segment& seg);
+    void calculatePathLimits(Segment& seg);
+    double segmentDistance(const Segment& seg, double time) const;
+    double segmentSpeed(const Segment& seg, double time) const;
+    void updateSegmentTarget(Segment& seg, PathPoint target);
     bool ensureStepTimer();
     FillStopReason fillStepQueue(uint32_t horizonUs);
     int getStepQueueSpace() const;
@@ -388,12 +399,12 @@ private:
     void queueHorizonMarker(uint32_t time);
 
     // Convert physical units to steps
-    int32_t thetaToSteps(float theta) const;
-    int32_t rhoToSteps(float rho) const;
+    int32_t thetaToSteps(double theta) const;
+    int32_t rhoToSteps(double rho) const;
 
     // Convert steps to physical units
-    float stepsToTheta(int32_t steps) const;
-    float stepsToRho(int32_t steps) const;
+    double stepsToTheta(int32_t steps) const;
+    double stepsToRho(int32_t steps) const;
 
     // ISR callback (static for C compatibility)
     static void IRAM_ATTR stepTimerISR(void* arg);

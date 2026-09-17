@@ -184,11 +184,11 @@ bool testControlledSpeedTransition() {
     float unusedRhoVelocity = 0.0f;
     planner.getCurrentVelocity(velocityBefore, unusedRhoVelocity);
 
-    float pendingTheta[SEGMENT_BUFFER_SIZE];
-    float pendingRho[SEGMENT_BUFFER_SIZE];
+    double pendingTheta[SEGMENT_BUFFER_SIZE];
+    double pendingRho[SEGMENT_BUFFER_SIZE];
+    planner.stopGracefully(true);
     const size_t pending = planner.copyPendingTargets(
         pendingTheta, pendingRho, SEGMENT_BUFFER_SIZE);
-    planner.stopGracefully();
 
     float previousVelocity = velocityBefore;
     float maxBrakeVelocityJump = 0.0f;
@@ -944,15 +944,15 @@ bool testSCurveBasic() {
     allPassed &= result.passed;
 
     // Test 2: Move with entry velocity
-    std::cout << "\n2. Move with entry velocity (100mm, 15->0):" << std::endl;
-    SCurve::calculate(100.0f, 15.0f, 0.0f, R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK, profile);
+    std::cout << "\n2. Move with entry velocity (100mm, 5->0):" << std::endl;
+    SCurve::calculate(100.0f, 5.0f, 0.0f, R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK, profile);
     result = validator.validate(profile, 100.0f, R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK);
     validator.printValidation(result);
     allPassed &= result.passed;
 
     // Test 3: Move with exit velocity
-    std::cout << "\n3. Move with exit velocity (100mm, 0->15):" << std::endl;
-    SCurve::calculate(100.0f, 0.0f, 15.0f, R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK, profile);
+    std::cout << "\n3. Move with exit velocity (100mm, 0->5):" << std::endl;
+    SCurve::calculate(100.0f, 0.0f, 5.0f, R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK, profile);
     result = validator.validate(profile, 100.0f, R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK);
     validator.printValidation(result);
     allPassed &= result.passed;
@@ -980,10 +980,10 @@ bool testSCurveBasic() {
 
     // Test 7: Entry velocity exceeds max
     std::cout << "\n7. Entry vel > max (100mm, 50->0, max=30):" << std::endl;
-    SCurve::calculate(100.0f, 50.0f, 0.0f, R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK, profile);
-    result = validator.validate(profile, 100.0f, R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK);
-    validator.printValidation(result);
-    allPassed &= result.passed;
+    const bool rejected = !SCurve::calculate(100, 50, 0, R_MAX_VEL,
+        R_MAX_ACCEL, R_MAX_JERK, profile);
+    std::cout << (rejected ? "PASS: infeasible boundary rejected" : "FAIL: boundary silently clamped") << std::endl;
+    allPassed &= rejected;
 
     // Test 8: Theta axis parameters
     std::cout << "\n8. Theta axis (PI rad, 0->0):" << std::endl;
@@ -1019,11 +1019,11 @@ bool testDecelDistance() {
     };
 
     for (const auto& tc : cases) {
-        float dist = SCurve::decelerationDistance(tc.vStart, tc.vEnd, R_MAX_ACCEL, R_MAX_JERK);
+        double dist = SCurve::decelerationDistance(tc.vStart, tc.vEnd, R_MAX_ACCEL, R_MAX_JERK);
 
         // Verify by calculating profile
         SCurve::Profile profile;
-        SCurve::calculate(dist, tc.vStart, tc.vEnd, R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK, profile);
+        SCurve::calculate(dist, tc.vStart, tc.vEnd, std::max(R_MAX_VEL, tc.vStart), R_MAX_ACCEL, R_MAX_JERK, profile);
 
         float actualDist = profile.totalDistance;
         float error = fabsf(actualDist - dist);
@@ -1433,10 +1433,10 @@ bool testPatternFile(const std::string& filepath) {
                  R_MAX_VEL, R_MAX_ACCEL, R_MAX_JERK,
                  T_MAX_VEL, T_MAX_ACCEL, T_MAX_JERK);
 
-    float theta = 0.0f;
-    float rho = 0.0f;
-    float finalTheta = 0.0f;
-    float finalRho = 0.0f;
+    double theta = 0.0f;
+    double rho = 0.0f;
+    double finalTheta = 0.0f;
+    double finalRho = 0.0f;
     bool sourceDone = false;
     bool started = false;
     size_t accepted = 0;
@@ -1459,8 +1459,8 @@ bool testPatternFile(const std::string& filepath) {
                 std::cerr << "Planner rejected finite pattern point " << accepted << std::endl;
                 return false;
             }
-            const int32_t targetThetaSteps = static_cast<int32_t>(theta * STEPS_PER_RAD_T);
-            const int32_t targetRhoSteps = static_cast<int32_t>(rho * STEPS_PER_MM_R);
+            const int32_t targetThetaSteps = static_cast<int32_t>(std::llround(theta * STEPS_PER_RAD_T));
+            const int32_t targetRhoSteps = static_cast<int32_t>(std::llround(rho * STEPS_PER_MM_R));
             if (targetThetaSteps != lastThetaSteps || targetRhoSteps != lastRhoSteps) {
                 ++planned;
                 lastThetaSteps = targetThetaSteps;
@@ -1491,15 +1491,15 @@ bool testPatternFile(const std::string& filepath) {
         advanceMicros(10000);
 
         if (sourceDone && planner.isIdle()) {
-            float actualTheta = 0.0f;
-            float actualRho = 0.0f;
+            double actualTheta = 0.0f;
+            double actualRho = 0.0f;
             planner.getCurrentPosition(actualTheta, actualRho);
             const int32_t thetaError = std::abs(
                 static_cast<int32_t>(std::lround(actualTheta * STEPS_PER_RAD_T)) -
-                static_cast<int32_t>(finalTheta * STEPS_PER_RAD_T));
+                static_cast<int32_t>(std::llround(finalTheta * STEPS_PER_RAD_T)));
             const int32_t rhoError = std::abs(
                 static_cast<int32_t>(std::lround(actualRho * STEPS_PER_MM_R)) -
-                static_cast<int32_t>(finalRho * STEPS_PER_MM_R));
+                static_cast<int32_t>(std::llround(finalRho * STEPS_PER_MM_R)));
             PlannerTelemetry telemetry;
             planner.getTelemetry(telemetry);
             const bool passed = accepted == reader.size() &&

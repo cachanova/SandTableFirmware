@@ -12,7 +12,8 @@ class AdoptedRhoDefaultsTest(unittest.TestCase):
         motion = header.split("struct MotionSettings {", 1)[1].split("};", 1)[0]
         values = dict(re.findall(r"float\s+(\w+)\s*=\s*([\d.]+)f", motion))
         expected = dict(rMaxVelocity=5.5, rMaxAccel=20, rMaxJerk=100,
-                        tMaxVelocity=.225, tMaxAccel=2, tMaxJerk=10)
+                        tMaxVelocity=.225, tMaxAccel=2, tMaxJerk=10,
+                        ballMaxVelocity=30, ballMaxAccel=100, cornerTolerance=.1)
         self.assertEqual({key: float(value) for key, value in values.items()}, expected)
 
     def test_rho_factory_registers_match_adopted_candidate(self):

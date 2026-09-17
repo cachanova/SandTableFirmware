@@ -4,6 +4,7 @@
 #include "PolarControl.hpp"
 #include "RhoAcousticProfile.hpp"
 #include "PolarUtils.hpp"
+#include "ThrParser.hpp"
 #include "MakeUnique.hpp"
 #include "Logger.hpp"
 #include "ErrorLog.hpp"
@@ -442,6 +443,8 @@ bool PolarControl::begin() {
     }
 
     // Initialize motion planner with separate axis limits
+    m_planner.setPathLimits(m_motionSettings.ballMaxVelocity, m_motionSettings.ballMaxAccel,
+                            m_motionSettings.cornerTolerance);
     m_planner.init(
         getStepsPerMm(),
         getStepsPerRadian(),
@@ -2409,14 +2412,14 @@ bool PolarControl::homeDrivers() {
 
 class SingleTargetGen : public PosGen {
 public:
-    SingleTargetGen(float theta, float rho)
-        : m_target{theta, rho} {}
+  SingleTargetGen(double theta, double rho) : m_target{theta, rho} {}
 
-    PolarCord_t getNextPos() override {
-        if (m_sent) return {std::nan(""), std::nan("")};
-        m_sent = true;
-        return m_target;
-    }
+  PolarCord_t getNextPos() override {
+      if (m_sent)
+          return {std::nan(""), std::nan("")};
+      m_sent = true;
+      return m_target;
+  }
 
 private:
     PolarCord_t m_target;
@@ -2507,8 +2510,8 @@ bool PolarControl::jogRelative(float thetaDelta, float rhoDelta) {
         return false;
     }
 
-    float currentTheta = 0.0f;
-    float currentRho = 0.0f;
+    double currentTheta = 0.0;
+    double currentRho = 0.0;
     m_planner.getCurrentPosition(currentTheta, currentRho);
     if (entryState != IDLE && jogRho) {
         // Rho's absolute position is unknown before homing. Re-center only the
@@ -2518,9 +2521,9 @@ bool PolarControl::jogRelative(float thetaDelta, float rhoDelta) {
         m_planner.resetPosition(currentTheta, currentRho);
     }
 
-    const float targetTheta = currentTheta + (jogTheta ? thetaDelta : 0.0f);
-    const float targetRho = std::max(0.0f, std::min(
-        R_MAX, currentRho + (jogRho ? rhoDelta : 0.0f)));
+    const double targetTheta = currentTheta + (jogTheta ? thetaDelta : 0.0f);
+    const double targetRho =
+        std::max(0.0, std::min(double(R_MAX), currentRho + (jogRho ? rhoDelta : 0.0f)));
     if ((jogTheta && fabsf(targetTheta - currentTheta) <= kMinimumDelta) ||
         (jogRho && fabsf(targetRho - currentRho) <= kMinimumDelta)) {
         return false;
@@ -2643,9 +2646,9 @@ bool PolarControl::loadAndRunFile(String filePath, float maxRho) {
 bool PolarControl::pause() {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     if (m_state == RUNNING) {
+        m_planner.stopGracefully(true);
         capturePendingTargetsForResume();
         m_pauseAfterStop = true;
-        m_planner.stopGracefully();
         m_state = STOPPING;
         xSemaphoreGive(m_mutex);
         return true;
@@ -2669,6 +2672,7 @@ bool PolarControl::resume() {
 
 bool PolarControl::stop() {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
+    m_planner.discardResume();
 
     if (m_state == PAUSED || m_state == RUNNING || m_state == CLEARING ||
         m_state == PREPARING || m_state == STOPPING) {
@@ -2726,10 +2730,10 @@ void PolarControl::setSpeed(uint8_t speed) {
         // Generated events are immutable. Preserve their remaining targets,
         // brake with the current limits, and apply the newest requested speed
         // only after reaching zero velocity.
+        m_planner.stopGracefully(true);
         capturePendingTargetsForResume();
         m_restartAfterSpeedChange = true;
         m_speedUpdatePending = true;
-        m_planner.stopGracefully();
         m_state = STOPPING;
     } else if (m_state == STOPPING) {
         // Do not re-plan a braking segment in flight. Multiple slider changes
@@ -2783,7 +2787,7 @@ PolarControl::State_t PolarControl::getState() {
 
 PolarCord_t PolarControl::getCurrentPosition() const {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
-    float theta, rho;
+    double theta, rho;
     m_planner.getCurrentPosition(theta, rho);
     xSemaphoreGive(m_mutex);
     return {theta, rho};
@@ -2791,7 +2795,7 @@ PolarCord_t PolarControl::getCurrentPosition() const {
 
 PolarCord_t PolarControl::getActualPosition() {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
-    float theta, rho;
+    double theta, rho;
     m_planner.getCurrentPosition(theta, rho);
     xSemaphoreGive(m_mutex);
     return {theta, rho};
@@ -2913,8 +2917,8 @@ uint32_t PolarControl::getFileTaskHighWater() const {
 // ============================================================================
 
 void PolarControl::capturePendingTargetsForResume() {
-    float theta[SEGMENT_BUFFER_SIZE];
-    float rho[SEGMENT_BUFFER_SIZE];
+    double theta[SEGMENT_BUFFER_SIZE];
+    double rho[SEGMENT_BUFFER_SIZE];
     const size_t pending = m_planner.copyPendingTargets(
         theta, rho, SEGMENT_BUFFER_SIZE);
     const size_t savedRemaining = m_resumePoints.size() - m_resumePointIndex;
@@ -3122,17 +3126,21 @@ bool PolarControl::processNextMove() {
 // ============================================================================
 
 static bool validMotionSettings(const MotionSettings& settings) {
-    const bool finite = std::isfinite(settings.rMaxVelocity) &&
-        std::isfinite(settings.rMaxAccel) && std::isfinite(settings.rMaxJerk) &&
-        std::isfinite(settings.tMaxVelocity) && std::isfinite(settings.tMaxAccel) &&
-        std::isfinite(settings.tMaxJerk);
-    return finite &&
-        settings.rMaxVelocity >= 0.1f && settings.rMaxVelocity <= 50.0f &&
-        settings.rMaxAccel >= 0.1f && settings.rMaxAccel <= 200.0f &&
-        settings.rMaxJerk >= 0.1f && settings.rMaxJerk <= 2000.0f &&
-        settings.tMaxVelocity >= 0.01f && settings.tMaxVelocity <= 5.0f &&
-        settings.tMaxAccel >= 0.01f && settings.tMaxAccel <= 20.0f &&
-        settings.tMaxJerk >= 0.01f && settings.tMaxJerk <= 200.0f;
+    const bool finite = std::isfinite(settings.rMaxVelocity) && std::isfinite(settings.rMaxAccel) &&
+                        std::isfinite(settings.rMaxJerk) && std::isfinite(settings.tMaxVelocity) &&
+                        std::isfinite(settings.tMaxAccel) && std::isfinite(settings.tMaxJerk) &&
+                        std::isfinite(settings.ballMaxVelocity) &&
+                        std::isfinite(settings.ballMaxAccel) &&
+                        std::isfinite(settings.cornerTolerance);
+    return finite && settings.rMaxVelocity >= 0.1f && settings.rMaxVelocity <= 50.0f &&
+           settings.rMaxAccel >= 0.1f && settings.rMaxAccel <= 200.0f &&
+           settings.rMaxJerk >= 0.1f && settings.rMaxJerk <= 2000.0f &&
+           settings.tMaxVelocity >= 0.01f && settings.tMaxVelocity <= 5.0f &&
+           settings.tMaxAccel >= 0.01f && settings.tMaxAccel <= 20.0f &&
+           settings.tMaxJerk >= 0.01f && settings.tMaxJerk <= 200.0f &&
+           settings.ballMaxVelocity >= 0.1f && settings.ballMaxVelocity <= 200.0f &&
+           settings.ballMaxAccel >= 0.1f && settings.ballMaxAccel <= 2000.0f &&
+           settings.cornerTolerance >= 0.0f && settings.cornerTolerance <= 0.25f;
 }
 
 // The software executor services at most one step event per 50 us. Keep a
@@ -3272,6 +3280,8 @@ TuningUpdateResult PolarControl::saveMotionSettings(const MotionSettings& settin
     m_motionSettings = settings;
 
     // Update the motion planner with new limits (doesn't reset positions)
+    m_planner.setPathLimits(m_motionSettings.ballMaxVelocity, m_motionSettings.ballMaxAccel,
+                            m_motionSettings.cornerTolerance);
     m_planner.setMotionLimits(
         m_motionSettings.rMaxVelocity,
         m_motionSettings.rMaxAccel,
@@ -3338,6 +3348,8 @@ TuningUpdateResult PolarControl::saveThetaDriverSettings(const DriverSettings& s
     m_tDriverSettings = settings;
 
     // Reinitialize planner if microsteps changed (keep position)
+    m_planner.setPathLimits(m_motionSettings.ballMaxVelocity, m_motionSettings.ballMaxAccel,
+                            m_motionSettings.cornerTolerance);
     m_planner.init(
         getStepsPerMm(),
         getStepsPerRadian(),
@@ -3449,6 +3461,8 @@ TuningUpdateResult PolarControl::saveRhoDriverSettings(const DriverSettings& set
     m_rDriverSettings = settings;
 
     // Reinitialize planner if microsteps changed (keep position)
+    m_planner.setPathLimits(m_motionSettings.ballMaxVelocity, m_motionSettings.ballMaxAccel,
+                            m_motionSettings.cornerTolerance);
     m_planner.init(
         getStepsPerMm(),
         getStepsPerRadian(),
@@ -3563,6 +3577,9 @@ bool PolarControl::writeTuningSettingsLocked(
     motion["rMaxJerk"] = motionSettings.rMaxJerk;
     motion["tMaxVelocity"] = motionSettings.tMaxVelocity;
     motion["tMaxAccel"] = motionSettings.tMaxAccel;
+    motion["ballMaxVelocity"] = motionSettings.ballMaxVelocity;
+    motion["ballMaxAccel"] = motionSettings.ballMaxAccel;
+    motion["cornerTolerance"] = motionSettings.cornerTolerance;
     motion["tMaxJerk"] = motionSettings.tMaxJerk;
 
     // Driver settings
@@ -3738,6 +3755,9 @@ static bool loadTuningSettingsFile(
         loadedMotion.rMaxJerk = motion["rMaxJerk"] | loadedMotion.rMaxJerk;
         loadedMotion.tMaxVelocity = motion["tMaxVelocity"] | loadedMotion.tMaxVelocity;
         loadedMotion.tMaxAccel = motion["tMaxAccel"] | loadedMotion.tMaxAccel;
+        loadedMotion.ballMaxVelocity = motion["ballMaxVelocity"] | loadedMotion.ballMaxVelocity;
+        loadedMotion.ballMaxAccel = motion["ballMaxAccel"] | loadedMotion.ballMaxAccel;
+        loadedMotion.cornerTolerance = motion["cornerTolerance"] | loadedMotion.cornerTolerance;
         loadedMotion.tMaxJerk = motion["tMaxJerk"] | loadedMotion.tMaxJerk;
     }
 
@@ -4380,58 +4400,6 @@ void PolarControl::writeRhoCompanionDriverSettings(Print& out, bool motionHealth
     serializeJson(doc, out);
 }
 
-// Parse a coordinate line (theta, rho format)
-static bool parseLine(const char* line, float maxRho, PolarCord_t& out) {
-    const char* p = line;
-    while (*p == ' ' || *p == '\t') {
-        ++p;
-    }
-    if (*p == '\0' || *p == '#') {
-        return false;
-    }
-    if (*p == '/' && *(p + 1) == '/') {
-        return false;
-    }
-
-    char* end = nullptr;
-    float theta = strtof(p, &end);
-    if (end == p) {
-        return false;
-    }
-    const char* q = end;
-    while (*q == ' ' || *q == '\t') {
-        ++q;
-    }
-    if (*q == ',') {
-        ++q;
-    }
-    while (*q == ' ' || *q == '\t') {
-        ++q;
-    }
-    if (*q == '\0') {
-        return false;
-    }
-
-    float rho = strtof(q, &end);
-    if (end == q) {
-        return false;
-    }
-
-    while (*end == ' ' || *end == '\t') {
-        ++end;
-    }
-    if (*end != '\0' && *end != '#') {
-        return false;
-    }
-    if (!std::isfinite(theta) || !std::isfinite(rho) || rho < 0.0f || rho > 1.0f) {
-        return false;
-    }
-
-    out.theta = theta;
-    out.rho = rho * maxRho;
-    return true;
-}
-
 void PolarControl::fileReadTask(void* arg) {
     PolarControl* pc = static_cast<PolarControl*>(arg);
     FileCommand cmd{};
@@ -4445,12 +4413,12 @@ void PolarControl::fileReadTask(void* arg) {
     char lineBuffer[128];
     size_t lineLen = 0;
     bool lineOverflow = false;
-    bool overflowLogged = false;
+    uint32_t sourceLine = 0;
     char currentFilename[sizeof(cmd.filename)] = {0};
     uint32_t yieldCounter = 0;
 
     // State for pending line handling
-    PolarCord_t pendingPos;
+    PolarCord_t pendingPos{};
     bool hasPendingPos = false;
 
     while (true) {
@@ -4467,7 +4435,7 @@ void PolarControl::fileReadTask(void* arg) {
                     LOG("FileTask: Opening %s with maxRho=%.2f\r\n", cmd.filename, cmd.maxRho);
                     strncpy(currentFilename, cmd.filename, sizeof(currentFilename) - 1);
                     currentFilename[sizeof(currentFilename) - 1] = '\0';
-                    overflowLogged = false;
+                    sourceLine = 0;
                     directFile = SD.open(cmd.filename, FILE_READ);
                     if (directFile) {
                         directFile.setBufferSize(512);
@@ -4480,7 +4448,54 @@ void PolarControl::fileReadTask(void* arg) {
                         directBufLen = 0;
                         directBufPos = 0;
                         directEof = false;
-                        LOG("FileTask: Direct file open, active=true\r\n");
+                        // Validate the complete file before making its first
+                        // coordinate available. Reuse the streaming buffer so a
+                        // large THR does not consume extra heap or task stack.
+                        bool valid = true, cancelled = false;
+                        uint32_t lines = 0;
+                        ThrValidator validator(directMaxRho, pc->getStepsPerRadian());
+                        while (readPatternLine(directFile, directBuffer, sizeof(directBuffer),
+                                directBufLen, directBufPos, directEof, lineBuffer,
+                                sizeof(lineBuffer), lineLen, lineOverflow,
+                                [pc] { return uxQueueMessagesWaiting(pc->m_cmdQueue) != 0; },
+                                [] { vTaskDelay(1); }, cancelled)) {
+                            ++lines;
+                            const ThrLine parsed = validator.accept(lineBuffer, lineLen, lineOverflow,
+                                                                    pendingPos.theta, pendingPos.rho);
+                            if (parsed == ThrLine::Invalid) {
+                                valid = false;
+                                break;
+                            }
+                            if ((lines % 16) == 0) {
+                                FileCommand pendingCommand;
+                                if (xQueuePeek(pc->m_cmdQueue, &pendingCommand, 0) == pdTRUE) {
+                                    cancelled = true;
+                                    valid = false;
+                                    break;
+                                }
+                                vTaskDelay(1);
+                            }
+                        }
+                        valid = valid && !cancelled && directFile.position() == directFile.size();
+                        if (!valid || !validator.points() || !directFile.seek(0)) {
+                            if (!cancelled) {
+                                char context[128];
+                                snprintf(context, sizeof(context), "line=%lu file=%s",
+                                         static_cast<unsigned long>(lines), currentFilename);
+                                ErrorLog::instance().log("ERROR", "FILE", "INVALID_PATTERN",
+                                                         "Pattern rejected before playback; invalid, "
+                                                         "empty, or unreadable THR",
+                                                         context);
+                            }
+                            directFile.close();
+                            directActive = false;
+                            pc->m_fileLoading = false;
+                        }
+                        directBufLen = directBufPos = 0;
+                        directEof = false;
+                        LOG("FileTask: THR preflight %s (%lu points)\r\n",
+                            directActive ? "passed" : "rejected",
+                            static_cast<unsigned long>(validator.points()));
                     } else {
                         LOG("FileTask: Failed to open file\r\n");
                         ErrorLog::instance().log("ERROR", "FILE", "OPEN_FAILED",
@@ -4539,16 +4554,23 @@ void PolarControl::fileReadTask(void* arg) {
                         LOG("Direct file: EOF reached\r\n");
                     } else {
                         pc->m_lastFilePos.store(static_cast<uint32_t>(consumedPos));
-                        if (hasLine && lineOverflow && !overflowLogged) {
-                            LOG("FileTask: Line overflow, skipping long line\r\n");
-                            ErrorLog::instance().log("ERROR", "FILE", "LINE_OVERFLOW",
-                                                     "Pattern line exceeded buffer", currentFilename);
-                            overflowLogged = true;
-                        }
-                        if (!lineOverflow && parseLine(lineBuffer, directMaxRho, pendingPos)) {
+                        ++sourceLine;
+                        const ThrLine parsed =
+                            parseThrLine(lineBuffer, directMaxRho, pendingPos.theta, pendingPos.rho);
+                        if (lineOverflow || memchr(lineBuffer, 0, lineLen) ||
+                            parsed == ThrLine::Invalid) {
+                            // Also fail closed if the file changed after preflight.
+                            char context[128];
+                            snprintf(context, sizeof(context), "line=%lu file=%s",
+                                     static_cast<unsigned long>(sourceLine), currentFilename);
+                            ErrorLog::instance().log(
+                                "ERROR", "FILE", "INVALID_PATTERN",
+                                "Pattern changed or became unreadable during playback", context);
+                            directFile.close();
+                            directActive = false;
+                            pc->m_fileLoading = false;
+                        } else if (parsed == ThrLine::Coordinate)
                             hasPendingPos = true;
-                        }
-                        // If parse failed (comment/empty), loop continues to read next line
                     }
                 }
 
