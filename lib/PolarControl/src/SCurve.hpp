@@ -43,6 +43,18 @@ public:
         double maxVelocity;
     };
 
+    // Buffered segments retain only independent double-precision values.
+    // Expand once into the planner's shared evaluation cache before sampling.
+    struct CompactProfile {
+        double t[7]{};
+        double totalTime = 0, totalDistance = 0, jerk = 0;
+        double startVelocity = 0, endVelocity = 0, peakVelocity = 0;
+        double cruiseEndPosition = 0;
+        CompactProfile() = default;
+        explicit CompactProfile(const Profile& profile);
+        Profile expand() const;
+    };
+
     // Calculate a profile for a move
     // Returns true if successful, false if constraints can't be satisfied
     static bool calculate(double distance, // Total distance to travel (positive)

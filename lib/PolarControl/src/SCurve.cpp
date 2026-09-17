@@ -229,6 +229,46 @@ bool SCurve::calculate(double distance, double vStart, double vEnd, double vMax,
     return true;
 }
 
+SCurve::CompactProfile::CompactProfile(const Profile& p)
+    : totalTime(p.totalTime), totalDistance(p.totalDistance), jerk(p.jerk), startVelocity(p.v[0]),
+      endVelocity(p.v[7]), peakVelocity(p.v[4]), cruiseEndPosition(p.posEnd[3]) {
+    std::copy(p.t, p.t + 7, t);
+}
+
+SCurve::Profile SCurve::CompactProfile::expand() const {
+    Profile p{};
+    std::copy(t, t + 7, p.t);
+    p.totalTime = totalTime;
+    p.totalDistance = totalDistance;
+    p.jerk = jerk;
+    p.maxVelocity = peakVelocity;
+    p.a[1] = p.a[2] = jerk * t[0];
+    p.a[5] = p.a[6] = -jerk * t[4];
+    p.maxAccel = std::max(p.a[1], -p.a[5]);
+    p.v[0] = startVelocity;
+    p.v[1] = jerkPhaseVelocity(p.v[0], 0, jerk, t[0]);
+    p.v[2] = p.v[1] + p.a[1] * t[1];
+    p.v[3] = jerkPhaseVelocity(p.v[2], p.a[2], -jerk, t[2]);
+    p.v[4] = peakVelocity;
+    p.v[5] = jerkPhaseVelocity(p.v[4], 0, -jerk, t[4]);
+    p.v[6] = p.v[5] + p.a[5] * t[5];
+    p.v[7] = endVelocity;
+    double position = 0, time = 0;
+    const int signs[7] = {1, 0, -1, 0, -1, 0, 1};
+    for (int i = 0; i < 7; ++i) {
+        if (i == 3)
+            position = cruiseEndPosition;
+        else if (signs[i])
+            position += jerkPhaseDistance(p.v[i], p.a[i], signs[i] * jerk, t[i]);
+        else
+            position += constAccelDistance(p.v[i], p.a[i], t[i]);
+        time += t[i];
+        p.tEnd[i] = time;
+        p.posEnd[i] = position;
+    }
+    return p;
+}
+
 double SCurve::getVelocity(const Profile& p, double t) {
     if (t <= 0.0)
         return p.v[0];

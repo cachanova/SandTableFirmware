@@ -2412,14 +2412,14 @@ bool PolarControl::homeDrivers() {
 
 class SingleTargetGen : public PosGen {
 public:
-  SingleTargetGen(double theta, double rho) : m_target{theta, rho} {}
+    SingleTargetGen(double theta, double rho) : m_target{theta, rho} {}
 
-  PolarCord_t getNextPos() override {
-      if (m_sent)
-          return {std::nan(""), std::nan("")};
-      m_sent = true;
-      return m_target;
-  }
+    PolarCord_t getNextPos() override {
+        if (m_sent)
+            return {std::nan(""), std::nan("")};
+        m_sent = true;
+        return m_target;
+    }
 
 private:
     PolarCord_t m_target;

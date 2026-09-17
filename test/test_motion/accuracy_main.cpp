@@ -80,6 +80,38 @@ void run(MotionPlanner &p, int maxMillis = 300000) {
     }
     require(p.isIdle(), "move did not complete");
 }
+void compactProfiles() {
+    for (double distance : {0.001, 0.1, 1.0, 10.0, 1000.0, 1000000.0}) {
+        for (double entry : {0.0, 0.01, 1.0}) {
+            for (double exit : {0.0, 0.02, 1.0}) {
+                SCurve::Profile original;
+                if (!SCurve::calculate(distance, entry, exit, 10, 20, 100, original))
+                    continue;
+                const auto restored = SCurve::CompactProfile(original).expand();
+                for (int i = 0; i < 7; ++i) {
+                    require(original.t[i] == restored.t[i] &&
+                                original.tEnd[i] == restored.tEnd[i] &&
+                                original.posEnd[i] == restored.posEnd[i],
+                            "compact phase lost precision");
+                }
+                for (int i = 0; i < 8; ++i)
+                    require(original.v[i] == restored.v[i] && original.a[i] == restored.a[i],
+                            "compact boundary lost precision");
+                for (int i = 0; i <= 100; ++i) {
+                    const double t = original.totalTime * i / 100;
+                    require(SCurve::getPosition(original, t) == SCurve::getPosition(restored, t) &&
+                                SCurve::getVelocity(original, t) ==
+                                    SCurve::getVelocity(restored, t) &&
+                                SCurve::getAcceleration(original, t) ==
+                                    SCurve::getAcceleration(restored, t),
+                            "compact profile changed evaluated motion");
+                }
+            }
+        }
+    }
+    require(sizeof(Segment) <= 416, "buffered planner memory budget exceeded");
+    std::cout << "PASS lossless compact profiles and planner memory budget\n";
+}
 void conversion() {
     MotionPlanner p;
     init(p);
@@ -137,10 +169,11 @@ PathPoint derivative(const PolarPath &p, double u, int order) {
     return sum;
 }
 void checkCurve(const Segment &s, double tolerance) {
+    const auto profile = s.profile.expand();
     const auto delta = s.path.end - s.path.start;
     for (int i = 0; i <= 1500; ++i) {
         const double time = s.duration * i / 1500;
-        const double distance = SCurve::getPosition(s.profile, time) + s.startDistance;
+        const double distance = SCurve::getPosition(profile, time) + s.startDistance;
         const double u = distance / s.path.length;
         auto q = s.path.position(distance);
         const double projected =
@@ -156,11 +189,11 @@ void checkCurve(const Segment &s, double tolerance) {
         require(q.rho >= -1e-8 && q.rho <= 425 + 1e-8, "curve left radial travel");
         const auto first = derivative(s.path, u, 1), second = derivative(s.path, u, 2),
                    third = derivative(s.path, u, 3);
-        const double v = SCurve::getVelocity(s.profile, time),
-                     a = SCurve::getAcceleration(s.profile, time);
+        const double v = SCurve::getVelocity(profile, time),
+                     a = SCurve::getAcceleration(profile, time);
         double jerk = 0;
         for (int phase = 0; phase < 7; ++phase)
-            if (time < s.profile.tEnd[phase]) {
+            if (time < profile.tEnd[phase]) {
                 const int signs[7] = {1, 0, -1, 0, -1, 0, 1};
                 jerk = signs[phase] * s.profile.jerk;
                 break;
@@ -355,6 +388,7 @@ void streaming() {
     std::cout << "PASS streamed lookahead, exact endpoint ledger, no underruns\n";
 }
 int main() try {
+    compactProfiles();
     conversion();
     parser();
     geometry();

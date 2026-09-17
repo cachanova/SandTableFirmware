@@ -88,7 +88,7 @@ struct Stats {
     Point worstA{},worstB{};
 };
 Point sample(const Segment& s, double time) {
-    const auto p=s.path.position(s.startDistance+SCurve::getPosition(s.profile,time));
+    const auto p=s.path.position(s.startDistance+SCurve::getPosition(s.profile.expand(),time));
     return {p.theta,p.rho};
 }
 void measure(const Segment& s, Point a, Point b, size_t index, Stats& out, int samples) {

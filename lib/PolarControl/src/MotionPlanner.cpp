@@ -118,6 +118,7 @@ void MotionPlanner::init(double stepsPerMmR, double stepsPerRadT, float maxRho, 
     }
 
     discardResume();
+    m_evaluationSegment = nullptr;
 
     // Reset buffer
     m_segmentHead = 0;
@@ -139,12 +140,6 @@ void MotionPlanner::updateSegmentTarget(Segment& seg, PathPoint target) {
     seg.targetRho = target.rho;
     seg.theta.targetSteps = thetaToSteps(target.theta);
     seg.rho.targetSteps = rhoToSteps(target.rho);
-    seg.theta.deltaSteps = seg.theta.targetSteps - seg.theta.startSteps;
-    seg.rho.deltaSteps = seg.rho.targetSteps - seg.rho.startSteps;
-    seg.theta.deltaUnits = stepsToTheta(seg.theta.deltaSteps);
-    seg.rho.deltaUnits = stepsToRho(seg.rho.deltaSteps);
-    seg.theta.direction = (seg.theta.deltaSteps > 0) - (seg.theta.deltaSteps < 0);
-    seg.rho.direction = (seg.rho.deltaSteps > 0) - (seg.rho.deltaSteps < 0);
 }
 
 bool MotionPlanner::addSegment(double theta, double rho) {
@@ -169,6 +164,8 @@ bool MotionPlanner::addSegment(double theta, double rho) {
     }
     Segment& seg = m_segments[m_segmentHead];
     seg = Segment{};
+    if (m_evaluationSegment == &seg)
+        m_evaluationSegment = nullptr;
     seg.theta.startSteps = m_queuedTSteps.load();
     seg.rho.startSteps = m_queuedRSteps.load();
     seg.lastGenThetaSteps = seg.theta.startSteps;
@@ -278,7 +275,9 @@ void MotionPlanner::calculateSegmentProfile(Segment& seg) {
         seg.calculated = false;
         return;
     }
-    seg.profile = profile;
+    seg.profile = SCurve::CompactProfile(profile);
+    if (m_evaluationSegment == &seg)
+        m_evaluationSegment = nullptr;
     seg.duration = profile.totalTime;
     seg.durationUs = static_cast<uint64_t>(std::ceil(seg.duration * 1000000.0));
     seg.calculated = true;
@@ -369,16 +368,24 @@ void MotionPlanner::recalculate() {
     }
 }
 
+const SCurve::Profile& MotionPlanner::evaluationProfile(const Segment& seg) const {
+    if (m_evaluationSegment != &seg) {
+        m_evaluationProfile = seg.profile.expand();
+        m_evaluationSegment = &seg;
+    }
+    return m_evaluationProfile;
+}
+
 double MotionPlanner::segmentDistance(const Segment& s, double t) const {
     if (s.braking && t >= m_brakeStartTime)
         return m_brakeStartDistance + SCurve::getPosition(m_brakeProfile, t - m_brakeStartTime);
-    return s.startDistance + SCurve::getPosition(s.profile, t);
+    return s.startDistance + SCurve::getPosition(evaluationProfile(s), t);
 }
 
 double MotionPlanner::segmentSpeed(const Segment& s, double t) const {
     if (s.braking && t >= m_brakeStartTime)
         return SCurve::getVelocity(m_brakeProfile, t - m_brakeStartTime);
-    return SCurve::getVelocity(s.profile, t);
+    return SCurve::getVelocity(evaluationProfile(s), t);
 }
 
 void MotionPlanner::stopGracefully(bool preserveForResume) {
@@ -403,11 +410,11 @@ void MotionPlanner::stopGracefully(bool preserveForResume) {
     for (int i = m_genSegmentIdx; i != m_segmentHead; i = (i + 1) % SEGMENT_BUFFER_SIZE) {
         Segment& s = m_segments[i];
         const double earliest = s.nextSampleUs / 1000000.0;
-        double candidates[4] = {earliest, s.profile.tEnd[2], s.profile.tEnd[3],
-                                s.profile.totalTime};
+        const auto profile = s.profile.expand();
+        double candidates[4] = {earliest, profile.tEnd[2], profile.tEnd[3], profile.totalTime};
         for (double time : candidates) {
             if (time + 1e-10 < earliest || time > s.duration + 1e-10 ||
-                std::abs(SCurve::getAcceleration(s.profile, time)) > 1e-9)
+                std::abs(SCurve::getAcceleration(profile, time)) > 1e-9)
                 continue;
             const double position = segmentDistance(s, time), speed = segmentSpeed(s, time);
             const double distance =

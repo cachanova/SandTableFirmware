@@ -61,16 +61,14 @@ enum class FillStopReason : uint32_t {
 
 // Integer motor ledgers are separate from the continuous THR geometry.
 struct AxisProfile {
-    int32_t startSteps = 0, targetSteps = 0, deltaSteps = 0;
-    double deltaUnits = 0;
-    int8_t direction = 0;
+    int32_t startSteps = 0, targetSteps = 0;
 };
 
 struct Segment {
     double targetTheta = 0, targetRho = 0;
     AxisProfile theta, rho;
     PolarPath path;
-    SCurve::Profile profile{};
+    SCurve::CompactProfile profile{};
     double startDistance = 0, endDistance = 0;
     double entryVelocity = 0, exitVelocity = 0;
     double maxVelocity = 0, maxAcceleration = 0, maxJerk = 0;
@@ -293,6 +291,8 @@ private:
     double m_ballMaxVelocity = 0, m_ballMaxAcceleration = 0;
     double m_cornerTolerance = 0;
     SCurve::Profile m_brakeProfile{};
+    mutable SCurve::Profile m_evaluationProfile{};
+    mutable const Segment* m_evaluationSegment = nullptr;
     double m_brakeStartTime = 0, m_brakeStartDistance = 0;
     PolarPath m_resumePath;
     double m_resumeStartDistance = 0;
@@ -389,6 +389,7 @@ private:
     // Internal methods
     void calculateSegmentProfile(Segment& seg);
     void calculatePathLimits(Segment& seg);
+    const SCurve::Profile& evaluationProfile(const Segment& seg) const;
     double segmentDistance(const Segment& seg, double time) const;
     double segmentSpeed(const Segment& seg, double time) const;
     void updateSegmentTarget(Segment& seg, PathPoint target);
