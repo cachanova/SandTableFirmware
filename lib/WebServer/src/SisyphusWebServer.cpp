@@ -2228,7 +2228,14 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
         upload->originalImage = filename.endsWith(".png") && !thumbnail;
         const String basename = filename.substring(0, filename.length() - 4);
         const String dirPath = "/patterns/" + basename;
-        const String finalPath = dirPath + "/" + (thumbnail ? basename + ".thumb.png" : filename);
+        String finalPath = dirPath + "/" + (thumbnail ? basename + ".thumb.png" : filename);
+        if (upload->originalImage) {
+            SemaphoreGuard lock(m_cacheMutex);
+            const auto* entry = findFileEntryByBase(basename);
+            // A PNG-only refresh must replace the image alongside a legacy
+            // flat THR. Otherwise the index keeps serving the old flat PNG.
+            if (entry && !entry->isDirectory) finalPath = "/patterns/" + filename;
+        }
         const uint32_t sequence = m_uploadSequence.fetch_add(1) + 1;
         const String tempPath = dirPath + "/.upload-" + String(sequence);
         upload->maxBytes = thumbnail ? 128U * 1024U :
@@ -2308,7 +2315,9 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
             // A changed full image invalidates the derivative. The browser
             // uploads its newly generated thumbnail after the original.
             const String originalPath(upload->finalPath);
-            SD.remove(originalPath.substring(0, originalPath.length() - 4) + ".thumb.png");
+            const String base = originalPath.substring(originalPath.lastIndexOf('/') + 1,
+                                                       originalPath.length() - 4);
+            SD.remove("/patterns/" + base + "/" + base + ".thumb.png");
         }
         LOG("Upload complete: %s (%u bytes)\r\n",
             filename.c_str(), static_cast<unsigned>(upload->received));
