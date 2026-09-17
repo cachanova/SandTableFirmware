@@ -41,6 +41,8 @@ are hash-checked and skipped only if the original library metadata still matches
 Uploads also support `--resume`: source metadata must still match, and every
 completed asset is checked against its local hash and a fresh device read before
 it is skipped. Changed previously verified assets stop the resume for review.
+The utility sends bounded pieces under the original multipart Content-Length, so
+its socket timeout applies to stalled progress rather than the whole file write.
 
 The backup contains per-pattern `before.png`, `before.thumb.png`, and the original
 THR, plus three stage manifests. Retain it until deployment validation is complete.

@@ -36,6 +36,7 @@ class Table:
             except urllib.error.HTTPError as error:
                 if error.code != 503 or attempt == 7:
                     raise
+                error.close()
                 time.sleep(1)
         raise RuntimeError('Controller remains busy')
 
@@ -51,12 +52,18 @@ class Table:
         body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
                 f'filename="{name}"\r\nContent-Type: image/png\r\n\r\n').encode()
         body += data + f'\r\n--{boundary}--\r\n'.encode()
-        request = urllib.request.Request(
-            self.base + 'files/upload?thumbnail=' + str(int(thumbnail)), data=body,
-            headers={'Content-Type': 'multipart/form-data; boundary=' + boundary})
         # An explicit busy response has not accepted this file. Do not retry
         # timeouts/disconnects here: their commit outcome is unconfirmed.
         for attempt in range(8):
+            # sendall() applies its timeout to the entire supplied buffer.
+            # Small writes let a large upload keep progressing for longer than
+            # that deadline. Preserve Content-Length and ordinary multipart
+            # framing; create a fresh iterator for each explicit busy retry.
+            request = urllib.request.Request(
+                self.base + 'files/upload?thumbnail=' + str(int(thumbnail)),
+                data=(body[i:i + 8192] for i in range(0, len(body), 8192)),
+                headers={'Content-Type': 'multipart/form-data; boundary=' + boundary,
+                         'Content-Length': str(len(body))})
             try:
                 with urllib.request.urlopen(request, timeout=60) as response:
                     result = json.load(response)
@@ -66,6 +73,7 @@ class Table:
             except urllib.error.HTTPError as error:
                 if error.code != 503 or attempt == 7:
                     raise
+                error.close()
                 time.sleep(1)
 
 
