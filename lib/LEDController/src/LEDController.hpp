@@ -4,7 +4,7 @@
 
 class LEDController {
 public:
-    LEDController(uint8_t pin = 2);
+    LEDController(uint8_t pin = 4);
     void begin();
     void setBrightness(uint8_t brightness); // User-selected target and output, 0-255
     void setOutputBrightness(uint8_t brightness); // Fade output; never changes target

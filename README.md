@@ -50,6 +50,7 @@ Key settings in `lib/Config/src/Config.h`:
 - Task core affinity, stack sizes, and telemetry intervals
 
 Pin defaults live in `lib/Config/src/Config.h`:
+- LED PWM: 4 (D4 / GPIO4), internal pull-down enabled during LED initialization
 - Rho Step: 33
 - Rho Dir: 25
 - Theta Step: 32

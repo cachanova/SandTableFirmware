@@ -36,9 +36,9 @@ static const IPAddress kStaticDns(100, 76, 149, 1);
 static constexpr const char kOtaHostname[] = "sisyphus";
 static constexpr const char kOtaPassword[] = "sandpatterns";
 
-// Web server port and attached LED count.
+// Web server port and LED PWM pin.
 static constexpr uint16_t kWebServerPort = 80;
-static constexpr uint8_t kLedPin = 2;
+static constexpr uint8_t kLedPin = 4; // ESP32 D4 / GPIO4
 
 // Step/dir pin mapping.
 static constexpr uint8_t kRhoStepPin = 33;
