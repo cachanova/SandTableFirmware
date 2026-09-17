@@ -2268,11 +2268,12 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
         const String basename = filename.substring(0, filename.length() - 4);
         const String dirPath = "/patterns/" + basename;
         String finalPath = dirPath + "/" + (thumbnail ? basename + ".thumb.png" : filename);
-        if (upload->originalImage) {
+        if (upload->originalImage || upload->pattern) {
             SemaphoreGuard lock(m_cacheMutex);
             const auto* entry = findFileEntryByBase(basename);
-            // A PNG-only refresh must replace the image alongside a legacy
-            // flat THR. Otherwise the index keeps serving the old flat PNG.
+            // Preserve an existing flat layout for both THR and PNG updates.
+            // Moving only the THR would route the immediately following PNG
+            // using the old index, then hide it when the index refreshes.
             if (entry && !entry->isDirectory) finalPath = "/patterns/" + filename;
         }
         const uint32_t sequence = m_uploadSequence.fetch_add(1) + 1;

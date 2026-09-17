@@ -15,10 +15,11 @@ and bounded asynchronous SD reads. It never allocates the entire file in RAM.
 Empty indexed files return an empty 200 response; invalid names return 400 and
 missing names 404 (503 while the index is stale or resources are busy).
 
-PNG-only uploads now replace the image beside an existing flat THR. Previously
-those uploads were written to a nested directory and the index still served the
-old flat PNG. Full-image replacement invalidates the nested thumbnail in either
-layout. Uploads retain staging and rollback behavior.
+THR and PNG uploads preserve an existing flat layout. Previously PNG-only updates
+were written to a nested directory and the index still served the old flat PNG.
+Keeping THR replacements flat also lets the following PNG upload use the same
+layout before the index refreshes. Full-image replacement invalidates the nested
+thumbnail in either layout. Uploads retain staging and rollback behavior.
 
 ## Refreshing a library
 
