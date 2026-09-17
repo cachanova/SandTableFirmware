@@ -26,7 +26,10 @@ public:
     uint32_t droppedCount() const;
 
 private:
-    static constexpr size_t kMaxEntries = 64;
+    // Each entry is 200 bytes on ESP32. Keep 6.25 KiB available for Wi-Fi/TCP
+    // bursts instead of a longer console history; serial and ErrorLog retain
+    // their existing behavior. Clients can poll by ID to preserve more history.
+    static constexpr size_t kMaxEntries = 32;
     static constexpr size_t kTextBytes = 192;
 
     struct Entry {
