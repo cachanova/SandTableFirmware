@@ -241,7 +241,7 @@ void SisyphusWebServer::begin(PolarControl *polarControl,
             // from overlapping an image's SD worker/stream allocation.
             if (request->method() == HTTP_GET &&
                 BulkResponseBudget::isBulkPath(request->url().c_str()) &&
-                !BulkResponseBudget::canStart(m_bulkInflight.load(),
+                !BulkResponseBudget::canStart(m_bulkInflight.load() + m_uploadInflight.load(),
                     heap_caps_get_free_size(MALLOC_CAP_8BIT),
                     heap_caps_get_largest_free_block(MALLOC_CAP_8BIT))) {
                 std::unique_ptr<AsyncWebServerResponse> response(
@@ -2244,7 +2244,9 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
             return;
         }
         upload->active = &m_uploadInflight;
-        if (m_fileScanActive.load() || !isSDCardReady()) {
+        if (m_fileScanActive.load() || !isSDCardReady() ||
+            !BulkResponseBudget::canStart(0, heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                                           heap_caps_get_largest_free_block(MALLOC_CAP_8BIT))) {
             upload->status = 503;
             return;
         }

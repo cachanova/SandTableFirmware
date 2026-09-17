@@ -14,8 +14,11 @@ extern "C" esp_err_t __wrap_esp_wifi_init(const wifi_init_config_t* config) {
     // Allocation tracing under concurrent HTTP/SSE load found bursts of
     // 2308-byte Wi-Fi allocations consuming the web/control reserve.
     // Bound the outstanding receive packets, including the AMPDU window.
-    // Four remains >= the static RX count and can still fill the TCP window.
-    bounded.dynamic_rx_buf_num = 4;
+    // Four dynamic buffers reproducibly starve receive traffic during TCP
+    // upload bursts even with >24 KiB free heap and no TX/allocation failures.
+    // Six allows those uploads to complete; bulk admission reserves the extra
+    // receive headroom before allocating HTTP/SD response buffers.
+    bounded.dynamic_rx_buf_num = 6;
     bounded.rx_ba_win = 4;
     bounded.tx_buf_type = 0;
     bounded.static_tx_buf_num = 6;

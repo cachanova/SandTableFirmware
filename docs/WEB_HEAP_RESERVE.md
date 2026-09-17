@@ -1,5 +1,10 @@
 # Web-load heap reserve — 2026-09-17
 
+Follow-up: the four-buffer setting below is superseded by the six-buffer receive
+budget and 28 KiB bulk-admission threshold in [PATTERN_PREVIEWS.md](PATTERN_PREVIEWS.md).
+Unrestricted uploads exposed a receive stall that the GET/SSE qualification below
+did not exercise.
+
 This work starts from main `f8dda0e`. The firmware changes are `5666be9` and `2319954`.
 The required byte-addressable heap reserve remains **8,192 bytes**, with a
 **4,096-byte** sampled largest-block floor. Task stacks, motion queues, image

@@ -64,3 +64,25 @@ and thumbnail receipts; a multi-file transfer can finish partially and be retrie
 An interrupted acknowledgement can leave a committed file, so clients report an
 unconfirmed outcome and can idempotently resend. The firmware continues to validate
 THR geometry before playback; upload acceptance itself is not a playback guarantee.
+
+## Upload burst receive starvation
+
+The previous four-buffer dynamic Wi-Fi RX limit passed GET/SSE loads but repeatedly
+stalled unrestricted multipart PNG uploads. A 29,494-byte PNG succeeded when paced
+at 1 KiB/s; at normal speed its receive callback stopped at 8,248 bytes and HTTP/ARP
+became unreachable. Temporary RTC-backed diagnostics showed the controller kept
+running: minimum byte-addressable heap was 24,316 bytes, largest blocks remained
+above 27 KiB late in the stall, and both failed-allocation and failed-Wi-Fi-TX counts
+were zero. This was a receive-path stall, not a panic or demonstrated heap exhaustion.
+
+Changing only the dynamic RX limit from four to six allowed the identical normal-speed
+upload to commit completely. Its diagnostic minimum heap was 26,232 bytes, with no
+allocation or transmit failures. Static RX remains four, block-ack window four, and
+static TX six. The measurements establish that the four-buffer configuration caused
+the failure on this device; receive-buffer starvation is the inferred mechanism.
+
+Production bulk admission now requires 28 KiB of free byte-addressable heap, adding
+4 KiB of headroom for the extra receive capacity. New bulk responses defer while an
+upload is active, and uploads also check this memory threshold before opening their
+staging file. Small control requests remain available. Temporary diagnostic hooks
+and timed recovery resets are removed from the final firmware.

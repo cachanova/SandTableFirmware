@@ -11,7 +11,7 @@ class WebHeapCapabilities(unittest.TestCase):
         constructor = source.split('PatternImageResponse(const String&', 1)[1].split(
             '~PatternImageResponse()', 1)[0]
         self.assertNotIn('ESP.getFreeHeap()', constructor)
-        self.assertIn('heap_caps_get_free_size(MALLOC_CAP_8BIT) < 24576', constructor)
+        self.assertIn('heap_caps_get_free_size(MALLOC_CAP_8BIT) < BulkResponseBudget::kMinimumFreeHeap', constructor)
         self.assertIn('heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < 8192', constructor)
         self.assertIn('xStreamBufferCreate(1024, 1)', constructor)
         self.assertIn('"ImageRead", 4096', constructor)
