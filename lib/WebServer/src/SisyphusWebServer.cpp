@@ -1302,9 +1302,9 @@ void SisyphusWebServer::handleStatus(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handlePresenceGet(AsyncWebServerRequest *request) {
-    auto* response = new BufferedResponse("application/json");
+    auto response = std_patch::make_unique<BufferedResponse>("application/json");
     JsonHelpers::writePresenceJSON(*response, m_presenceSensor);
-    request->send(response);
+    request->send(response.release());
 }
 
 void SisyphusWebServer::handlePresenceCalibrate(AsyncWebServerRequest *request) {
@@ -1352,12 +1352,12 @@ void SisyphusWebServer::handlePresenceSettingsGet(
 
     const char* action = m_presenceSensor->getAction() ==
         PresenceAction::FADE_LIGHT_ON ? "fade_light_on" : "none";
-    auto* response = new BufferedResponse("application/json");
+    auto response = std_patch::make_unique<BufferedResponse>("application/json");
     response->printf(
         "{\"action\":\"%s\",\"fadeDurationMs\":%lu,\"targetBrightness\":100}",
         action,
         static_cast<unsigned long>(PresenceAutomation::kFadeDurationMs));
-    request->send(response);
+    request->send(response.release());
 }
 
 void SisyphusWebServer::handlePresenceSettingsSet(

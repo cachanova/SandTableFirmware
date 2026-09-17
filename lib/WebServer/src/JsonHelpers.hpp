@@ -3,6 +3,7 @@
 #include <new>
 #include <SD.h>
 #include <Print.h>
+#include <esp_heap_caps.h>
 #include "PolarControl.hpp"
 #include "LEDController.hpp"
 #include "PresenceSensor.hpp"
@@ -219,6 +220,12 @@ public:
         doc["heap"] = ESP.getFreeHeap();
         doc["largestFreeBlock"] = ESP.getMaxAllocHeap();
         doc["minimumFreeHeap"] = ESP.getMinFreeHeap();
+        // Arduino's legacy heap figures include internal 32-bit-only memory.
+        // Network buffers and CSI admission need byte-addressable memory;
+        // expose that pool separately without changing the existing API fields.
+        doc["heap8Bit"] = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+        doc["largestFree8BitBlock"] = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+        doc["minimumFree8BitHeap"] = heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
         doc["uptime"] = millis() / 1000;
 
         JsonObject wifi = doc["wifi"].to<JsonObject>();
