@@ -745,7 +745,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 this.eventSource = new EventSource('/api/stream');
                 this.eventSource.addEventListener('open', () => {
                     // A reconnect has no replay: never draw a chord across missing motion.
-                    this.pendingPositions = [];
+                    this.drawTracePositions();
                     this.lastX = this.lastY = undefined;
                 });
                 this.eventSource.addEventListener('pos', (e) => {
@@ -798,11 +798,13 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 if (!this.ctxPath || !this.ctxBall || !data ||
                     !Number.isFinite(data.x) || !Number.isFinite(data.y)) return;
                 if (!this.pendingPositions) this.pendingPositions = [];
-                // requestAnimationFrame pauses in background tabs; bound the retained samples.
-                if (this.pendingPositions.length >= 128 || data.clear) {
-                    if (this.pendingPositions.some(point => point.clear)) data = { ...data, clear: true };
+                // Background tabs pause animation frames. Rasterize each bounded
+                // batch into the existing canvas instead of throwing history away.
+                if (data.clear) {
                     this.pendingPositions = [];
                     this.lastX = this.lastY = undefined;
+                } else if (this.pendingPositions.length >= 128) {
+                    this.drawTracePositions();
                 }
                 this.pendingPositions.push(data);
                 if (this.positionFrame === undefined) {
@@ -810,8 +812,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 }
             }
 
-            renderStreamPositions() {
-                this.positionFrame = undefined;
+            drawTracePositions() {
                 const positions = this.pendingPositions || [];
                 this.pendingPositions = [];
                 if (!positions.length) return;
@@ -838,8 +839,15 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     this.lastX = x;
                     this.lastY = y;
                 });
+                this.latestPosition = positions[positions.length - 1];
+            }
+
+            renderStreamPositions() {
+                this.positionFrame = undefined;
+                this.drawTracePositions();
+                const data = this.latestPosition;
+                if (!data || this.lastX === undefined) return;
                 this.drawBall(this.lastX, this.lastY);
-                const data = positions[positions.length - 1];
                 const now = performance.now();
                 if (this.lastPositionLabelAt !== undefined && now - this.lastPositionLabelAt < 250 &&
                     !(data.vr === 0 && data.vt === 0)) return;

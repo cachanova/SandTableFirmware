@@ -1,5 +1,6 @@
 #pragma once
 #include <ArduinoJson.h>
+#include <new>
 #include <SD.h>
 #include <Print.h>
 #include "PolarControl.hpp"
@@ -135,6 +136,7 @@ public:
                         entry["size"] = file.size();
                         entry["time"] = file.getLastWrite();
                         if (!first) out.print(',');
+                        if (entry.overflowed()) throw std::bad_alloc();
                         serializeJson(entry, out);
                         first = false;
                     }
@@ -148,6 +150,7 @@ public:
                         entry["size"] = innerFile.size();
                         entry["time"] = innerFile.getLastWrite();
                         if (!first) out.print(',');
+                        if (entry.overflowed()) throw std::bad_alloc();
                         serializeJson(entry, out);
                         first = false;
                         innerFile.close();
@@ -164,6 +167,8 @@ public:
     static void writeSystemInfoJSON(Print& out) {
         JsonDocument doc;
         doc["heap"] = ESP.getFreeHeap();
+        doc["largestFreeBlock"] = ESP.getMaxAllocHeap();
+        doc["minimumFreeHeap"] = ESP.getMinFreeHeap();
         doc["uptime"] = millis() / 1000;
 
         JsonObject wifi = doc["wifi"].to<JsonObject>();
@@ -171,6 +176,7 @@ public:
         wifi["ip"] = WiFi.localIP().toString();
         wifi["rssi"] = WiFi.RSSI();
         wifi["sleep"] = static_cast<int>(WiFi.getSleep());
+        if (doc.overflowed()) throw std::bad_alloc();
         serializeJson(doc, out);
     }
 

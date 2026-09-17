@@ -91,4 +91,24 @@ function manualService(env) {
         assert.equal(env.elements.rhoServiceCard.hidden,false);assert.equal(env.timers.size,0);
         console.log('PASS: transient service errors remain retryable; only404 disables capability polling');
     }
+    for (const name of ['refreshStatus', 'initialPosition']) {
+        const requests=[];
+        const env=environment((url,options)=>new Promise(resolve=>requests.push({url,options,resolve})));
+        const fn=manual.match(new RegExp('async function '+name+'\\(\\) \\{[\\s\\S]*?\\n    }'))[0];
+        vm.runInContext(`let statusInFlight=false,positionInFlight=false,geometryReady=false,enabled=false,jogEnabled=false,axes={},stopInProgress=false,maxRho=0;
+            const stateEl={},dot={};function updateControls(){}function setDriverState(){}function updatePosition(){}
+            ${name==='initialPosition'?'function refreshStatus(){}':''}${fn}`,env.context);
+        const pending=env.context[name]();
+        for(let i=0;i<20;i++) await env.context[name]();
+        assert.equal(requests.length,1, name+' shares a stalled request');
+        const signal=requests[0].options.signal;
+        requests[0].resolve({ok:true,json:()=>new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(new Error('stalled body'))))});
+        await flush();assert.equal([...env.timers.values()][0].delay,4000);
+        env.fire([...env.timers.keys()][0]);await pending;
+        assert.equal(signal.aborted,true);assert.equal(env.timers.size,0);
+        const recovered=env.context[name]();assert.equal(requests.length,2);
+        requests[1].resolve({ok:true,json:async()=>({state:'IDLE',drivers:{thetaAxis:true,rhoAxis:true},maxRho:425,current:{}})});
+        await recovered;assert.equal(env.timers.size,0);
+    }
+    console.log('PASS: manual status/geometry polls stay single-flight through stalled bodies and recover after timeout');
 })().catch(error=>{console.error(error);process.exitCode=1;});

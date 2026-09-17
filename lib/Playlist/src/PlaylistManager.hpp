@@ -1,5 +1,5 @@
 #pragma once
-#include <vector>
+#include <deque>
 #include <Arduino.h>
 #include <SDCard.hpp>
 #include <ArduinoJson.h>
@@ -8,7 +8,7 @@
 struct PlaylistItem {
   String filename;
 
-  PlaylistItem(String f)
+  PlaylistItem(const String& f)
     : filename(f) {}
 };
 
@@ -56,7 +56,7 @@ public:
   bool loadFromFile(String filename);
 
 private:
-  std::vector<PlaylistItem> m_playlist;
+  std::deque<PlaylistItem> m_playlist;
   bool m_loop;
   int m_currentIndex;
   bool m_clearingEnabled;

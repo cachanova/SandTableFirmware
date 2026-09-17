@@ -74,12 +74,20 @@ flush();
 assert.equal(count(path, 'stroke'), segments + 1, 'clear drops older queued points');
 const clearCount = count(path, 'clearRect');
 controller.drawStreamPosition(sample(.5, .5, {clear:true}));
-for (let i=0; i<130; ++i) controller.drawStreamPosition(sample(.6, .6));
-assert.ok(controller.pendingPositions.length <= 128);
+segments = count(path, 'stroke');
+const ballsBeforeHidden = count(ball, 'drawImage');
+for (let i=0; i<5000; ++i) {
+    controller.drawStreamPosition(sample(.5 + .3*Math.sin(i/20), .5 + .3*Math.cos(i/20)));
+    assert.ok(controller.pendingPositions.length <= 128);
+    assert.equal(frames.size, 1, 'hidden batches never add animation callbacks');
+}
+assert.equal(count(ball, 'drawImage'), ballsBeforeHidden, 'background batches only rasterize path');
+assert.ok(count(path, 'stroke') > segments + 4800, 'history is drawn before animation resumes');
 flush();
-assert.equal(count(path, 'clearRect'), clearCount + 1, 'background backlog retains pending pattern clear');
-assert.equal(count(path, 'stroke'), segments + 1, 'discarded backlog never creates an invented chord');
-console.log('PASS: invalid coordinates ignored; hidden-tab backlog bounded without losing clear events');
+assert.equal(count(path, 'clearRect'), clearCount + 1, 'background batch applies pattern clear once');
+assert.equal(count(path, 'stroke'), segments + 5000, 'every hidden-tab segment survives without gaps');
+assert.equal(count(ball, 'drawImage'), ballsBeforeHidden + 1, 'returning to tab paints latest ball once');
+console.log('PASS: 5000 hidden-tab points retain all trace segments with bounded memory and one pending frame');
 
 controller.connectStream();
 controller.drawStreamPosition(sample(.1, .1));

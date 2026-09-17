@@ -10,6 +10,7 @@
 #include "StaticContentResponse.hpp"
 #include "PolarUtils.hpp"
 #include "MakeUnique.hpp"
+#include <SemaphoreGuard.hpp>
 #include <SDCard.hpp>
 #include <ClearingPatternGen.hpp>
 #include <ErrorLog.hpp>
@@ -33,21 +34,18 @@ struct UploadContext {
     size_t received;
     int status;
     bool originalImage;
+    bool complete;
 };
 
-class SemaphoreGuard {
-public:
-    explicit SemaphoreGuard(SemaphoreHandle_t mutex) : m_mutex(mutex) {
-        if (m_mutex) xSemaphoreTake(m_mutex, portMAX_DELAY);
+// The SDK owns/free()s _tempObject; explicitly remove abandoned staging files.
+static void cleanUploadFile(AsyncWebServerRequest* request) {
+    request->_tempFile.close();
+    auto* upload = static_cast<UploadContext*>(request->_tempObject);
+    if (upload && !upload->complete && upload->tempPath[0]) {
+        try { SD.remove(upload->tempPath); }
+        catch (const std::bad_alloc&) { /* Leave an ignored staging file on SD. */ }
     }
-    ~SemaphoreGuard() {
-        if (m_mutex) xSemaphoreGive(m_mutex);
-    }
-    SemaphoreGuard(const SemaphoreGuard&) = delete;
-    SemaphoreGuard& operator=(const SemaphoreGuard&) = delete;
-private:
-    SemaphoreHandle_t m_mutex;
-};
+}
 
 static void writeJsonString(Print& out, const String& value) {
     out.print('"');
@@ -193,15 +191,23 @@ void SisyphusWebServer::noteRequest(AsyncWebServerRequest *request) {
     if (m_requestTotal.fetch_add(1) == 0) {
         LOG("HTTP callbacks running on Core %d\r\n", xPortGetCoreID());
     }
-    m_requestInflight.fetch_add(1);
     const bool imageRequest = request->url() == "/api/pattern/image";
+    // Keep each capture within std::function's small-object buffer. Capturing
+    // this + request + imageRequest would allocate on every ordinary request.
+    if (request->url() == "/api/files/upload") {
+        request->onDisconnect([this, request]() {
+            cleanUploadFile(request);
+            m_requestInflight.fetch_sub(1);
+        });
+    } else {
+        request->onDisconnect([this, imageRequest]() {
+            if (imageRequest) m_imageInflight.fetch_sub(1);
+            m_requestInflight.fetch_sub(1);
+        });
+    }
+    // Install the potentially allocating callback before publishing admission.
+    m_requestInflight.fetch_add(1);
     if (imageRequest) m_imageInflight.fetch_add(1);
-    request->onDisconnect([this, imageRequest]() {
-        if (imageRequest) m_imageInflight.fetch_sub(1);
-        uint32_t current = m_requestInflight.load();
-        while (current > 0 && !m_requestInflight.compare_exchange_weak(current, current - 1)) {
-        }
-    });
 }
 
 void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledController) {
@@ -401,9 +407,9 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
 
             // Limit concurrent file operations to prevent FD exhaustion (FATFS limit is low)
             if (m_imageInflight > 1 || m_fileScanActive.load()) {
-                AsyncWebServerResponse* response = request->beginResponse(503);
+                std::unique_ptr<AsyncWebServerResponse> response(request->beginResponse(503));
                 response->addHeader("Retry-After", "1");
-                request->send(response);
+                request->send(response.release());
                 return;
             }
 
@@ -423,7 +429,7 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
             String pngPath;
 
             if (m_cacheMutex) {
-                xSemaphoreTake(m_cacheMutex, portMAX_DELAY);
+                SemaphoreGuard cacheLock(m_cacheMutex);
                 const FileEntry* entry = findFileEntryByBase(file);
                 if (entry && entry->hasImage && entry->pngPath.length() > 0) {
                     found = true;
@@ -439,14 +445,13 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
                         imgTime = entry->thumbnailTime;
                     }
                 }
-                xSemaphoreGive(m_cacheMutex);
             }
 
             if (!found) {
                 if (m_fileListDirty || m_fileScanActive) {
-                    AsyncWebServerResponse *response = request->beginResponse(503);
+                    std::unique_ptr<AsyncWebServerResponse> response(request->beginResponse(503));
                     response->addHeader("Retry-After", "1");
-                    request->send(response);
+                    request->send(response.release());
                 } else {
                     request->send(404);
                 }
@@ -463,9 +468,9 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
                         return;
                     }
                 }
-                auto* response = new PatternImageResponse(pngPath, imageSize);
+                auto response = std_patch::make_unique<PatternImageResponse>(pngPath, imageSize);
                 if (!response->_sourceValid()) {
-                    delete response;
+                    response.reset();
                     request->send(503);
                     return;
                 }
@@ -478,7 +483,7 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
                     response->addHeader("Last-Modified", timeStr);
                 }
 
-                request->send(response);
+                request->send(response.release());
             } else {
                 request->send(404);
             }
@@ -492,9 +497,10 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
 
     m_server.on("/api/files/upload", HTTP_POST,
         [this](AsyncWebServerRequest *request) {
-            noteRequest(request);
             UploadContext* upload = static_cast<UploadContext*>(request->_tempObject);
-            const int status = upload == nullptr ? 400 : upload->status;
+            const int status = upload == nullptr ? 400 :
+                (upload->status ? upload->status : (upload->complete ? 0 : 400));
+            cleanUploadFile(request);
             request->_tempObject = nullptr;
             if (upload != nullptr) free(upload);
             if (status != 0) {
@@ -504,12 +510,20 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
                         : "{\"success\":false,\"message\":\"Upload failed\"}");
                 return;
             }
-            auto* response = new BufferedResponse("application/json", 0, true);
+            auto response = std_patch::make_unique<BufferedResponse>("application/json", 0, true);
             response->print("{\"success\":true}");
-            request->send(response);
+            request->send(response.release());
         },
         [this](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
-            handleFileUpload(request, filename, index, data, len, final);
+            // Multipart callbacks run before the SDK's request middleware.
+            try {
+                handleFileUpload(request, filename, index, data, len, final);
+            } catch (const std::bad_alloc&) {
+                cleanUploadFile(request);
+                auto* upload = static_cast<UploadContext*>(request->_tempObject);
+                if (upload) upload->status = 503;
+                else request->abort();
+            }
         }
     );
 
@@ -692,27 +706,27 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
     // Driver dump routes (for diagnostics)
     m_server.on("/api/tuning/dump/theta", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
-        BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
+        auto response = std_patch::make_unique<BufferedResponse>("application/json", kResponseBufferSize);
         m_polarControl->writeThetaDriverSettings(*response);
-        request->send(response);
+        request->send(response.release());
     });
 
     m_server.on("/api/tuning/dump/rho", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
-        BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
+        auto response = std_patch::make_unique<BufferedResponse>("application/json", kResponseBufferSize);
         m_polarControl->writeRhoDriverSettings(*response,
             request->hasParam("motionHealth") &&
             request->getParam("motionHealth")->value() == "true");
-        request->send(response);
+        request->send(response.release());
     });
 
     m_server.on("/api/tuning/dump/rho-companion", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
-        BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
+        auto response = std_patch::make_unique<BufferedResponse>("application/json", kResponseBufferSize);
         m_polarControl->writeRhoCompanionDriverSettings(*response,
             request->hasParam("motionHealth") &&
             request->getParam("motionHealth")->value() == "true");
-        request->send(response);
+        request->send(response.release());
     });
 
     // SSE for position stream
@@ -866,7 +880,15 @@ const SisyphusWebServer::FileEntry* SisyphusWebServer::findFileEntryByBase(const
 }
 
 void SisyphusWebServer::loop() {
-    processPatternQueue();
+    try {
+        processPatternQueue();
+    } catch (const std::bad_alloc&) {
+        SemaphoreGuard stateLock(m_stateMutex);
+        m_polarControl->stop();
+        clearPlaybackLocked();
+        ErrorLog::instance().log("ERROR", "MOTION", "NO_MEMORY",
+                                 "Queued motion canceled: memory unavailable");
+    }
     broadcastPosition();
 }
 
@@ -1224,15 +1246,15 @@ void SisyphusWebServer::handleRoot(AsyncWebServerRequest *request) {
 
 void SisyphusWebServer::handleStatus(AsyncWebServerRequest *request) {
     SemaphoreGuard stateLock(m_stateMutex);
-    auto* response = new BufferedResponse("application/json", 0, true);
+    auto response = std_patch::make_unique<BufferedResponse>("application/json", 0, true);
     writeStatusJSON(*response);
-    request->send(response);
+    request->send(response.release());
 }
 
 void SisyphusWebServer::handleErrors(AsyncWebServerRequest *request) {
-    auto* response = new BufferedResponse("application/json");
+    auto response = std_patch::make_unique<BufferedResponse>("application/json");
     ErrorLog::instance().writeJson(*response);
-    request->send(response);
+    request->send(response.release());
 }
 
 void SisyphusWebServer::handleErrorsClear(AsyncWebServerRequest *request) {
@@ -1266,10 +1288,10 @@ void SisyphusWebServer::handleLogs(AsyncWebServerRequest *request) {
                       "{\"success\":false,\"message\":\"Invalid since or limit\"}");
         return;
     }
-    BufferedResponse *response = new BufferedResponse("application/json", 1024);
+    auto response = std_patch::make_unique<BufferedResponse>("application/json", 1024);
     response->addHeader("Cache-Control", "no-store");
     RuntimeLog::instance().writeJson(*response, since, limit);
-    request->send(response);
+    request->send(response.release());
 }
 
 void SisyphusWebServer::handleLogsText(AsyncWebServerRequest *request) {
@@ -1279,10 +1301,10 @@ void SisyphusWebServer::handleLogsText(AsyncWebServerRequest *request) {
         request->send(400, "text/plain", "Invalid since or limit\n");
         return;
     }
-    BufferedResponse *response = new BufferedResponse("text/plain", 1024);
+    auto response = std_patch::make_unique<BufferedResponse>("text/plain", 1024);
     response->addHeader("Cache-Control", "no-store");
     RuntimeLog::instance().writeText(*response, since, limit);
-    request->send(response);
+    request->send(response.release());
 }
 
 void SisyphusWebServer::handleLogsClear(AsyncWebServerRequest *request) {
@@ -1414,7 +1436,7 @@ void SisyphusWebServer::handleMotionTelemetry(AsyncWebServerRequest *request) {
     m_polarControl->getTelemetry(telemetry);
     const uint32_t sampleMicros = micros();
 
-    BufferedResponse *response = new BufferedResponse("application/json", 1536);
+    auto response = std_patch::make_unique<BufferedResponse>("application/json", 1536);
     response->print("{\"state\":\"");
     response->print(getStateString());
     response->printf(
@@ -1472,7 +1494,7 @@ void SisyphusWebServer::handleMotionTelemetry(AsyncWebServerRequest *request) {
     response->print(",\"commissioningAxis\":null");
 #endif
     response->print("}");
-    request->send(response);
+    request->send(response.release());
 }
 
 void SisyphusWebServer::handleRhoServiceModeGet(
@@ -1482,14 +1504,14 @@ void SisyphusWebServer::handleRhoServiceModeGet(
         "{\"success\":false,\"message\":\"RHO service mode is unavailable\"}");
 #else
     const bool commissioning = m_rhoCommissioningMode.load();
-    BufferedResponse *response = new BufferedResponse(
+    auto response = std_patch::make_unique<BufferedResponse>(
         "application/json", 192);
     response->printf(
         "{\"success\":true,\"mode\":\"%s\",\"originConfirmed\":%s,"
         "\"thetaLockedOut\":true,\"patternsLockedOut\":true}",
         commissioning ? "commissioning" : "manual",
         commissioning ? "true" : "false");
-    request->send(response);
+    request->send(response.release());
 #endif
 }
 
@@ -1837,7 +1859,7 @@ void SisyphusWebServer::handleHomingTrace(
     const size_t count = m_polarControl->getHomingTrace(
         samples.get(), kTraceCapacity, &total);
     const HomingStatus status = m_polarControl->getHomingStatus();
-    BufferedResponse *response = new BufferedResponse(
+    auto response = std_patch::make_unique<BufferedResponse>(
         "application/json", 256 + count * 128);
     response->printf("{\"cycle\":%lu,\"count\":%u,\"total\":%lu,\"samples\":[",
         static_cast<unsigned long>(status.cycle), static_cast<unsigned>(count),
@@ -1859,7 +1881,7 @@ void SisyphusWebServer::handleHomingTrace(
         response->print('}');
     }
     response->print("]}");
-    request->send(response);
+    request->send(response.release());
 }
 
 void SisyphusWebServer::handleHomeConfirm(AsyncWebServerRequest *request) {
@@ -1898,20 +1920,19 @@ void SisyphusWebServer::handleFileList(AsyncWebServerRequest *request) {
 
     bool isEmpty = true;
     if (m_cacheMutex) {
-        xSemaphoreTake(m_cacheMutex, portMAX_DELAY);
+        SemaphoreGuard cacheLock(m_cacheMutex);
         isEmpty = m_fileCache.empty();
-        xSemaphoreGive(m_cacheMutex);
     }
 
     // If cache is empty and we are marked dirty, it means we are likely initializing
     if (isEmpty && (m_fileListDirty || m_fileScanActive)) {
-        AsyncWebServerResponse *response = request->beginResponse(503, "application/json", "{\"success\":false,\"message\":\"File list generating...\"}");
+        std::unique_ptr<AsyncWebServerResponse> response(request->beginResponse(503, "application/json", "{\"success\":false,\"message\":\"File list generating...\"}"));
         response->addHeader("Retry-After", "1");
-        request->send(response);
+        request->send(response.release());
         return;
     }
 
-    BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
+    auto response = std_patch::make_unique<BufferedResponse>("application/json", kResponseBufferSize);
     response->print("{\"storageAvailable\":");
     response->print(isSDCardReady() ? "true" : "false");
     response->printf(",\"loading\":%s,\"revision\":%lu,\"files\":[",
@@ -1919,7 +1940,7 @@ void SisyphusWebServer::handleFileList(AsyncWebServerRequest *request) {
                      static_cast<unsigned long>(m_fileListRevision.load()));
 
     if (m_cacheMutex) {
-        xSemaphoreTake(m_cacheMutex, portMAX_DELAY);
+        SemaphoreGuard cacheLock(m_cacheMutex);
         for (size_t i = 0; i < m_fileCache.size(); i++) {
             if (i > 0) response->print(",");
             response->print("{\"name\":");
@@ -1929,11 +1950,10 @@ void SisyphusWebServer::handleFileList(AsyncWebServerRequest *request) {
                 m_fileCache[i].hasImage ? "true" : "false", m_fileCache[i].imageTime,
                 m_fileCache[i].thumbnailSize > 0 ? "true" : "false", m_fileCache[i].thumbnailTime);
         }
-        xSemaphoreGive(m_cacheMutex);
     }
 
     response->print("]}");
-    request->send(response);
+    request->send(response.release());
 }
 
 void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String filename,
@@ -1941,9 +1961,18 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
     // Coalesce a batch of uploads into one refresh after its writes settle.
     m_lastUploadActivity.store(millis());
     if (index == 0) {
+        // One file per request. Reject extra parts without replacing/leaking
+        // the context and staging handle belonging to the first part.
+        if (request->_tempObject) {
+            cleanUploadFile(request);
+            static_cast<UploadContext*>(request->_tempObject)->status = 400;
+            return;
+        }
+        noteRequest(request);
         UploadContext* upload = static_cast<UploadContext*>(calloc(1, sizeof(UploadContext)));
         request->_tempObject = upload;
         if (upload == nullptr) {
+            request->abort();
             return;
         }
 
@@ -2017,7 +2046,15 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
     upload->received += len;
 
     if (final) {
+        request->_tempFile.flush();
+        const bool completeWrite = !request->_tempFile.getWriteError() &&
+            request->_tempFile.size() == upload->received;
         request->_tempFile.close();
+        if (!completeWrite) {
+            upload->status = 507;
+            SD.remove(upload->tempPath);
+            return;
+        }
         const String backupPath = String(upload->finalPath) + ".bak";
         SD.remove(backupPath);
         const bool hadOriginal = SD.exists(upload->finalPath);
@@ -2032,6 +2069,8 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
             SD.remove(upload->tempPath);
             return;
         }
+        upload->complete = true;
+        m_fileListDirty.store(true);
         if (hadOriginal) SD.remove(backupPath);
         if (upload->originalImage) {
             // A changed full image invalidates the derivative. The browser
@@ -2039,7 +2078,6 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
             const String originalPath(upload->finalPath);
             SD.remove(originalPath.substring(0, originalPath.length() - 4) + ".thumb.png");
         }
-        m_fileListDirty.store(true);
         LOG("Upload complete: %s (%u bytes)\r\n",
             filename.c_str(), static_cast<unsigned>(upload->received));
     }
@@ -2061,26 +2099,30 @@ void SisyphusWebServer::handleFileDelete(AsyncWebServerRequest *request) {
     String basename = filename;
     if (basename.endsWith(".thr")) basename = basename.substring(0, basename.length() - 4);
 
-    String dirPath = "/patterns/" + basename;
-    String thrPath = dirPath + "/" + filename;
-    String pngPath = dirPath + "/" + basename + ".png";
-    bool deleted = false;
-
+    const String dirPath = "/patterns/" + basename;
+    const String flatPattern = "/patterns/" + filename;
+    const String flatImage = "/patterns/" + basename + ".png";
+    bool found = false;
+    bool deleted = true;
     if (SD.exists(dirPath)) {
-        // Delete entire pattern directory recursively
-        File dir = SD.open(dirPath);
-        bool isDir = dir && dir.isDirectory();
-        if (dir) dir.close();
-        if (isDir) {
-            deleted = removeDirectoryRecursive(dirPath.c_str());
+        found = true;
+        deleted = removeDirectoryRecursive(dirPath.c_str());
+    }
+    // Legacy flat patterns may also have a thumbnail-only directory. Removing
+    // that directory alone must not report success while the .thr remains.
+    for (const String* path : {&flatPattern, &flatImage}) {
+        if (SD.exists(*path)) {
+            found = true;
+            if (!SD.remove(*path)) deleted = false;
         }
     }
-
-    if (deleted) {
-        m_fileListDirty = true;
+    if (found) m_fileListDirty.store(true); // Refresh even after partial deletion.
+    if (found && deleted) {
         request->send(200, "application/json", "{\"success\":true}");
     } else {
-        request->send(404, "application/json", "{\"success\":false,\"message\":\"File not found\"}");
+        request->send(found ? 500 : 404, "application/json", found
+            ? "{\"success\":false,\"message\":\"Could not delete all pattern files\"}"
+            : "{\"success\":false,\"message\":\"File not found\"}");
     }
 }
 
@@ -2089,9 +2131,10 @@ void SisyphusWebServer::handleLEDBrightnessGet(AsyncWebServerRequest *request) {
     uint8_t brightness = m_ledController->getBrightness();
     doc["brightness"] = JsonHelpers::brightnessPercent(brightness);
 
-    BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
+    auto response = std_patch::make_unique<BufferedResponse>("application/json", kResponseBufferSize);
+    if (doc.overflowed()) throw std::bad_alloc();
     serializeJson(doc, *response);
-    request->send(response);
+    request->send(response.release());
 }
 
 void SisyphusWebServer::handleLEDBrightnessSet(AsyncWebServerRequest *request) {
@@ -2122,9 +2165,10 @@ void SisyphusWebServer::handleSpeedGet(AsyncWebServerRequest *request) {
     JsonDocument doc;
     doc["speed"] = m_polarControl->getSpeed();
 
-    BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
+    auto response = std_patch::make_unique<BufferedResponse>("application/json", kResponseBufferSize);
+    if (doc.overflowed()) throw std::bad_alloc();
     serializeJson(doc, *response);
-    request->send(response);
+    request->send(response.release());
 }
 
 void SisyphusWebServer::handleSpeedSet(AsyncWebServerRequest *request) {
@@ -2150,9 +2194,9 @@ void SisyphusWebServer::handleSpeedSet(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handleSystemInfo(AsyncWebServerRequest *request) {
-    BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
+    auto response = std_patch::make_unique<BufferedResponse>("application/json", kResponseBufferSize);
     writeSystemInfoJSON(*response);
-    request->send(response);
+    request->send(response.release());
 }
 
 // ============================================================================
@@ -2195,9 +2239,9 @@ void SisyphusWebServer::handlePlaylistAddAll(AsyncWebServerRequest *request) {
         }
     }
 
-    BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
+    auto response = std_patch::make_unique<BufferedResponse>("application/json", kResponseBufferSize);
     response->printf("{\"success\":true,\"count\":%d}", count);
-    request->send(response);
+    request->send(response.release());
 }
 
 void SisyphusWebServer::handlePlaylistRemove(AsyncWebServerRequest *request) {
@@ -2227,7 +2271,7 @@ void SisyphusWebServer::handlePlaylistClear(AsyncWebServerRequest *request) {
 
 void SisyphusWebServer::handlePlaylistGet(AsyncWebServerRequest *request) {
     SemaphoreGuard stateLock(m_stateMutex);
-    BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
+    auto response = std_patch::make_unique<BufferedResponse>("application/json", kResponseBufferSize);
     response->print("{\"loop\":");
     response->print(m_playlist.isLoop() ? "true" : "false");
     response->print(",\"playing\":");
@@ -2249,7 +2293,7 @@ void SisyphusWebServer::handlePlaylistGet(AsyncWebServerRequest *request) {
     }
 
     response->print("]}");
-    request->send(response);
+    request->send(response.release());
 }
 
 void SisyphusWebServer::handlePlaylistStart(AsyncWebServerRequest *request) {
@@ -2352,7 +2396,7 @@ void SisyphusWebServer::handlePlaylistList(AsyncWebServerRequest *request) {
             "{\"storageAvailable\":false,\"playlists\":[]}");
         return;
     }
-    BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
+    auto response = std_patch::make_unique<BufferedResponse>("application/json", kResponseBufferSize);
     response->print("{\"storageAvailable\":true,\"playlists\":[");
     bool first = true;
 
@@ -2381,7 +2425,7 @@ void SisyphusWebServer::handlePlaylistList(AsyncWebServerRequest *request) {
     }
 
     response->print("]}");
-    request->send(response);
+    request->send(response.release());
 }
 
 void SisyphusWebServer::handlePlaylistClearing(AsyncWebServerRequest *request) {
@@ -2497,7 +2541,7 @@ void SisyphusWebServer::handlePosition(AsyncWebServerRequest *request) {
         LOG("API Position: rho=%.2f theta=%.2f\r\n", actualPos.rho, actualPos.theta);
     }
 
-    BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
+    auto response = std_patch::make_unique<BufferedResponse>("application/json", kResponseBufferSize);
 
     if (isnan(actualPos.rho) || isnan(actualPos.theta)) {
         response->printf("{\"current\":null,\"maxRho\":%.2f}", maxRho);
@@ -2517,7 +2561,7 @@ void SisyphusWebServer::handlePosition(AsyncWebServerRequest *request) {
             norm.x, norm.y, actualPos.rho, actualPos.theta, actualVel.rho, actualVel.theta, cartVel, maxRho);
     }
 
-    request->send(response);
+    request->send(response.release());
 }
 
 // ============================================================================
@@ -2779,9 +2823,10 @@ void SisyphusWebServer::handleTuningGet(AsyncWebServerRequest *request) {
         Config::kRhoMaxUnmeasuredCurrentRegister;
     doc["persistenceAvailable"] = m_polarControl->tuningPersistenceAvailable();
 
-    BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
+    auto response = std_patch::make_unique<BufferedResponse>("application/json", kResponseBufferSize);
+    if (doc.overflowed()) throw std::bad_alloc();
     serializeJson(doc, *response);
-    request->send(response);
+    request->send(response.release());
 }
 
 void SisyphusWebServer::handleTuningMotionSet(AsyncWebServerRequest *request) {

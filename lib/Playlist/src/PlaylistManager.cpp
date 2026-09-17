@@ -1,7 +1,8 @@
 #include "PlaylistManager.hpp"
 #include <algorithm>
 #include <cctype>
-#include <random>
+#include <JsonPersistence.hpp>
+#include <new>
 
 static bool validSimpleName(const String& name, const char* extension) {
   if (name.length() == 0 || name.length() > 80 || name.indexOf('/') >= 0 ||
@@ -39,7 +40,9 @@ PlaylistManager::PlaylistManager()
 
 bool PlaylistManager::addPattern(const String& filename) {
   if (!validSimpleName(filename, ".thr") || m_playlist.size() >= 256) return false;
-  m_playlist.push_back(PlaylistItem(filename));
+  PlaylistItem item(filename);
+  if (item.filename != filename) return false;
+  m_playlist.push_back(std::move(item));
   return true;
 }
 
@@ -66,9 +69,14 @@ bool PlaylistManager::movePattern(int fromIndex, int toIndex) {
     return false;
   }
 
-  PlaylistItem item = m_playlist[fromIndex];
-  m_playlist.erase(m_playlist.begin() + fromIndex);
-  m_playlist.insert(m_playlist.begin() + toIndex, item);
+  // Rotate existing entries without allocating/copying filename strings.
+  if (fromIndex < toIndex) {
+    std::rotate(m_playlist.begin() + fromIndex,
+                m_playlist.begin() + fromIndex + 1, m_playlist.begin() + toIndex + 1);
+  } else {
+    std::rotate(m_playlist.begin() + toIndex,
+                m_playlist.begin() + fromIndex, m_playlist.begin() + fromIndex + 1);
+  }
 
   // Adjust current index if needed
   if (m_currentIndex == fromIndex) {
@@ -136,6 +144,7 @@ NextPatternResult PlaylistManager::getNextPattern() {
 
   const PlaylistItem& item = m_playlist[m_currentIndex];
   result.filename = item.filename;
+  if (result.filename != item.filename) throw std::bad_alloc();
 
   // Determine clearing
   if (m_clearingEnabled && !m_isFirstPattern) {
@@ -149,7 +158,7 @@ NextPatternResult PlaylistManager::getNextPattern() {
 
 void PlaylistManager::setCurrentIndex(int index) {
   if (index >= -1 && index < (int)m_playlist.size()) {
-    m_currentIndex = index - 1; // Set to previous so getNextPattern() returns index
+    m_currentIndex = index > 0 ? index - 1 : -1; // Set to previous so getNextPattern() returns index
     m_isFirstPattern = true; // Skip clearing if jumping manually
   }
 }
@@ -200,11 +209,12 @@ bool PlaylistManager::saveToFile(String filename) {
   doc["loop"] = m_loop;
   doc["clearing"] = m_clearingEnabled;
 
+  if (doc.overflowed()) return false;
   SD.remove(tempPath);
   File file = SD.open(tempPath.c_str(), FILE_WRITE);
   if (!file) return false;
 
-  if (serializeJson(doc, file) == 0) {
+  if (!writeCompleteJson(doc, file)) {
     file.close();
     SD.remove(tempPath);
     return false;
@@ -231,7 +241,7 @@ bool PlaylistManager::loadFromFile(String filename) {
   String path = "/playlists/" + filename + ".json";
 
   File file = SD.open(path.c_str(), FILE_READ);
-  if (!file) return false;
+  if (!file || file.size() > 32768) return false;
 
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, file);
@@ -240,12 +250,14 @@ bool PlaylistManager::loadFromFile(String filename) {
   if (error) return false;
   if (!doc["items"].is<JsonArray>()) return false;
 
-  std::vector<PlaylistItem> loaded;
+  std::deque<PlaylistItem> loaded;
   JsonArray arr = doc["items"];
   for (JsonObject obj : arr) {
     String f = obj["file"].as<String>();
     if (!validSimpleName(f, ".thr") || loaded.size() >= 256) return false;
-    loaded.push_back(PlaylistItem(f));
+    PlaylistItem item(f);
+    if (item.filename != f) return false;
+    loaded.push_back(std::move(item));
   }
 
   m_playlist.swap(loaded);

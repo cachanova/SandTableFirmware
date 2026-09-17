@@ -360,9 +360,14 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
         current={x:p.x,y:p.y,rho:Number(rho),theta:Number(theta)};
         document.getElementById('current').textContent=`ρ ${Number(rho).toFixed(1)} mm · θ ${(Number(theta)*180/Math.PI).toFixed(1)}°`; draw();
     }
+    let statusInFlight = false, positionInFlight = false;
     async function refreshStatus() {
+        if (statusInFlight) return;
+        statusInFlight = true;
+        const request = new AbortController();
+        const timeout = setTimeout(() => request.abort(), 4000);
         try {
-            const r=await fetch('/api/status'); if(!r.ok) throw new Error(); const data=await r.json();
+            const r=await fetch('/api/status', {signal:request.signal}); if(!r.ok) throw new Error(); const data=await r.json();
             const allowed=['IDLE','RUNNING','PAUSED','STOPPING','CLEARING','PREPARING']; enabled=!stopInProgress && geometryReady && allowed.includes(data.state);
             const jogAllowed=[...allowed,'INITIALIZED','HOMING_FAILED']; jogEnabled=!stopInProgress && jogAllowed.includes(data.state);
             const drivers=data.drivers || {};
@@ -372,13 +377,19 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
             setDriverState('driverRhoCompanion','Rho companion',drivers.rhoCompanion===true);
             stateEl.textContent=data.state.replaceAll('_',' '); dot.className='dot '+(enabled?'ready':'blocked'); updateControls();
         } catch (_) { enabled=false; jogEnabled=false; axes={theta:false,rho:false}; stateEl.textContent='Offline'; dot.className='dot blocked'; updateControls(); }
+        finally { clearTimeout(timeout); statusInFlight=false; }
     }
     async function initialPosition() {
+        if (positionInFlight) return;
+        positionInFlight = true;
+        const request = new AbortController();
+        const timeout = setTimeout(() => request.abort(), 4000);
         try {
-            const r=await fetch('/api/position'); if(!r.ok) throw new Error(); const data=await r.json();
+            const r=await fetch('/api/position', {signal:request.signal}); if(!r.ok) throw new Error(); const data=await r.json();
             const radius=Number(data.maxRho); if(!Number.isFinite(radius) || radius<=0) throw new Error();
             maxRho=radius; geometryReady=true; updatePosition(data.current); refreshStatus();
         } catch (_) { geometryReady=false; enabled=false; jogEnabled=false; updateControls(); }
+        finally { clearTimeout(timeout); positionInFlight=false; }
     }
     const events=new EventSource('/api/stream'); events.addEventListener('pos',ev=>{ try { updatePosition(JSON.parse(ev.data)); } catch (_) {} });
     window.addEventListener('resize',resize); resize(); initialPosition(); refreshStatus(); refreshRhoServiceMode(); setInterval(refreshStatus,1000); rhoServiceInterval=setInterval(refreshRhoServiceMode,1000); setInterval(()=>{ if(!geometryReady) initialPosition(); },2000);

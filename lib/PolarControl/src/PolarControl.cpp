@@ -1,3 +1,6 @@
+#include <SemaphoreGuard.hpp>
+#include <JsonPersistence.hpp>
+#include "PatternLineReader.hpp"
 #include "PolarControl.hpp"
 #include "RhoAcousticProfile.hpp"
 #include "PolarUtils.hpp"
@@ -2488,22 +2491,19 @@ bool PolarControl::jogRelative(float thetaDelta, float rhoDelta) {
         return false;
     }
 
-    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    SemaphoreGuard motionLock(m_mutex);
     const State_t entryState = m_state.load();
     if (entryState != IDLE && entryState != INITIALIZED &&
         entryState != HOMING_FAILED) {
-        xSemaphoreGive(m_mutex);
         return false;
     }
     if ((jogTheta && !m_thetaDriverConnected.load()) ||
         (jogRho && !m_rhoDriverConnected.load() &&
          !m_rhoCompanionDriverConnected.load())) {
-        xSemaphoreGive(m_mutex);
         return false;
     }
     if (jogRho && entryState != IDLE &&
         !prepareRhoDriversForManualJogLocked()) {
-        xSemaphoreGive(m_mutex);
         return false;
     }
 
@@ -2523,7 +2523,6 @@ bool PolarControl::jogRelative(float thetaDelta, float rhoDelta) {
         R_MAX, currentRho + (jogRho ? rhoDelta : 0.0f)));
     if ((jogTheta && fabsf(targetTheta - currentTheta) <= kMinimumDelta) ||
         (jogRho && fabsf(targetRho - currentRho) <= kMinimumDelta)) {
-        xSemaphoreGive(m_mutex);
         return false;
     }
 
@@ -2534,7 +2533,6 @@ bool PolarControl::jogRelative(float thetaDelta, float rhoDelta) {
     m_planner.start();
     m_motionCompletionState.store(entryState);
     m_state.store(RUNNING);
-    xSemaphoreGive(m_mutex);
     LOG("Manual %s jog started while %s\r\n",
         jogTheta ? "theta" : "rho",
         entryState == IDLE ? "homed" : "unhomed");
@@ -3548,7 +3546,7 @@ bool PolarControl::writeTuningSettingsLocked(
     const MotionSettings& motionSettings,
     const DriverSettings& thetaSettings,
     const DriverSettings& rhoSettings,
-    const HomingSettings& homingSettings) {
+    const HomingSettings& homingSettings) try {
     if (!m_tuningStorageReady.load()) {
         ErrorLog::instance().log("ERROR", "TUNING", "STORAGE_UNAVAILABLE",
                                  "LittleFS is unavailable; settings were not changed");
@@ -3580,6 +3578,8 @@ bool PolarControl::writeTuningSettingsLocked(
     homing["minimumTravelMs"] = homingSettings.minimumTravelMs;
     homing["verificationBackoffMm"] = homingSettings.verificationBackoffMm;
 
+    if (doc.overflowed()) return false;
+
     // Stage and atomically replace the old file so loss of power cannot leave
     // a half-written machine configuration.
     if (LittleFS.exists(TUNING_TEMP_FILE) &&
@@ -3596,10 +3596,7 @@ bool PolarControl::writeTuningSettingsLocked(
         return false;
     }
 
-    const size_t bytesWritten = serializeJsonPretty(doc, file);
-    file.flush();
-    const bool writeFailed = bytesWritten == 0 || file.getWriteError() != 0;
-    if (writeFailed) {
+    if (!writeCompleteJson(doc, file, true)) {
         file.close();
         LittleFS.remove(TUNING_TEMP_FILE);
         ErrorLog::instance().log("ERROR", "TUNING", "WRITE_FAILED",
@@ -3632,6 +3629,11 @@ bool PolarControl::writeTuningSettingsLocked(
     if (hadOriginal) LittleFS.remove(TUNING_BACKUP_FILE);
     LOG("Tuning settings saved to %s\r\n", TUNING_FILE);
     return true;
+} catch (const std::bad_alloc&) {
+    // Callers hold the motion lock and must receive a failure to release it.
+    ErrorLog::instance().log("ERROR", "TUNING", "NO_MEMORY",
+                             "Settings were not saved: memory unavailable");
+    return false;
 }
 
 bool PolarControl::saveTuningSettings() {
@@ -4321,11 +4323,13 @@ void PolarControl::writeThetaDriverSettings(Print& out) {
         writeDisconnectedDriver(out, "theta");
         return;
     }
-    xSemaphoreTake(m_mutex, portMAX_DELAY);
     JsonDocument doc;
-    fillDriverJson(m_tDriver, T_ADDR, "theta", doc);
+    {
+        SemaphoreGuard motionLock(m_mutex);
+        fillDriverJson(m_tDriver, T_ADDR, "theta", doc);
+    }
+    if (doc.overflowed()) throw std::bad_alloc();
     serializeJson(doc, out);
-    xSemaphoreGive(m_mutex);
 }
 
 void PolarControl::writeRhoDriverSettings(Print& out, bool motionHealthOnly) {
@@ -4341,12 +4345,14 @@ void PolarControl::writeRhoDriverSettings(Print& out, bool motionHealthOnly) {
         writeDisconnectedDriver(out, "rho");
         return;
     }
-    xSemaphoreTake(m_mutex, portMAX_DELAY);
     JsonDocument doc;
-    if (motionHealthOnly) fillMotionHealthJson(R_ADDR, "rho", doc);
-    else fillDriverJson(m_rDriver, R_ADDR, "rho", doc);
+    {
+        SemaphoreGuard motionLock(m_mutex);
+        if (motionHealthOnly) fillMotionHealthJson(R_ADDR, "rho", doc);
+        else fillDriverJson(m_rDriver, R_ADDR, "rho", doc);
+    }
+    if (doc.overflowed()) throw std::bad_alloc();
     serializeJson(doc, out);
-    xSemaphoreGive(m_mutex);
 }
 
 void PolarControl::writeRhoCompanionDriverSettings(Print& out, bool motionHealthOnly) {
@@ -4363,13 +4369,15 @@ void PolarControl::writeRhoCompanionDriverSettings(Print& out, bool motionHealth
         writeDisconnectedDriver(out, "rhoCompanion");
         return;
     }
-    xSemaphoreTake(m_mutex, portMAX_DELAY);
     JsonDocument doc;
-    if (motionHealthOnly) fillMotionHealthJson(RC_ADDR, "rhoCompanion", doc);
-    else fillDriverJson(m_rCDriver, RC_ADDR, "rhoCompanion", doc);
-    doc["motorConfigured"] = Config::kRhoCompanionMotorEnabled;
+    {
+        SemaphoreGuard motionLock(m_mutex);
+        if (motionHealthOnly) fillMotionHealthJson(RC_ADDR, "rhoCompanion", doc);
+        else fillDriverJson(m_rCDriver, RC_ADDR, "rhoCompanion", doc);
+        doc["motorConfigured"] = Config::kRhoCompanionMotorEnabled;
+    }
+    if (doc.overflowed()) throw std::bad_alloc();
     serializeJson(doc, out);
-    xSemaphoreGive(m_mutex);
 }
 
 // Parse a coordinate line (theta, rho format)
@@ -4424,51 +4432,9 @@ static bool parseLine(const char* line, float maxRho, PolarCord_t& out) {
     return true;
 }
 
-static bool readLineFromBuffer(File& file, char* buffer, size_t& bufLen, size_t& bufPos, bool& eof,
-                               char* lineBuf, size_t lineCap, size_t& lineLen, bool& overflow) {
-    lineLen = 0;
-    overflow = false;
-    while (true) {
-        if (bufPos >= bufLen) {
-            if (eof) {
-                if (lineLen > 0) {
-                    lineBuf[lineLen] = '\0';
-                    return true;
-                }
-                return false;
-            }
-            int readBytes = file.read(reinterpret_cast<uint8_t*>(buffer), 4096);
-            if (readBytes <= 0) {
-                eof = true;
-                if (lineLen > 0) {
-                    lineBuf[lineLen] = '\0';
-                    return true;
-                }
-                return false;
-            }
-            bufLen = static_cast<size_t>(readBytes);
-            bufPos = 0;
-        }
-
-        char c = buffer[bufPos++];
-        if (c == '\n') {
-            lineBuf[lineLen] = '\0';
-            return true;
-        }
-        if (c == '\r') {
-            continue;
-        }
-        if (lineLen + 1 < lineCap) {
-            lineBuf[lineLen++] = c;
-        } else {
-            overflow = true;
-        }
-    }
-}
-
 void PolarControl::fileReadTask(void* arg) {
     PolarControl* pc = static_cast<PolarControl*>(arg);
-    FileCommand cmd;
+    FileCommand cmd{};
     File directFile;
     float directMaxRho = 0.0f;
     bool directActive = false;
@@ -4488,126 +4454,145 @@ void PolarControl::fileReadTask(void* arg) {
     bool hasPendingPos = false;
 
     while (true) {
-        // Check for commands (non-blocking if reading, blocking if idle)
-        // If we have a pending pos, we MUST check for STOP commands but ignore LOAD
-        // (though LOAD shouldn't happen while active usually)
-        if (xQueueReceive(pc->m_cmdQueue, &cmd, (directActive || hasPendingPos) ? 0 : portMAX_DELAY) == pdTRUE) {
-            LOG("FileTask: Received command %d\r\n", cmd.type);
-            if (cmd.type == FileCommand::CMD_LOAD) {
-                if (directFile) directFile.close();
-                hasPendingPos = false;
-                xQueueReset(pc->m_coordQueue);
-                pc->m_fileLoading.store(true);
-                LOG("FileTask: Opening %s with maxRho=%.2f\r\n", cmd.filename, cmd.maxRho);
-                strncpy(currentFilename, cmd.filename, sizeof(currentFilename) - 1);
-                currentFilename[sizeof(currentFilename) - 1] = '\0';
-                overflowLogged = false;
-                directFile = SD.open(cmd.filename, FILE_READ);
-                if (directFile) {
-                    directActive = true;
-                    directMaxRho = cmd.maxRho;
-                    pc->m_lastFileLine.store(0);
-                    pc->m_lastFilePos.store(0);
-                    pc->m_lastFileSize.store(static_cast<uint32_t>(directFile.size()));
-                    hasPendingPos = false; // Reset pending
-                    directBufLen = 0;
-                    directBufPos = 0;
-                    directEof = false;
-                    LOG("FileTask: Direct file open, active=true\r\n");
-                } else {
-                    LOG("FileTask: Failed to open file\r\n");
-                    ErrorLog::instance().log("ERROR", "FILE", "OPEN_FAILED",
-                                             "File task failed to open file", cmd.filename);
-                    pc->m_fileLoading = false;
+        try {
+            // Service the latest STOP/LOAD even when a coordinate is waiting
+            // for queue space. Block only while there is no active file.
+            if (xQueueReceive(pc->m_cmdQueue, &cmd, (directActive || hasPendingPos) ? 0 : portMAX_DELAY) == pdTRUE) {
+                LOG("FileTask: Received command %d\r\n", cmd.type);
+                if (cmd.type == FileCommand::CMD_LOAD) {
+                    if (directFile) directFile.close();
+                    hasPendingPos = false;
+                    xQueueReset(pc->m_coordQueue);
+                    pc->m_fileLoading.store(true);
+                    LOG("FileTask: Opening %s with maxRho=%.2f\r\n", cmd.filename, cmd.maxRho);
+                    strncpy(currentFilename, cmd.filename, sizeof(currentFilename) - 1);
+                    currentFilename[sizeof(currentFilename) - 1] = '\0';
+                    overflowLogged = false;
+                    directFile = SD.open(cmd.filename, FILE_READ);
+                    if (directFile) {
+                        directFile.setBufferSize(512);
+                        directActive = true;
+                        directMaxRho = cmd.maxRho;
+                        pc->m_lastFileLine.store(0);
+                        pc->m_lastFilePos.store(0);
+                        pc->m_lastFileSize.store(static_cast<uint32_t>(directFile.size()));
+                        hasPendingPos = false; // Reset pending
+                        directBufLen = 0;
+                        directBufPos = 0;
+                        directEof = false;
+                        LOG("FileTask: Direct file open, active=true\r\n");
+                    } else {
+                        LOG("FileTask: Failed to open file\r\n");
+                        ErrorLog::instance().log("ERROR", "FILE", "OPEN_FAILED",
+                                                 "File task failed to open file", cmd.filename);
+                        pc->m_fileLoading = false;
+                        directActive = false;
+                        pc->m_lastFilePos.store(0);
+                        pc->m_lastFileSize.store(0);
+                    }
+                    pc->m_fileReadyGeneration.store(cmd.generation);
+                } else if (cmd.type == FileCommand::CMD_STOP) {
+                    LOG("FileTask: Stopping\r\n");
+                    if (directFile) {
+                        directFile.close();
+                    }
                     directActive = false;
+                    hasPendingPos = false;
+                    pc->m_fileLoading = false;
                     pc->m_lastFilePos.store(0);
                     pc->m_lastFileSize.store(0);
-                }
-                pc->m_fileReadyGeneration.store(cmd.generation);
-            } else if (cmd.type == FileCommand::CMD_STOP) {
-                LOG("FileTask: Stopping\r\n");
-                if (directFile) {
-                    directFile.close();
-                }
-                directActive = false;
-                hasPendingPos = false;
-                pc->m_fileLoading = false;
-                pc->m_lastFilePos.store(0);
-                pc->m_lastFileSize.store(0);
-                // Clear queue
-                PolarCord_t dummy;
-                while (xQueueReceive(pc->m_coordQueue, &dummy, 0) == pdTRUE);
-            }
-        }
-
-        if (directActive) {
-            // Only read next line if we don't have one pending
-            if (!hasPendingPos) {
-                bool hasLine = readLineFromBuffer(
-                    directFile,
-                    directBuffer,
-                    directBufLen,
-                    directBufPos,
-                    directEof,
-                    lineBuffer,
-                    sizeof(lineBuffer),
-                    lineLen,
-                    lineOverflow);
-                size_t unreadBytes = 0;
-                if (directBufLen >= directBufPos) {
-                    unreadBytes = directBufLen - directBufPos;
-                }
-                size_t filePos = directFile.position();
-                size_t consumedPos = (filePos >= unreadBytes) ? (filePos - unreadBytes) : 0;
-
-                if (!hasLine && directEof) {
-                    directFile.close();
-                    directActive = false;
-                    pc->m_fileLoading = false;
-                    pc->m_lastFilePos.store(pc->m_lastFileSize.load());
-                    LOG("Direct file: EOF reached\r\n");
-                } else {
-                    pc->m_lastFilePos.store(static_cast<uint32_t>(consumedPos));
-                    if (hasLine && lineOverflow && !overflowLogged) {
-                        LOG("FileTask: Line overflow, skipping long line\r\n");
-                        ErrorLog::instance().log("ERROR", "FILE", "LINE_OVERFLOW",
-                                                 "Pattern line exceeded buffer", currentFilename);
-                        overflowLogged = true;
-                    }
-                    if (!lineOverflow && parseLine(lineBuffer, directMaxRho, pendingPos)) {
-                        hasPendingPos = true;
-                    }
-                    // If parse failed (comment/empty), loop continues to read next line
+                    // Clear queue
+                    PolarCord_t dummy;
+                    while (xQueueReceive(pc->m_coordQueue, &dummy, 0) == pdTRUE);
                 }
             }
 
-            // If we have a position, try to send it
-            if (hasPendingPos) {
-                if (xQueueSend(pc->m_coordQueue, &pendingPos, 0) == pdTRUE) {
-                    // Success
-                    hasPendingPos = false;
-                    pc->m_lastFileLine.fetch_add(1);
-                    // Throttle if the queue is near full to keep Core 0 responsive.
-                    UBaseType_t spaces = uxQueueSpacesAvailable(pc->m_coordQueue);
-                    if (spaces <= 64) {
-                        vTaskDelay(2);
+            if (directActive) {
+                // Only read next line if we don't have one pending
+                if (!hasPendingPos) {
+                    bool interrupted = false;
+                    bool hasLine = readPatternLine(
+                        directFile,
+                        directBuffer, sizeof(directBuffer),
+                        directBufLen,
+                        directBufPos,
+                        directEof,
+                        lineBuffer,
+                        sizeof(lineBuffer),
+                        lineLen,
+                        lineOverflow,
+                        [pc] { return uxQueueMessagesWaiting(pc->m_cmdQueue) != 0; },
+                        [] { vTaskDelay(1); }, interrupted);
+                    if (interrupted) continue;
+                    size_t unreadBytes = 0;
+                    if (directBufLen >= directBufPos) {
+                        unreadBytes = directBufLen - directBufPos;
+                    }
+                    size_t filePos = directFile.position();
+                    size_t consumedPos = (filePos >= unreadBytes) ? (filePos - unreadBytes) : 0;
+
+                    if (!hasLine && directEof) {
+                        directFile.close();
+                        directActive = false;
+                        pc->m_fileLoading = false;
+                        pc->m_lastFilePos.store(pc->m_lastFileSize.load());
+                        LOG("Direct file: EOF reached\r\n");
                     } else {
-                        taskYIELD();
+                        pc->m_lastFilePos.store(static_cast<uint32_t>(consumedPos));
+                        if (hasLine && lineOverflow && !overflowLogged) {
+                            LOG("FileTask: Line overflow, skipping long line\r\n");
+                            ErrorLog::instance().log("ERROR", "FILE", "LINE_OVERFLOW",
+                                                     "Pattern line exceeded buffer", currentFilename);
+                            overflowLogged = true;
+                        }
+                        if (!lineOverflow && parseLine(lineBuffer, directMaxRho, pendingPos)) {
+                            hasPendingPos = true;
+                        }
+                        // If parse failed (comment/empty), loop continues to read next line
+                    }
+                }
+
+                // If we have a position, try to send it
+                if (hasPendingPos) {
+                    if (xQueueSend(pc->m_coordQueue, &pendingPos, 0) == pdTRUE) {
+                        // Success
+                        hasPendingPos = false;
+                        pc->m_lastFileLine.fetch_add(1);
+                        // Throttle if the queue is near full to keep Core 0 responsive.
+                        UBaseType_t spaces = uxQueueSpacesAvailable(pc->m_coordQueue);
+                        if (spaces <= 64) {
+                            vTaskDelay(2);
+                        } else {
+                            taskYIELD();
+                        }
+                    } else {
+                        // Queue full - yield and retry next loop
+                        vTaskDelay(2);
                     }
                 } else {
-                    // Queue full - yield and retry next loop
-                    vTaskDelay(2);
+                    // Yield to allow other tasks on Core 0 (like WebServer) to run
+                    // Only yield if we didn't just push data (to keep throughput high when queue is open)
+                    vTaskDelay(1);
                 }
-            } else {
-                // Yield to allow other tasks on Core 0 (like WebServer) to run
-                // Only yield if we didn't just push data (to keep throughput high when queue is open)
-                vTaskDelay(1);
-            }
 
-            // Periodic cooperative yield to avoid starving the webserver.
-            if ((++yieldCounter % 16) == 0) {
-                vTaskDelay(1);
+                // Periodic cooperative yield to avoid starving the webserver.
+                if ((++yieldCounter % 16) == 0) {
+                    vTaskDelay(1);
+                }
             }
+        } catch (const std::bad_alloc&) {
+            directFile.close();
+            directActive = false;
+            hasPendingPos = false;
+            xQueueReset(pc->m_coordQueue);
+            pc->m_fileLoading.store(false);
+            pc->m_lastFilePos.store(0);
+            pc->m_lastFileSize.store(0);
+            if (cmd.type == FileCommand::CMD_LOAD) {
+                pc->m_fileReadyGeneration.store(cmd.generation);
+            }
+            ErrorLog::instance().log("ERROR", "FILE", "NO_MEMORY",
+                                     "Pattern read stopped: memory unavailable");
         }
     }
 }
