@@ -807,6 +807,18 @@ void MotionPlanner::process() {
         bool generationFinished = (m_genSegmentIdx == m_segmentHead);
 
         if (queueFull || (hasData && (horizonReached || generationFinished))) {
+            // Queue preparation can take several motor-task passes on ESP32.
+            // Anchor the complete prepared timeline just before arming the
+            // timer, so the first pulses never race to catch up with that work.
+            const uint64_t offset = plannerMicros() + 1000 - m_segmentStartTime;
+            for (int i = m_stepQueueTail.load(); i != m_stepQueueHead.load();
+                 i = (i + 1) % STEP_QUEUE_SIZE) {
+                m_stepQueue[i].executeTime += static_cast<uint32_t>(offset);
+            }
+            m_segmentStartTime += offset;
+            m_genSegmentStartTime += offset;
+            if (m_lastQueuedEventTimeValid)
+                m_lastQueuedEventTime += static_cast<uint32_t>(offset);
             m_startupHoldoff = false;
         }
     }
@@ -833,7 +845,7 @@ void MotionPlanner::process() {
         // Calculate elapsed time in current segment
         uint64_t segmentNow = plannerMicros();
         // Handle timer wraparound for elapsed calculation
-        uint64_t diff = segmentNow - m_segmentStartTime;
+        uint64_t diff = segmentNow > m_segmentStartTime ? segmentNow - m_segmentStartTime : 0;
         double elapsed = diff / 1000000.0;
 
         // Check if current segment is complete
@@ -1020,7 +1032,9 @@ void MotionPlanner::getCurrentVelocity(float& theta, float& rho) const {
     const Segment& s = m_segments[m_segmentTail];
     if (!s.calculated)
         return;
-    const double time = std::min(s.duration, (plannerMicros() - m_segmentStartTime) / 1000000.0);
+    const uint64_t now = plannerMicros();
+    const double elapsed = now > m_segmentStartTime ? (now - m_segmentStartTime) / 1000000.0 : 0;
+    const double time = std::min(s.duration, elapsed);
     const PathPoint direction = s.path.tangent(segmentDistance(s, time));
     const double speed = segmentSpeed(s, time);
     theta = direction.theta * speed;

@@ -18,6 +18,9 @@ void require(bool ok, const char *message) {
 }
 struct MotionAccuracyTestAccess {
     static Segment &at(MotionPlanner &p, int i) { return p.m_segments[i]; }
+    static uint32_t firstEventTime(const MotionPlanner &p) {
+        return p.m_stepQueue[p.m_stepQueueTail.load()].executeTime;
+    }
     static bool allGenerated(const MotionPlanner &p) {
         return p.m_genSegmentIdx == p.m_segmentHead;
     }
@@ -259,6 +262,33 @@ void geometry() {
     }
     std::cout << "PASS strict/shared geometry, bounded corners, axis and ball limits\n";
 }
+void delayedStartup() {
+    MotionPlanner p;
+    init(p);
+    p.addSegment(.1, 10);
+    p.setEndOfPattern(true);
+    p.recalculate();
+    p.start();
+    // Model planning/task scheduling time that the deterministic native clock
+    // otherwise omits. No pulse timer is armed until the queue is prepared.
+    advanceMicros(100000);
+    p.process();
+    require(int32_t(MotionAccuracyTestAccess::firstEventTime(p) - micros()) >= 1000,
+            "startup emitted overdue pulses after queue preparation");
+    float theta, rho;
+    p.getCurrentVelocity(theta, rho);
+    require(theta == 0 && rho == 0, "future startup timestamp underflowed velocity clock");
+    run(p);
+    PlannerTelemetry telemetry;
+    p.getTelemetry(telemetry);
+    require(telemetry.thetaStepTiming.maxLatenessUs <= STEP_TIMER_PERIOD_US &&
+                telemetry.rhoStepTiming.maxLatenessUs <= STEP_TIMER_PERIOD_US,
+            "startup delay caused pulse catch-up");
+    require(MotionAccuracyTestAccess::theta(p) == std::llround(.1 * kThetaSteps) &&
+                MotionAccuracyTestAccess::rho(p) == 4000,
+            "startup rebase lost target steps");
+    std::cout << "PASS delayed startup anchors queued events to the armed timer\n";
+}
 void clockAndEndpoint() {
     MotionPlanner p;
     init(p, 0);
@@ -392,6 +422,7 @@ int main() try {
     conversion();
     parser();
     geometry();
+    delayedStartup();
     clockAndEndpoint();
     pauseResume();
     streaming();

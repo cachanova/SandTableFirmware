@@ -115,8 +115,9 @@ The Web UI accepts `.thr` plus optional `.png` uploads with the same base name. 
   embedded NULs, empty files, and motor-step overflow reject the file with a line
   number. Blank lines and `#` / `//` comments are accepted.
 - Moving from the current position to the first THR coordinate is an explicit
-  approach and can draw a connecting line. File coordinates are absolute; theta
-  is neither wrapped nor rotated to choose a shorter approach.
+  approach and can draw a connecting line. The existing playback controller resets
+  the logical theta origin at each new pattern; within that frame, file angles
+  stay unwrapped and the planner preserves every requested turn.
 
 See [motion accuracy implementation and validation](docs/MOTION_ACCURACY_IMPLEMENTATION.md)
 for measured changes, timing tradeoffs, reproduction commands, and physical checks.

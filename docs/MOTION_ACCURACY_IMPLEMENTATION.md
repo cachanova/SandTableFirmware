@@ -107,8 +107,10 @@ all reduce speed below the slider's requested fraction. Bounds are conservative;
 a future optimization could recover some speed while maintaining them.
 
 An absolute move to the first coordinate remains visible as an approach line.
-Playlist transitions preserve that behavior. Playback does not silently rotate
-a file or remove its unwrapped turns to make a shorter transition.
+The existing playback controller resets logical theta to zero at each new
+pattern (including playlist transitions), so the pattern frame starts at the
+current physical angle. Within that frame, the planner preserves absolute THR
+angles and all unwrapped turns; it does not choose shortest angular moves.
 
 The production build uses **112,000 bytes static RAM (34.2%)** and
 **1,433,209 bytes flash (91.1%)**. Static RAM is 8,936 bytes above the assessed
