@@ -1,5 +1,9 @@
 # Motion accuracy review and deployment
 
+Follow-up (2026-09-17): the web/heap reserve fix and passing stationary, motion,
+and cancellation checks are documented in [WEB_HEAP_RESERVE.md](WEB_HEAP_RESERVE.md).
+The measurements below retain their original firmware and test context.
+
 The motion branch was rebased onto main `a1f1750` before deployment, retaining
 presence sensing, selected sound settings, allocation-failure handling, and
 the interruptible file reader. The file-reader conflict was resolved by using

@@ -1,0 +1,707 @@
+{
+  "date": "2026-09-17",
+  "base_commit": "f8dda0ed0988c2c85561686e16cea108d6706deb",
+  "firmware_source_commit": "231995426aa444bcb64c00f0fdc20ebf258c9013",
+  "firmware_sha256": "9d010532eebe1ddd66dde883c7e34773df699b375377c2f86f654bbbd8c2d608",
+  "static_ram_bytes": 95368,
+  "application_flash_bytes": 1465965,
+  "reserve_floor_bytes": 8192,
+  "largest_block_floor_bytes": 4096,
+  "idle_load": {
+    "passed": true,
+    "duration_s": 186.28095626202412,
+    "failures": [],
+    "initial_memory": {
+      "heap": 83336,
+      "largestFreeBlock": 40948,
+      "minimumFreeHeap": 76204,
+      "heap8Bit": 43412,
+      "largestFree8BitBlock": 40948,
+      "minimumFree8BitHeap": 37340,
+      "uptime": 30,
+      "wifi": {
+        "rssi": -66,
+        "sleep": 0
+      }
+    },
+    "final_memory": {
+      "heap": 82832,
+      "largestFreeBlock": 36852,
+      "minimumFreeHeap": 51664,
+      "heap8Bit": 42908,
+      "largestFree8BitBlock": 34804,
+      "minimumFree8BitHeap": 12800,
+      "uptime": 216,
+      "wifi": {
+        "rssi": -65,
+        "sleep": 0
+      }
+    },
+    "busy_responses": 143,
+    "sse_events": [
+      175,
+      174
+    ],
+    "image_sha256": {
+      "shell.thr": "fe43a4bf49959ff1da366abd10241f702363c33d31cf95109166ba7c154004bb",
+      "Spiral7.thr": "355259d20cc59450f9349505b50084b8a4fd7be4f1160b964399dba0d8ab71f6",
+      "Spiral8.thr": "768201a908c7febafb6b4b466bde4134a2af6cf1b775f9d8cfbf1e6888eb751e",
+      "Spiral6.thr": "9bad9f26c65cc6df3db0ade974c071bcc542a6351816bc6c2fea467510ad84a3"
+    },
+    "latencies": {
+      "/api/status": {
+        "count": 162,
+        "p50_ms": 34.125,
+        "p95_ms": 65.04,
+        "max_ms": 1170.42
+      },
+      "/api/system/info": {
+        "count": 162,
+        "p50_ms": 39.75,
+        "p95_ms": 64.28,
+        "max_ms": 1096.84
+      },
+      "/api/errors": {
+        "count": 2,
+        "p50_ms": 26.604999999999997,
+        "p95_ms": 22.99,
+        "max_ms": 30.22
+      },
+      "/api/files": {
+        "count": 76,
+        "p50_ms": 54.775,
+        "p95_ms": 101.56,
+        "max_ms": 175.86
+      },
+      "/api/pattern/image": {
+        "count": 88,
+        "p50_ms": 1500.96,
+        "p95_ms": 3867.96,
+        "max_ms": 4528.79
+      },
+      "/": {
+        "count": 75,
+        "p50_ms": 43.13,
+        "p95_ms": 681.25,
+        "max_ms": 2378.1
+      },
+      "/settings": {
+        "count": 75,
+        "p50_ms": 37.91,
+        "p95_ms": 250.0,
+        "max_ms": 270.17
+      },
+      "/api/presence": {
+        "count": 75,
+        "p50_ms": 29.32,
+        "p95_ms": 63.61,
+        "max_ms": 122.48
+      },
+      "/api/logs/text": {
+        "count": 1,
+        "p50_ms": 44.31,
+        "p95_ms": 44.31,
+        "max_ms": 44.31
+      }
+    },
+    "requests": 716,
+    "sampled_minimum_free_8bit": 21220,
+    "sampled_minimum_largest_8bit": 17396,
+    "completed_images": 64,
+    "no_new_errors": true
+  },
+  "motion_load": {
+    "passed": true,
+    "duration_s": 87.70501895691268,
+    "failures": [],
+    "initial_memory": {
+      "heap": 82384,
+      "largestFreeBlock": 36852,
+      "minimumFreeHeap": 51664,
+      "heap8Bit": 42460,
+      "largestFree8BitBlock": 34804,
+      "minimumFree8BitHeap": 12800,
+      "uptime": 220,
+      "wifi": {
+        "rssi": -66,
+        "sleep": 0
+      }
+    },
+    "final_sample_memory": {
+      "heap": 69324,
+      "largestFreeBlock": 36852,
+      "minimumFreeHeap": 51664,
+      "heap8Bit": 29400,
+      "largestFree8BitBlock": 25588,
+      "minimumFree8BitHeap": 12800,
+      "uptime": 309,
+      "wifi": {
+        "rssi": -65,
+        "sleep": 0
+      }
+    },
+    "minimum_free_8bit": 12800,
+    "sampled_minimum_free_8bit": 22000,
+    "sampled_minimum_largest_8bit": 15860,
+    "sse_events": 2298,
+    "telemetry_samples": 212,
+    "final_telemetry": {
+      "state": "IDLE",
+      "millis": 309091,
+      "micros": 309091673,
+      "position": {
+        "rho": 212.5,
+        "theta": 6.280044
+      },
+      "velocity": {
+        "rho": 0.0,
+        "theta": 0.0
+      },
+      "planner": {
+        "queueDepth": 0,
+        "minQueueDepth": 0,
+        "underruns": 0,
+        "maxConsecutiveUnderruns": 0,
+        "completedCount": 64,
+        "timerActive": false,
+        "running": false
+      },
+      "stepMotion": {
+        "epoch": 1,
+        "startMicros": 224176781,
+        "stopMicros": 308976145,
+        "active": false
+      },
+      "stepTiming": {
+        "source": "hardware-timer-tg1-t0",
+        "thresholdUs": 100,
+        "callback": {
+          "valid": true,
+          "gaps": 5,
+          "maxGapUs": 113,
+          "lastMicros": 278274241,
+          "lastGapUs": 102
+        },
+        "theta": {
+          "valid": true,
+          "steps": 11994,
+          "outliers": 0,
+          "maxLateUs": 88,
+          "maxIntervalErrorUs": 55,
+          "last": {
+            "epoch": 0,
+            "scheduledMicros": 0,
+            "actualMicros": 0,
+            "plannedIntervalUs": 0,
+            "actualIntervalUs": 0,
+            "intervalValid": false
+          }
+        },
+        "rho": {
+          "valid": true,
+          "steps": 85000,
+          "outliers": 0,
+          "maxLateUs": 83,
+          "maxIntervalErrorUs": 50,
+          "last": {
+            "epoch": 0,
+            "scheduledMicros": 0,
+            "actualMicros": 0,
+            "plannedIntervalUs": 0,
+            "actualIntervalUs": 0,
+            "intervalValid": false
+          }
+        }
+      },
+      "benchMotionTest": false,
+      "commissioningAxis": null
+    }
+  },
+  "cancellation_load": {
+    "passed": true,
+    "cycles": [
+      {
+        "file": "shell.thr",
+        "memory": {
+          "heap": 80980,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 41056,
+          "largestFree8BitBlock": 34804,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 350,
+          "wifi": {
+            "rssi": -65,
+            "sleep": 0
+          }
+        },
+        "seconds": 2.7072068478446454
+      },
+      {
+        "file": "Spiral7.thr",
+        "memory": {
+          "heap": 80760,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 40836,
+          "largestFree8BitBlock": 34804,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 352,
+          "wifi": {
+            "rssi": -64,
+            "sleep": 0
+          }
+        },
+        "seconds": 2.1741488589905202
+      },
+      {
+        "file": "Spiral8.thr",
+        "memory": {
+          "heap": 80116,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 40192,
+          "largestFree8BitBlock": 34804,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 354,
+          "wifi": {
+            "rssi": -65,
+            "sleep": 0
+          }
+        },
+        "seconds": 1.9330985308624804
+      },
+      {
+        "file": "Spiral6.thr",
+        "memory": {
+          "heap": 80256,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 40332,
+          "largestFree8BitBlock": 34804,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 358,
+          "wifi": {
+            "rssi": -65,
+            "sleep": 0
+          }
+        },
+        "seconds": 4.561994811985642
+      },
+      {
+        "file": "shell.thr",
+        "memory": {
+          "heap": 74160,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 34236,
+          "largestFree8BitBlock": 26612,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 360,
+          "wifi": {
+            "rssi": -64,
+            "sleep": 0
+          }
+        },
+        "seconds": 1.718056342098862
+      },
+      {
+        "file": "Spiral7.thr",
+        "memory": {
+          "heap": 74172,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 34248,
+          "largestFree8BitBlock": 25588,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 361,
+          "wifi": {
+            "rssi": -64,
+            "sleep": 0
+          }
+        },
+        "seconds": 1.461582985939458
+      },
+      {
+        "file": "Spiral8.thr",
+        "memory": {
+          "heap": 80556,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 40632,
+          "largestFree8BitBlock": 34804,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 363,
+          "wifi": {
+            "rssi": -66,
+            "sleep": 0
+          }
+        },
+        "seconds": 1.6545395229477435
+      },
+      {
+        "file": "Spiral6.thr",
+        "memory": {
+          "heap": 74016,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 34092,
+          "largestFree8BitBlock": 26612,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 366,
+          "wifi": {
+            "rssi": -65,
+            "sleep": 0
+          }
+        },
+        "seconds": 2.677146561909467
+      },
+      {
+        "file": "shell.thr",
+        "memory": {
+          "heap": 80520,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 40596,
+          "largestFree8BitBlock": 34804,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 368,
+          "wifi": {
+            "rssi": -64,
+            "sleep": 0
+          }
+        },
+        "seconds": 2.636043088976294
+      },
+      {
+        "file": "Spiral7.thr",
+        "memory": {
+          "heap": 80520,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 40596,
+          "largestFree8BitBlock": 27636,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 370,
+          "wifi": {
+            "rssi": -64,
+            "sleep": 0
+          }
+        },
+        "seconds": 1.4841437521390617
+      },
+      {
+        "file": "Spiral8.thr",
+        "memory": {
+          "heap": 74092,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 34168,
+          "largestFree8BitBlock": 23540,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 372,
+          "wifi": {
+            "rssi": -65,
+            "sleep": 0
+          }
+        },
+        "seconds": 1.7058213169220835
+      },
+      {
+        "file": "Spiral6.thr",
+        "memory": {
+          "heap": 80384,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 40460,
+          "largestFree8BitBlock": 27636,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 374,
+          "wifi": {
+            "rssi": -64,
+            "sleep": 0
+          }
+        },
+        "seconds": 2.7073944648727775
+      },
+      {
+        "file": "shell.thr",
+        "memory": {
+          "heap": 80764,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 40840,
+          "largestFree8BitBlock": 27636,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 377,
+          "wifi": {
+            "rssi": -64,
+            "sleep": 0
+          }
+        },
+        "seconds": 2.6577703410293907
+      },
+      {
+        "file": "Spiral7.thr",
+        "memory": {
+          "heap": 74164,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 34240,
+          "largestFree8BitBlock": 23540,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 378,
+          "wifi": {
+            "rssi": -64,
+            "sleep": 0
+          }
+        },
+        "seconds": 1.4462142491247505
+      },
+      {
+        "file": "Spiral8.thr",
+        "memory": {
+          "heap": 80508,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 40584,
+          "largestFree8BitBlock": 27636,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 381,
+          "wifi": {
+            "rssi": -65,
+            "sleep": 0
+          }
+        },
+        "seconds": 2.6285922389943153
+      },
+      {
+        "file": "Spiral6.thr",
+        "memory": {
+          "heap": 80240,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 40316,
+          "largestFree8BitBlock": 27636,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 384,
+          "wifi": {
+            "rssi": -65,
+            "sleep": 0
+          }
+        },
+        "seconds": 2.5606067969929427
+      },
+      {
+        "file": "shell.thr",
+        "memory": {
+          "heap": 79044,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 39120,
+          "largestFree8BitBlock": 27636,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 385,
+          "wifi": {
+            "rssi": -65,
+            "sleep": 0
+          }
+        },
+        "seconds": 1.5009590559639037
+      },
+      {
+        "file": "Spiral7.thr",
+        "memory": {
+          "heap": 67564,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 27640,
+          "largestFree8BitBlock": 23540,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 386,
+          "wifi": {
+            "rssi": -64,
+            "sleep": 0
+          }
+        },
+        "seconds": 1.2770516881719232
+      },
+      {
+        "file": "Spiral8.thr",
+        "memory": {
+          "heap": 74312,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 34388,
+          "largestFree8BitBlock": 23540,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 388,
+          "wifi": {
+            "rssi": -64,
+            "sleep": 0
+          }
+        },
+        "seconds": 1.769846857059747
+      },
+      {
+        "file": "Spiral6.thr",
+        "memory": {
+          "heap": 76004,
+          "largestFreeBlock": 36852,
+          "minimumFreeHeap": 51664,
+          "heap8Bit": 36080,
+          "largestFree8BitBlock": 23540,
+          "minimumFree8BitHeap": 12800,
+          "uptime": 391,
+          "wifi": {
+            "rssi": -64,
+            "sleep": 0
+          }
+        },
+        "seconds": 2.721975508145988
+      }
+    ],
+    "failures": [],
+    "initial_memory": {
+      "heap": 81232,
+      "largestFreeBlock": 36852,
+      "minimumFreeHeap": 51664,
+      "heap8Bit": 41308,
+      "largestFree8BitBlock": 34804,
+      "minimumFree8BitHeap": 12800,
+      "uptime": 347,
+      "wifi": {
+        "rssi": -65,
+        "sleep": 0
+      }
+    },
+    "errors": {
+      "count": 0,
+      "total": 0,
+      "dropped": 0,
+      "errors": []
+    },
+    "final_memory": {
+      "heap": 80760,
+      "largestFreeBlock": 36852,
+      "minimumFreeHeap": 51664,
+      "heap8Bit": 40836,
+      "largestFree8BitBlock": 34804,
+      "minimumFree8BitHeap": 12800,
+      "uptime": 396,
+      "wifi": {
+        "rssi": -65,
+        "sleep": 0
+      }
+    },
+    "image_sha256": {
+      "shell.thr": "fe43a4bf49959ff1da366abd10241f702363c33d31cf95109166ba7c154004bb",
+      "Spiral7.thr": "355259d20cc59450f9349505b50084b8a4fd7be4f1160b964399dba0d8ab71f6",
+      "Spiral8.thr": "768201a908c7febafb6b4b466bde4134a2af6cf1b775f9d8cfbf1e6888eb751e",
+      "Spiral6.thr": "9bad9f26c65cc6df3db0ade974c071bcc542a6351816bc6c2fea467510ad84a3"
+    },
+    "duration_s": 49.16114999889396
+  },
+  "final_device": {
+    "state": "IDLE",
+    "speed": 5,
+    "brightness_percent": 50,
+    "presence": {
+      "available": true,
+      "receiving": true,
+      "calibrated": false,
+      "calibrating": false,
+      "suppressed": false,
+      "memoryLimited": false,
+      "maxProcessingUs": 138022,
+      "motion": false,
+      "occupied": false,
+      "calibrationProgress": 0,
+      "score": 0.0,
+      "threshold": 0.0,
+      "rssi": -65,
+      "packets": 24865,
+      "dropped": 8,
+      "acceptedSamples": 0,
+      "sampleAgeMs": 12,
+      "lastMotionMs": 0
+    },
+    "memory": {
+      "heap": 80604,
+      "largestFreeBlock": 36852,
+      "minimumFreeHeap": 51664,
+      "heap8Bit": 40680,
+      "largestFree8BitBlock": 34804,
+      "minimumFree8BitHeap": 12800,
+      "uptime": 443,
+      "wifi": {
+        "rssi": -65,
+        "sleep": 0
+      }
+    },
+    "saved_tuning_unchanged": true,
+    "library_unchanged": true,
+    "library_count": 29,
+    "playlist_unchanged": true,
+    "errors_unchanged": true,
+    "temporary_fixtures_removed": true
+  },
+  "earlier_trials": {
+    "transport_only": {
+      "passed": false,
+      "duration_s": 100.27178181288764,
+      "minimum_free_8bit": 5952,
+      "requests": 381,
+      "failures": [
+        "monitor: AssertionError('transient byte-heap low below 8 KiB; reboot before retesting')",
+        "recovery: AssertionError('transient byte-heap low below 8 KiB; reboot before retesting')"
+      ]
+    },
+    "reusable_image_worker_removed": {
+      "passed": false,
+      "duration_s": 92.10944161587395,
+      "minimum_free_8bit": 4512,
+      "requests": 356,
+      "failures": [
+        "monitor: AssertionError('transient byte-heap low below 8 KiB; reboot before retesting')",
+        "recovery: AssertionError('transient byte-heap low below 8 KiB; reboot before retesting')"
+      ]
+    },
+    "rx6_with_tracing": {
+      "passed": true,
+      "duration_s": 186.5689047789201,
+      "minimum_free_8bit": 11304,
+      "requests": 734,
+      "failures": []
+    },
+    "rx6_normal_idle": {
+      "passed": true,
+      "duration_s": 185.7871563178487,
+      "minimum_free_8bit": 9056,
+      "requests": 741,
+      "failures": []
+    },
+    "rx6_normal_motion": {
+      "passed": false,
+      "failures": [
+        "AssertionError('transient byte-heap low below 8 KiB; reboot before retesting')"
+      ],
+      "minimum_free_8bit": 7712
+    }
+  },
+  "host_checks": {
+    "python_tests": 107,
+    "browser_test_files": 7,
+    "transport_asan_ubsan": true,
+    "response_buffer_asan_ubsan": true
+  },
+  "builds": [
+    "esp32dev",
+    "esp32dev_ota"
+  ],
+  "ota_receive_with_final_budget": {
+    "passed": true,
+    "elapsed_s": 29.83
+  },
+  "raw_artifact_directory": "/tmp/sisyphus-web-heap"
+}

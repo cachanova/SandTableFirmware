@@ -1,0 +1,175 @@
+{
+  "instrumentation": "Temporary wrappers around heap_caps_malloc/default and heap_caps_realloc_default; fixed 24-entry ring records new byte-heap lifetime minima. Not production firmware.",
+  "variant": "Two-MSS HTTP cap and reusable image worker, original 12 dynamic RX buffers",
+  "note": "Actual current free and SDK per-region minimum captured after allocation; ring includes concurrent allocations between readouts.",
+  "new_minima": [
+    {
+      "size": 24,
+      "free": 15696,
+      "minimum": 15500,
+      "caller": "40094c1c",
+      "task": "wifi"
+    },
+    {
+      "size": 16,
+      "free": 15660,
+      "minimum": 15464,
+      "caller": "40094c1c",
+      "task": "wifi"
+    },
+    {
+      "size": 1024,
+      "free": 14888,
+      "minimum": 14684,
+      "caller": "40094c1c",
+      "task": "async_tcp"
+    },
+    {
+      "size": 1024,
+      "free": 14464,
+      "minimum": 14320,
+      "caller": "40094c1c",
+      "task": "async_tcp"
+    },
+    {
+      "size": 1460,
+      "free": 13972,
+      "minimum": 13804,
+      "caller": "40094c1c",
+      "task": "WebTask"
+    },
+    {
+      "size": 1036,
+      "free": 13588,
+      "minimum": 13388,
+      "caller": "40094c1c",
+      "task": "async_tcp"
+    },
+    {
+      "size": 40,
+      "free": 13524,
+      "minimum": 13364,
+      "caller": "40094c1c",
+      "task": "async_tcp"
+    },
+    {
+      "size": 16,
+      "free": 13492,
+      "minimum": 13332,
+      "caller": "40094c2d",
+      "task": "async_tcp"
+    },
+    {
+      "size": 40,
+      "free": 13476,
+      "minimum": 13276,
+      "caller": "40094c1c",
+      "task": "async_tcp"
+    },
+    {
+      "size": 32,
+      "free": 13428,
+      "minimum": 13228,
+      "caller": "40094c2d",
+      "task": "async_tcp"
+    },
+    {
+      "size": 272,
+      "free": 13140,
+      "minimum": 12940,
+      "caller": "40094c2d",
+      "task": "async_tcp"
+    },
+    {
+      "size": 1536,
+      "free": 11588,
+      "minimum": 11388,
+      "caller": "40094c1c",
+      "task": "tiT"
+    },
+    {
+      "size": 1024,
+      "free": 10508,
+      "minimum": 10348,
+      "caller": "40094c1c",
+      "task": "async_tcp"
+    },
+    {
+      "size": 1024,
+      "free": 9952,
+      "minimum": 9768,
+      "caller": "40094c1c",
+      "task": "async_tcp"
+    },
+    {
+      "size": 2308,
+      "free": 8352,
+      "minimum": 8172,
+      "caller": "40094c1c",
+      "task": "wifi"
+    },
+    {
+      "size": 24,
+      "free": 8308,
+      "minimum": 8128,
+      "caller": "40094c1c",
+      "task": "wifi"
+    },
+    {
+      "size": 16,
+      "free": 8272,
+      "minimum": 8092,
+      "caller": "40094c1c",
+      "task": "wifi"
+    },
+    {
+      "size": 24,
+      "free": 8228,
+      "minimum": 8048,
+      "caller": "40094c1c",
+      "task": "wifi"
+    },
+    {
+      "size": 16,
+      "free": 8196,
+      "minimum": 8016,
+      "caller": "40094c1c",
+      "task": "wifi"
+    },
+    {
+      "size": 2308,
+      "free": 5872,
+      "minimum": 5692,
+      "caller": "40094c1c",
+      "task": "wifi"
+    },
+    {
+      "size": 24,
+      "free": 5824,
+      "minimum": 5644,
+      "caller": "40094c1c",
+      "task": "wifi"
+    },
+    {
+      "size": 16,
+      "free": 5792,
+      "minimum": 5612,
+      "caller": "40094c1c",
+      "task": "wifi"
+    },
+    {
+      "size": 2308,
+      "free": 5432,
+      "minimum": 5208,
+      "caller": "40094c1c",
+      "task": "wifi"
+    },
+    {
+      "size": 24,
+      "free": 5392,
+      "minimum": 5168,
+      "caller": "40094c1c",
+      "task": "wifi"
+    }
+  ]
+}

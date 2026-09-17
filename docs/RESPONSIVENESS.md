@@ -1,5 +1,9 @@
 # SD, playback, and web responsiveness investigation
 
+Follow-up (2026-09-17): the web/heap reserve fix and passing stationary, motion,
+and cancellation checks are documented in [WEB_HEAP_RESERVE.md](WEB_HEAP_RESERVE.md).
+The measurements below retain their original firmware and test context.
+
 Device: `100.76.149.200`. Work is based on `bca8e0c`, the merged
 `codex/rho-final-sound` deployment. The adopted driver settings, motion limits,
 and homing procedure are unchanged. The final branch is rebased onto

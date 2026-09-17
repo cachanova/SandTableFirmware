@@ -1,5 +1,9 @@
 # Presence hardware test attempt — 2026-09-16
 
+Follow-up (2026-09-17): the web/heap reserve fix and passing stationary, motion,
+and cancellation checks are documented in [WEB_HEAP_RESERVE.md](WEB_HEAP_RESERVE.md).
+The measurements below retain their original firmware and test context.
+
 After testing, main advanced to `47eb654` with sound-profile documentation only,
 including the selected 200 mA RHO hold setting. The presence branch was rebased
 again onto that main. No firmware, script, or test source changed in this final
