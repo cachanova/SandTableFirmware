@@ -10,7 +10,8 @@
       "p50": 38.59,
       "p95": 1084.319,
       "max": 1094.244
-    }
+    },
+    "speed": 5
   },
   "loadedAfter": {
     "completed": 30,
@@ -21,7 +22,8 @@
       "max": 1098.437
     },
     "maxSampleHandlerUs": 276,
-    "maxSampleLockWaitUs": 18
+    "maxSampleLockWaitUs": 18,
+    "speed": 10
   },
   "stationaryLoad": {
     "passed": true,
@@ -396,5 +398,6 @@
       "failedAxis": 0
     }
   },
-  "limitation": "Occasional TCP connection/retransmission delays remain; register readback is not physical gate/LED measurement."
+  "limitation": "Occasional TCP connection/retransmission delays remain; register readback is not physical gate/LED measurement.",
+  "comparisonCaveat": "Different motion speeds and short samples; the p95 difference is not a controlled causal estimate."
 }

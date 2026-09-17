@@ -89,8 +89,10 @@ and speed to 10; Spiral8 was restarted without a clearing pass.
 | Motion after testing | Zero planner underruns, zero recorded step-timing outliers |
 | Final LED diagnostics | GPIO4, 5 kHz, raw duty 256, zero write errors; maximum handler 877 us, lock wait 18 us |
 
-The 30-command comparison has a better p95 but retains a one-second outlier;
-these short samples do not prove that all end-to-end latency is fixed.
+The 30-command comparison has a better p95 but retains a one-second outlier.
+The baseline ran at speed 5 and the post-flash run at the then-current speed 10;
+these short samples under different motion loads do not establish a controlled
+speedup or prove that all end-to-end latency is fixed.
 A separate 30-command transport probe recorded two requests with TCP
 retransmissions. The slowest spent 1043.99 ms in TCP connection establishment,
 then 22.92 ms waiting for response headers (1067.22 ms total). Thus at least one
@@ -99,7 +101,8 @@ not while applying PWM. This does not identify which network hop dropped the
 packet, nor establish the cause of the reported physical blackout.
 
 Existing browser tabs must reload to receive the new request handling. The
-running table was left drawing Spiral8 at speed 10 and brightness 100%.
+running table was left drawing Spiral8 at brightness 100%. It was restarted at
+speed 10; the final snapshot later showed speed 7, which was left unchanged.
 
 Machine-readable summary: [results.json](brightness-responsiveness/results.json).
 Full temporary artifacts, including before/after requests, the duty sweep,
