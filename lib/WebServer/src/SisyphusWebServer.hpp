@@ -206,6 +206,12 @@ private:
     std::deque<FileIndexEntry> m_fileIndex;
     SemaphoreHandle_t m_cacheMutex = nullptr;
     SemaphoreHandle_t m_stateMutex = nullptr;
+    StaticSemaphore_t m_ledMutexStorage{};
+    SemaphoreHandle_t m_ledMutex = nullptr;
+    uint32_t m_ledLastRequestUs = 0;
+    uint32_t m_ledMaxRequestUs = 0;
+    uint32_t m_ledLastLockWaitUs = 0;
+    uint32_t m_ledMaxLockWaitUs = 0;
 
 
 };

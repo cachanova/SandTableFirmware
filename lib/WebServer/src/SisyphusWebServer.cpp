@@ -182,6 +182,7 @@ SisyphusWebServer::SisyphusWebServer(uint16_t port)
       m_fileListDirty(true) {
     m_cacheMutex = xSemaphoreCreateMutex();
     m_stateMutex = xSemaphoreCreateMutex();
+    m_ledMutex = xSemaphoreCreateMutexStatic(&m_ledMutexStorage);
 }
 
 void SisyphusWebServer::getRequestStats(uint32_t& total, uint32_t& inflight) const {
@@ -958,12 +959,15 @@ static void formatPositionEvent(char* buffer, size_t capacity,
 void SisyphusWebServer::updatePresenceAutomation() {
     if (m_presenceSensor == nullptr || m_ledController == nullptr) return;
 
-    SemaphoreGuard stateLock(m_stateMutex);
     const PresenceStatus status = m_presenceSensor->getStatus();
+    // Presence sampling and motion must never hold up manual light commands.
+    // A busy LED just skips this fade tick; the next tick uses elapsed time.
+    if (xSemaphoreTake(m_ledMutex, 0) != pdTRUE) return;
     const bool valid = status.available && status.receiving &&
         status.calibrated && !status.suppressed;
     if (!valid) {
         m_presenceAutomation.cancelFade();
+        xSemaphoreGive(m_ledMutex);
         return;
     }
     m_presenceAutomation.setAction(m_presenceSensor->getAction());
@@ -973,6 +977,7 @@ void SisyphusWebServer::updatePresenceAutomation() {
                                     millis(), nextBrightness)) {
         m_ledController->setOutputBrightness(nextBrightness);
     }
+    xSemaphoreGive(m_ledMutex);
 }
 
 void SisyphusWebServer::broadcastSinglePosition(AsyncEventSourceClient *client) {
@@ -1408,13 +1413,15 @@ void SisyphusWebServer::handlePresenceSettingsSet(
         return;
     }
 
-    SemaphoreGuard stateLock(m_stateMutex);
     if (!m_presenceSensor->setAction(action)) {
         request->send(500, "application/json",
             "{\"success\":false,\"message\":\"Presence action could not be saved\"}");
         return;
     }
-    m_presenceAutomation.setAction(action);
+    {
+        SemaphoreGuard ledLock(m_ledMutex);
+        m_presenceAutomation.setAction(action);
+    }
     request->send(200, "application/json", "{\"success\":true}");
 }
 
@@ -2294,11 +2301,34 @@ void SisyphusWebServer::handleFileDelete(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handleLEDBrightnessGet(AsyncWebServerRequest *request) {
-    SemaphoreGuard stateLock(m_stateMutex);
     JsonDocument doc;
-    uint8_t brightness = m_ledController->getBrightness();
+    LEDController::Diagnostics diagnostics;
+    uint8_t brightness, target;
+    uint32_t lastRequestUs, maxRequestUs, lastLockWaitUs, maxLockWaitUs;
+    {
+        SemaphoreGuard ledLock(m_ledMutex);
+        brightness = m_ledController->getBrightness();
+        target = m_ledController->getTargetBrightness();
+        diagnostics = m_ledController->getDiagnostics();
+        lastRequestUs = m_ledLastRequestUs;
+        maxRequestUs = m_ledMaxRequestUs;
+        lastLockWaitUs = m_ledLastLockWaitUs;
+        maxLockWaitUs = m_ledMaxLockWaitUs;
+    }
     doc["brightness"] = JsonHelpers::brightnessPercent(brightness);
-    doc["targetBrightness"] = JsonHelpers::brightnessPercent(m_ledController->getTargetBrightness());
+    doc["targetBrightness"] = JsonHelpers::brightnessPercent(target);
+    doc["pin"] = m_ledController->getPin();
+    doc["pwmReady"] = diagnostics.ready;
+    doc["pwmDuty"] = diagnostics.duty; // Raw register readback: 0–256, 256 = full on.
+    doc["pwmFrequencyHz"] = diagnostics.frequencyHz;
+    doc["writeCount"] = diagnostics.writes;
+    doc["writeErrors"] = diagnostics.errors;
+    doc["lastWriteUs"] = diagnostics.lastWriteUs;
+    doc["maxWriteUs"] = diagnostics.maxWriteUs;
+    doc["lastRequestUs"] = lastRequestUs;
+    doc["maxRequestUs"] = maxRequestUs;
+    doc["lastLockWaitUs"] = lastLockWaitUs;
+    doc["maxLockWaitUs"] = maxLockWaitUs;
 
     auto response = std_patch::make_unique<BufferedResponse>("application/json", kResponseBufferSize);
     if (doc.overflowed()) throw std::bad_alloc();
@@ -2307,6 +2337,7 @@ void SisyphusWebServer::handleLEDBrightnessGet(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handleLEDBrightnessSet(AsyncWebServerRequest *request) {
+    const uint32_t startedUs = micros();
     if (!request->hasParam("brightness", true)) {
         request->send(400, "application/json",
             "{\"success\":false,\"message\":\"Missing brightness parameter\"}");
@@ -2322,14 +2353,30 @@ void SisyphusWebServer::handleLEDBrightnessSet(AsyncWebServerRequest *request) {
     }
 
     uint8_t ledValue = map(brightness, 0, 100, 0, 255);
-    {
-        SemaphoreGuard stateLock(m_stateMutex);
-        m_presenceAutomation.cancelFade();
-        m_ledController->setBrightness(ledValue);
+    const uint32_t lockStartedUs = micros();
+    if (xSemaphoreTake(m_ledMutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+        request->send(503, "application/json",
+            "{\"success\":false,\"message\":\"Light control busy; try again\"}");
+        return;
+    }
+    const uint32_t lockWaitUs = micros() - lockStartedUs;
+    m_presenceAutomation.cancelFade();
+    const bool applied = m_ledController->setBrightness(ledValue);
+    const uint32_t requestUs = micros() - startedUs;
+    m_ledLastRequestUs = requestUs;
+    m_ledMaxRequestUs = std::max(m_ledMaxRequestUs, requestUs);
+    m_ledLastLockWaitUs = lockWaitUs;
+    m_ledMaxLockWaitUs = std::max(m_ledMaxLockWaitUs, lockWaitUs);
+    xSemaphoreGive(m_ledMutex);
+    if (!applied) {
+        request->send(503, "application/json",
+            "{\"success\":false,\"message\":\"LED PWM update failed\"}");
+        return;
     }
 
-    LOG("LED brightness set to: %d%% (%u/255)\r\n", brightness,
-        static_cast<unsigned>(ledValue));
+    LOG("LED brightness set to: %d%% (%u/255), handler %luus, lock %luus\r\n", brightness,
+        static_cast<unsigned>(ledValue), static_cast<unsigned long>(requestUs),
+        static_cast<unsigned long>(lockWaitUs));
 
     request->send(200, "application/json", "{\"success\":true}");
 }

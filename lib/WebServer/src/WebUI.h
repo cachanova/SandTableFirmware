@@ -150,6 +150,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             margin-bottom: 10px;
         }
         .slider-value { font-family: var(--mono); color: var(--ink); }
+        #brightness-message { margin-top: 8px; font-size: 12px; color: var(--ink-faint); }
         input[type="range"] {
             width: 100%;
             -webkit-appearance: none;
@@ -457,6 +458,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                         <span class="slider-value" id="brightness-value">50%</span>
                     </div>
                     <input type="range" id="brightness-slider" min="0" max="100" value="50">
+                    <div id="brightness-message" role="status" aria-live="polite"></div>
                 </div>
                 <div class="slider-section">
                     <div class="slider-header">
@@ -882,12 +884,16 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             }
 
             setupEventListeners() {
-                document.getElementById('brightness-slider').addEventListener('input', (e) => {
-                    document.getElementById('brightness-value').textContent = e.target.value + '%';
+                const brightness = document.getElementById('brightness-slider');
+                brightness.addEventListener('pointerdown', e => {
+                    this.brightnessDragging = true;
+                    brightness.setPointerCapture(e.pointerId);
                 });
-                document.getElementById('brightness-slider').addEventListener('change', (e) => {
-                    this.setBrightness(parseInt(e.target.value));
-                });
+                brightness.addEventListener('pointerup', () => { this.brightnessDragging = false; });
+                brightness.addEventListener('pointercancel', () => { this.brightnessDragging = false; });
+                brightness.addEventListener('lostpointercapture', () => { this.brightnessDragging = false; });
+                brightness.addEventListener('input', e => this.setBrightness(Number(e.target.value)));
+                brightness.addEventListener('change', e => this.setBrightness(Number(e.target.value)));
 
                 document.getElementById('speed-slider').addEventListener('input', (e) => {
                     document.getElementById('speed-value').textContent = e.target.value;
@@ -971,8 +977,9 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 // A slow chip gets ONE outstanding status request, including
                 // polls triggered by commands. Never accumulate interval fetches.
                 if (this.statusRequest) return this.statusRequest;
+                const brightnessRevision = this.brightnessRevision || 0;
                 this.statusRequest = this.getStatus().then(status => {
-                    this.updateUI(status);
+                    this.updateUI(status, brightnessRevision);
                     return status;
                 }).catch(error => {
                     const badge = document.getElementById('state-badge');
@@ -1047,20 +1054,76 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 await this.pollStatusOnce();
             }
 
-            syncBrightnessControl(status) {
+            syncBrightnessControl(status, revision = this.brightnessRevision || 0) {
+                if (revision !== (this.brightnessRevision || 0) || this.brightnessDragging ||
+                    this.brightnessInFlight || this.brightnessPending !== undefined) return;
                 const slider = document.getElementById('brightness-slider');
                 const target = Number.isFinite(status.ledTargetBrightness)
                     ? status.ledTargetBrightness : status.ledBrightness;
-                if (document.activeElement !== slider) {
-                    slider.value = target;
-                    document.getElementById('brightness-value').textContent = target + '%';
+                slider.value = target;
+                this.brightnessDesired = target;
+                document.getElementById('brightness-value').textContent = target + '%';
+            }
+
+            setBrightness(value) {
+                if (!Number.isInteger(value) || value < 0 || value > 100) return;
+                // input and change may report the same final value. Keep one
+                // request plus one replaceable pending value, never a drag backlog.
+                if (value === this.brightnessDesired && !this.brightnessFailed) return;
+                this.brightnessDesired = value;
+                this.brightnessPending = value;
+                this.brightnessFailed = false;
+                this.brightnessRevision = (this.brightnessRevision || 0) + 1;
+                document.getElementById('brightness-value').textContent = value + '%';
+                document.getElementById('brightness-message').textContent = `Setting light to ${value}%…`;
+                this.scheduleBrightness();
+            }
+
+            scheduleBrightness() {
+                if (this.brightnessInFlight || this.brightnessTimer ||
+                    this.brightnessPending === undefined) return;
+                // At most ten sends per second, including fast local networks.
+                const remaining = this.brightnessLastSentAt === undefined ? 0
+                    : Math.max(0, 100 - (Date.now() - this.brightnessLastSentAt));
+                if (remaining) {
+                    this.brightnessTimer = setTimeout(() => {
+                        this.brightnessTimer = null;
+                        this.sendBrightness();
+                    }, remaining);
+                } else {
+                    this.sendBrightness();
                 }
             }
 
-            async setBrightness(value) {
+            async sendBrightness() {
+                if (this.brightnessInFlight || this.brightnessPending === undefined) return;
+                const value = this.brightnessPending;
+                const revision = this.brightnessRevision;
+                this.brightnessPending = undefined;
+                this.brightnessInFlight = true;
+                this.brightnessLastSentAt = Date.now();
                 const formData = new FormData();
                 formData.append('brightness', value);
-                await fetch(this.apiBase + '/led/brightness', { method: 'POST', body: formData });
+                try {
+                    await this.requestJSON('/led/brightness', {method: 'POST', body: formData}, 2500);
+                    if (revision === this.brightnessRevision) {
+                        document.getElementById('brightness-message').textContent = `Light set to ${value}%.`;
+                    }
+                } catch (error) {
+                    // A lost acknowledgement may still have changed the output.
+                    // Never automatically replay uncertain commands after reconnect.
+                    this.brightnessPending = undefined;
+                    this.brightnessFailed = true;
+                    document.getElementById('brightness-message').textContent = error.status
+                        ? `Light change failed: ${error.message}. Try again.`
+                        : 'Light change unconfirmed. Check the light and try again.';
+                } finally {
+                    this.brightnessInFlight = false;
+                    // Polls begun before this acknowledgement may contain the
+                    // previous value even if they finish after the write.
+                    this.brightnessRevision = (this.brightnessRevision || 0) + 1;
+                    this.scheduleBrightness();
+                }
             }
 
             async setSpeed(value) {
@@ -1443,7 +1506,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 return this.systemInfoRequest;
             }
 
-            updateUI(status) {
+            updateUI(status, brightnessRevision) {
                 this.homingActive = status.state === 'HOMING';
                 document.getElementById('btn-home-abort').disabled = !this.homingActive || !!this.abortInFlight;
                 const stateBadge = document.getElementById('state-badge');
@@ -1571,7 +1634,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 presenceScore.textContent = presence.calibrated && presence.receiving &&
                     !presence.suppressed && Number.isFinite(presence.score)
                     ? `${presence.score.toFixed(2)}× threshold` : '—';
-                this.syncBrightnessControl(status);
+                this.syncBrightnessControl(status, brightnessRevision);
 
                 const speedSlider = document.getElementById('speed-slider');
                 if (document.activeElement !== speedSlider && status.speed !== undefined) {

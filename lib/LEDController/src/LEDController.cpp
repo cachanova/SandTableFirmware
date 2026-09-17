@@ -2,6 +2,9 @@
 #include "Logger.hpp"
 #include <driver/gpio.h>
 #include <esp_arduino_version.h>
+#if ESP_ARDUINO_VERSION_MAJOR < 3
+#include <driver/ledc.h>
+#endif
 
 LEDController::LEDController(uint8_t pin) : m_pin(pin), m_brightness(128) {
 }
@@ -14,7 +17,10 @@ void LEDController::begin() {
         return;
     }
 #else
-    ledcSetup(PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION);
+    if (ledcSetup(PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION) == 0) {
+        LOG("ERROR: Failed to configure LED PWM\r\n");
+        return;
+    }
     ledcAttachPin(m_pin, PWM_CHANNEL);
 #endif
 
@@ -24,28 +30,60 @@ void LEDController::begin() {
         return;
     }
 
-    // Set initial brightness
-#if ESP_ARDUINO_VERSION_MAJOR >= 3
-    ledcWrite(m_pin, m_brightness);
-#else
-    ledcWrite(PWM_CHANNEL, m_brightness);
-#endif
+    m_diagnostics.ready = true;
+    if (!setOutputBrightness(m_brightness.load())) {
+        m_diagnostics.ready = false;
+        LOG("ERROR: Failed to set initial LED brightness\r\n");
+        return;
+    }
 
     LOG("LED Controller initialized on GPIO %d with brightness %d, internal pull-down enabled\r\n", m_pin, m_brightness.load());
 }
 
-void LEDController::setBrightness(uint8_t brightness) {
+bool LEDController::setBrightness(uint8_t brightness) {
+    if (!setOutputBrightness(brightness)) return false;
     m_targetBrightness.store(brightness);
-    setOutputBrightness(brightness);
+    return true;
 }
 
-void LEDController::setOutputBrightness(uint8_t brightness) {
-    m_brightness = brightness;
+bool LEDController::setOutputBrightness(uint8_t brightness) {
+    const uint32_t startedUs = micros();
+    bool success = false;
+    if (m_diagnostics.ready) {
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
-    ledcWrite(m_pin, m_brightness);
+        success = ledcWrite(m_pin, brightness);
 #else
-    ledcWrite(PWM_CHANNEL, m_brightness);
+        // Arduino 2's void ledcWrite discards driver errors. Keep its full-on
+        // mapping, but check both operations before publishing applied brightness.
+        const uint32_t duty = brightness == 255 ? 256 : brightness;
+        success = ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0, duty) == ESP_OK &&
+                  ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0) == ESP_OK;
 #endif
+    }
+    m_diagnostics.lastWriteUs = micros() - startedUs;
+    if (m_diagnostics.lastWriteUs > m_diagnostics.maxWriteUs)
+        m_diagnostics.maxWriteUs = m_diagnostics.lastWriteUs;
+    if (!success) {
+        ++m_diagnostics.errors;
+        return false;
+    }
+    m_brightness.store(brightness);
+    ++m_diagnostics.writes;
+    return true;
+}
+
+LEDController::Diagnostics LEDController::getDiagnostics() const {
+    Diagnostics result = m_diagnostics;
+    if (result.ready) {
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+        result.duty = ledcRead(m_pin);
+        result.frequencyHz = ledcReadFreq(m_pin);
+#else
+        result.duty = ledcRead(PWM_CHANNEL);
+        result.frequencyHz = ledc_get_freq(LEDC_HIGH_SPEED_MODE, LEDC_TIMER_0);
+#endif
+    }
+    return result;
 }
 
 uint8_t LEDController::getBrightness() {
