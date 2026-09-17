@@ -1,0 +1,3 @@
+file,points,segments,shape_max_mm,shape_p95_segment_max_mm,nominal_mechanism_max_mm,endpoint_max_mm,common_progress_max_mm,planned_seconds,both_axes_stop,underruns
+example_patterns/spiral.thr,51,50,1.523835084,1.220467727,1.49934867,0.3490704454,0.03913261484,76.97499812,1,0
+test/test_motion/patterns/LinedCircles3.thr,3519,3515,3.564152685,2.163899402,28.78615577,28.7988812,0.09409467138,8613.904876,902,0
