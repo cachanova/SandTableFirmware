@@ -203,8 +203,10 @@ int main() {
         AsyncClient invalidClient;
         AsyncWebServerRequest invalidRequest(invalidClient);
         failed._respond(&invalidRequest);
-        assert(failed._failed() && invalidClient.closed && invalidClient.bytes.empty());
-        std::cout << "PASS: empty bodies finish after headers; invalid sources close as failures\n";
+        assert(failed._failed() && !invalidClient.closed && invalidClient.rxTimeout == 1 && invalidClient.bytes.empty());
+        ack(failed, invalidRequest);
+        assert(invalidClient.closed);
+        std::cout << "PASS: empty bodies finish after headers; failed initial responses defer closure safely\n";
     }
     {
         AsyncClient client;
@@ -212,7 +214,7 @@ int main() {
         SourceResponse response("source truncated before declared content length");
         response.earlyEof = true;
         response._respond(&request);
-        assert(response._failed() && client.closed && response.sent() == 0);
+        assert(response._failed() && !client.closed && client.rxTimeout == 1 && response.sent() == 0);
         assert(body(client).empty());
         std::cout << "PASS: premature source EOF fails instead of reporting a successful response\n";
     }
@@ -283,7 +285,7 @@ int main() {
             SourceResponse response(payload(816));
             response.headerFault = fault;
             response._respond(&request); // must contain either allocation exception
-            assert(response._failed() && client.closed);
+            assert(response._failed() && !client.closed && client.rxTimeout == 1);
             assert(client.bytes.empty() && client.addCalls == 0 && response.reads == 0);
             response._ack(&request, 0, 0);
             assert(client.bytes.empty() && response.reads == 0);
@@ -294,6 +296,21 @@ int main() {
         response._respond(&request);
         drain(response, request);
         assert(body(client) == response.source);
-        std::cout << "PASS: header list/assembly allocation exceptions close only the failed response before any body read\n";
+        std::cout << "PASS: header allocation failures arm timeout without destroying the active request\n";
+    }
+    {
+        AsyncClient client;
+        AsyncWebServerRequest request(client);
+        auto response = std::make_unique<SourceResponse>(payload(10000));
+        bool destroyed = false;
+        response->destroyed = &destroyed;
+        client.onClose = [&] { response.reset(); };
+        response->_respond(&request);
+        response->valid = false; // SD failure or a source replaced mid-stream.
+        // The actual SDK rechecks _finished() after _ack(). Synchronous close
+        // inside _ack() used to free that object before this recheck (ASan UAF).
+        ack(*response, request);
+        assert(destroyed && !response && client.closed && client.rxTimeout == 1);
+        std::cout << "PASS: mid-response failure survives SDK recheck before synchronous destruction\n";
     }
 }

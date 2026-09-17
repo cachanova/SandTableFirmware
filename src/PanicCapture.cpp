@@ -19,6 +19,7 @@ struct Capture {
     uint32_t sp[12];
 };
 RTC_NOINIT_ATTR Capture previousPanic;
+bool retainedPanic = false;
 }
 
 extern "C" void __real_esp_panic_handler(panic_info_t* info);
@@ -45,8 +46,11 @@ extern "C" void IRAM_ATTR __wrap_esp_panic_handler(panic_info_t* info) {
 }
 
 void reportPreviousPanic() {
-    if (esp_reset_reason() == ESP_RST_PANIC && previousPanic.magic == kMagic &&
-        previousPanic.count <= 12) {
+    const auto reason = esp_reset_reason();
+    retainedPanic = (reason == ESP_RST_PANIC || reason == ESP_RST_INT_WDT ||
+         reason == ESP_RST_TASK_WDT || reason == ESP_RST_WDT) && previousPanic.magic == kMagic &&
+        previousPanic.count <= 12;
+    if (retainedPanic) {
         LOG("Previous panic: core=%lu exception=%lu cause=%lu address=%08lx\r\n",
             static_cast<unsigned long>(previousPanic.core),
             static_cast<unsigned long>(previousPanic.exception),
@@ -59,4 +63,17 @@ void reportPreviousPanic() {
         }
     }
     previousPanic.magic = 0;
+}
+
+// Keep this boot's crash evidence readable after the bounded console ring wraps.
+void writePreviousPanic(Print& out) {
+    out.printf("Reset reason: %d\nFirmware MD5: %s\n", static_cast<int>(esp_reset_reason()),
+               ESP.getSketchMD5().c_str());
+    if (!retainedPanic) { out.print("No retained panic frame\n"); return; }
+    out.printf("Previous panic: core=%lu exception=%lu cause=%lu address=%08lx\n",
+        static_cast<unsigned long>(previousPanic.core), static_cast<unsigned long>(previousPanic.exception),
+        static_cast<unsigned long>(previousPanic.cause), static_cast<unsigned long>(previousPanic.address));
+    for (unsigned i = 0; i < previousPanic.count; ++i)
+        out.printf("Panic frame %u: pc=%08lx sp=%08lx\n", i,
+            static_cast<unsigned long>(previousPanic.pc[i]), static_cast<unsigned long>(previousPanic.sp[i]));
 }

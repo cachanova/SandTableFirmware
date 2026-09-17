@@ -23,9 +23,11 @@
 #include <cstdlib>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <esp_task_wdt.h>
 #include "UploadCommit.hpp"
 
 static constexpr size_t kResponseBufferSize = 256;
+void writePreviousPanic(Print& out);
 static constexpr unsigned long kFileCacheThrottleMs = 500;
 
 struct UploadContext {
@@ -509,7 +511,7 @@ void SisyphusWebServer::begin(PolarControl *polarControl,
             if (!requirePatternStorage(request)) return;
 
             // Limit concurrent file operations to prevent FD exhaustion (FATFS limit is low)
-            if (m_imageInflight > 1 || m_fileScanActive.load()) {
+            if (m_imageInflight > 1 || m_fileScanActive.load() || m_fileListDirty.load()) {
                 std::unique_ptr<AsyncWebServerResponse> response(request->beginResponse(503));
                 response->addHeader("Retry-After", "1");
                 request->send(response.release());
@@ -681,6 +683,13 @@ void SisyphusWebServer::begin(PolarControl *polarControl,
     m_server.on("/api/system/info", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handleSystemInfo(request);
+    });
+
+    m_server.on("/api/system/crash", HTTP_GET, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        auto response = std_patch::make_unique<BufferedResponse>("text/plain", kResponseBufferSize);
+        writePreviousPanic(*response);
+        request->send(response.release());
     });
 
     // Playlist routes
@@ -2230,6 +2239,10 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
             return;
         }
         noteRequest(request);
+        // The SDK's three-second receive timeout can expire while a slow SD
+        // write holds this task, even though the sender is still uploading.
+        // Bound inactivity, not total transfer duration, like the browser.
+        request->client()->setRxTimeout(30);
         UploadContext* upload = static_cast<UploadContext*>(calloc(1, sizeof(UploadContext)));
         request->_tempObject = upload;
         if (upload == nullptr) {
@@ -2244,7 +2257,7 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
             return;
         }
         upload->active = &m_uploadInflight;
-        if (m_fileScanActive.load() || !isSDCardReady() ||
+        if (m_fileScanActive.load() || m_imageInflight.load() != 0 || !isSDCardReady() ||
             !BulkResponseBudget::canStart(0, heap_caps_get_free_size(MALLOC_CAP_8BIT),
                                            heap_caps_get_largest_free_block(MALLOC_CAP_8BIT))) {
             upload->status = 503;
@@ -2323,6 +2336,16 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
         return;
     }
     upload->received += len;
+    if (len > 0) {
+        // One AsyncTCP event may dispatch many multipart chunks. Slow SD
+        // writes can keep that event busy longer than its watchdog period.
+        // Acknowledge actual write progress between chunks, and let idle/web
+        // tasks run even while the receive queue stays continuously ready.
+#if CONFIG_ASYNC_TCP_USE_WDT
+        esp_task_wdt_reset();
+#endif
+        vTaskDelay(1);
+    }
 
     if (final) {
         request->_tempFile.flush();

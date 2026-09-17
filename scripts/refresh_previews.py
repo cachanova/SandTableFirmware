@@ -81,15 +81,15 @@ def main():
     parser.add_argument('--base', default='http://100.76.149.200')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--renderer', type=Path)
-    parser.add_argument('--resume', action='store_true', help='Resume a download after verifying completed backup files')
+    parser.add_argument('--resume', action='store_true', help='Resume a download or upload after verifying completed files')
     parser.add_argument('--only', action='append', help='Pattern filename; repeat to select several')
     args = parser.parse_args()
     out = args.output
     out.mkdir(parents=True, exist_ok=True)
     table = Table(args.base)
     snapshot = out / 'snapshot.json'
-    if args.resume and args.stage != 'download':
-        raise ValueError('--resume is only supported for download')
+    if args.resume and args.stage == 'render':
+        raise ValueError('--resume is only supported for download or upload')
     if args.stage == 'download' and not args.resume:
         if snapshot.exists():
             raise RuntimeError('Backup already exists; use a new output directory or --resume')
@@ -114,8 +114,9 @@ def main():
         indexed = {entry['name']: entry for entry in current['files']}
         for entry in entries:
             now = indexed.get(entry['name'])
-            if now is None or any(now.get(key) != entry.get(key) for key in
-                                  ('size', 'time', 'hasImage', 'imageTime', 'hasThumbnail', 'thumbnailTime')):
+            keys = ('size', 'time') if args.stage == 'upload' else (
+                'size', 'time', 'hasImage', 'imageTime', 'hasThumbnail', 'thumbnailTime')
+            if now is None or any(now.get(key) != entry.get(key) for key in keys):
                 raise RuntimeError('Library changed since backup: ' + entry['name'])
     try:
         for entry in entries:
@@ -132,7 +133,10 @@ def main():
                         continue
                     file = source if key == 'thr_sha256' else folder / key[:-7]
                     if digest(file.read_bytes()) != expected:
-                        raise RuntimeError('Backup changed: ' + str(file))
+                        raise RuntimeError('Verified file changed: ' + str(file))
+                    if args.stage == 'upload':
+                        if digest(table.image(name, 'thumb' in key)) != expected:
+                            raise RuntimeError('Previously verified table asset changed: ' + name)
                 continue
             if args.stage == 'download':
                 data = table.get('pattern/download?' + urllib.parse.urlencode({'file': name}))

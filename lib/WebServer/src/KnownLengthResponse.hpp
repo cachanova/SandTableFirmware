@@ -49,7 +49,11 @@ public:
 private:
     void fail(AsyncWebServerRequest* request) {
         _state = RESPONSE_FAILED;
-        request->client()->close();
+        // close() synchronously destroys this response AND its request. The
+        // SDK still accesses both after _ack/_respond returns. Let its ACK
+        // handler close a finished response, or its next timeout close a
+        // failed initial response/poll with no further ACKs outstanding.
+        request->client()->setRxTimeout(1);
     }
 
     size_t pump(AsyncWebServerRequest* request) {

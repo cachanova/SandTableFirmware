@@ -38,6 +38,9 @@ python scripts/refresh_previews.py upload --output /tmp/table-preview-backup
 
 If a download is interrupted, repeat its command with `--resume`. Completed files
 are hash-checked and skipped only if the original library metadata still matches.
+Uploads also support `--resume`: source metadata must still match, and every
+completed asset is checked against its local hash and a fresh device read before
+it is skipped. Changed previously verified assets stop the resume for review.
 
 The backup contains per-pattern `before.png`, `before.thumb.png`, and the original
 THR, plus three stage manifests. Retain it until deployment validation is complete.
@@ -87,3 +90,29 @@ Production bulk admission now requires 28 KiB of free byte-addressable heap, add
 upload is active, and uploads also check this memory threshold before opening their
 staging file. Small control requests remain available. Temporary diagnostic hooks
 and timed recovery resets are removed from the final firmware.
+
+## Image replacement and response lifetime
+
+Image requests now defer while the index is dirty, including when the old entry
+still exists. Otherwise a newly replaced PNG could be served with its previous
+cached length. An observed replacement contained 331,637 bytes but was advertised
+as 332,223 bytes. Uploads also defer while an image/source stream is active.
+
+The resulting premature EOF exposed a separate lifetime bug: the custom response
+closed its client synchronously inside `_ack()`, destroying both itself and its
+request. ESPAsyncWebServer then checked the freed response again. The device
+backtrace identified `_onAck()` at this recheck, and an AddressSanitizer regression
+reproduced the use-after-free with the original code. Failed responses now mark
+their state and arm a one-second inactivity timeout. The SDK closes them after
+the response callback returns, including failures with no further ACK pending.
+
+Large uploads use a 30-second inactivity timeout instead of the SDK's three-second
+default. Completed SD writes feed the AsyncTCP task watchdog and yield one tick;
+one network event can otherwise spend several seconds processing many file chunks.
+These changes retain timeout protection for stalled work rather than imposing a
+total transfer deadline.
+
+`GET /api/system/crash` retains this boot's previous panic frames after the console
+ring wraps, includes watchdog resets, and reports the running firmware's MD5.
+Match that fingerprint to the uploaded binary before decoding addresses with its
+ELF. The endpoint does not initiate a reset or enable diagnostic auto-restarts.

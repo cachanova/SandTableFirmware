@@ -7,6 +7,7 @@
 #include <limits>
 #include <new>
 #include <string>
+#include <functional>
 
 using String = std::string;
 static constexpr size_t TCP_MSS = 1436; // pinned ESP32 SDK configuration
@@ -23,6 +24,8 @@ struct AsyncClient {
     size_t addCalls = 0, sendCalls = 0;
     size_t acknowledged = 0;
     bool closed = false, sendSucceeds = true;
+    uint32_t rxTimeout = 0;
+    std::function<void()> onClose;
     size_t space() const { return window; }
     size_t add(const char* data, size_t length) {
         ++addCalls;
@@ -32,7 +35,8 @@ struct AsyncClient {
         return count;
     }
     bool send() { ++sendCalls; return sendSucceeds; }
-    void close() { closed = true; }
+    void setRxTimeout(uint32_t seconds) { rxTimeout = seconds; }
+    void close() { closed = true; if (onClose) onClose(); }
 };
 
 class AsyncWebServerRequest {
