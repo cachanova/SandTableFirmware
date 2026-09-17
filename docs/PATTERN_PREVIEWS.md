@@ -31,7 +31,7 @@ are retained and reported; no THR or playlist is rewritten.
 ```sh
 python scripts/refresh_previews.py download --output /tmp/table-preview-backup
 python scripts/refresh_previews.py render --output /tmp/table-preview-backup \
-  --renderer ../ThrGenCpp-preview/build/ThrGenCLI
+  --renderer ../ThrGenCpp/build/ThrGenCLI
 python scripts/refresh_previews.py upload --output /tmp/table-preview-backup
 ```
 

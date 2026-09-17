@@ -54,10 +54,19 @@ class Table:
         request = urllib.request.Request(
             self.base + 'files/upload?thumbnail=' + str(int(thumbnail)), data=body,
             headers={'Content-Type': 'multipart/form-data; boundary=' + boundary})
-        with urllib.request.urlopen(request, timeout=60) as response:
-            result = json.load(response)
-            if not result.get('success'):
-                raise RuntimeError(str(result))
+        # An explicit busy response has not accepted this file. Do not retry
+        # timeouts/disconnects here: their commit outcome is unconfirmed.
+        for attempt in range(8):
+            try:
+                with urllib.request.urlopen(request, timeout=60) as response:
+                    result = json.load(response)
+                    if result.get('success') is not True:
+                        raise RuntimeError(str(result))
+                    return
+            except urllib.error.HTTPError as error:
+                if error.code != 503 or attempt == 7:
+                    raise
+                time.sleep(1)
 
 
 def safe_name(name):
