@@ -37,3 +37,27 @@ python scripts/refresh_previews.py upload --output /tmp/table-preview-backup
 
 The backup contains per-pattern `before.png`, `before.thumb.png`, and the original
 THR, plus three stage manifests. Retain it until deployment validation is complete.
+
+## Upload acceptance and failure handling
+
+Multipart callbacks now write only a staging file. The final request handler
+requires exactly one `file` part, nonempty content, the original declared HTTP
+length, and a complete MIME closing boundary before promotion. Empty files,
+extra file/form parts, and malformed or abandoned requests leave the old file in
+place. A narrow reproducible patch to pinned ESPAsyncWebServer 3.9.5 exposes and
+checks multipart completion; `scripts/patch_async_upload.py` runs after dependency
+resolution and refuses an unfamiliar parser layout rather than silently patching it.
+
+Only one upload owns the staging admission slot. Index scans yield to active
+uploads, and upload admission yields to a running scan. Disconnect cleanup releases
+the slot and removes staging. Failed promotion restores the old file; a failed
+rollback retains its `.bak` recovery file. An unexplained existing backup refuses
+replacement (409). A successfully replaced THR invalidates the associated PNG and
+thumbnail, preventing a partial client upload from showing the previous pattern's
+preview. A PNG replacement invalidates only its thumbnail.
+
+These are per-file transactions. The browser presents separate pattern, preview,
+and thumbnail receipts; a multi-file transfer can finish partially and be retried.
+An interrupted acknowledgement can leave a committed file, so clients report an
+unconfirmed outcome and can idempotently resend. The firmware continues to validate
+THR geometry before playback; upload acceptance itself is not a playback guarantee.
