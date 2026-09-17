@@ -1,0 +1,159 @@
+{
+  "firmware_source_commit": "325758c67a598eb6c47d95a87b6b0e2bd2c00dbe",
+  "firmware_sha256": "ba9c83974ec344746eed92c15b3b5e2bb7485fa6194d19bb48193a85f0e454af",
+  "main_baseline": "a1f1750",
+  "static_ram_bytes": 95368,
+  "flash_bytes": 1465941,
+  "native_segment_bytes": 312,
+  "native_planner_bytes": 15960,
+  "motion_checks": [
+    "whole-file rejection before any motion",
+    "short mixed path completes with exact rounded motor targets",
+    "pause brakes and holds a stable position",
+    "resume and live speed change return to motion",
+    "130-point streamed path under web and SD reads: exact endpoint, no underruns",
+    "exact-path setting runs mixed corners and preserves endpoint",
+    "one unwrapped full turn emits exactly 12000 theta pulses",
+    "no reset or unexpected errors; original tuning preserved"
+  ],
+  "motion_request_count": 703,
+  "circle": {
+    "seconds": 84.30691095395014,
+    "sse_events": 2264,
+    "telemetry_samples": 245,
+    "failures": []
+  },
+  "final_telemetry": {
+    "state": "IDLE",
+    "millis": 497874,
+    "micros": 497874230,
+    "position": {
+      "rho": 212.5,
+      "theta": 6.280044
+    },
+    "velocity": {
+      "rho": 0.0,
+      "theta": 0.0
+    },
+    "planner": {
+      "queueDepth": 0,
+      "minQueueDepth": 0,
+      "underruns": 0,
+      "maxConsecutiveUnderruns": 0,
+      "completedCount": 64,
+      "timerActive": false,
+      "running": false
+    },
+    "stepMotion": {
+      "epoch": 7,
+      "startMicros": 349886845,
+      "stopMicros": 432140770,
+      "active": false
+    },
+    "stepTiming": {
+      "source": "hardware-timer-tg1-t0",
+      "thresholdUs": 100,
+      "callback": {
+        "valid": true,
+        "gaps": 4,
+        "maxGapUs": 109,
+        "lastMicros": 410289215,
+        "lastGapUs": 109
+      },
+      "theta": {
+        "valid": true,
+        "steps": 39129,
+        "outliers": 0,
+        "maxLateUs": 94,
+        "maxIntervalErrorUs": 56,
+        "last": {
+          "epoch": 0,
+          "scheduledMicros": 0,
+          "actualMicros": 0,
+          "plannedIntervalUs": 0,
+          "actualIntervalUs": 0,
+          "intervalValid": false
+        }
+      },
+      "rho": {
+        "valid": true,
+        "steps": 106582,
+        "outliers": 0,
+        "maxLateUs": 98,
+        "maxIntervalErrorUs": 58,
+        "last": {
+          "epoch": 0,
+          "scheduledMicros": 0,
+          "actualMicros": 0,
+          "plannedIntervalUs": 0,
+          "actualIntervalUs": 0,
+          "intervalValid": false
+        }
+      }
+    },
+    "benchMotionTest": false,
+    "commissioningAxis": null
+  },
+  "final_memory": {
+    "heap": 74768,
+    "largestFreeBlock": 36852,
+    "minimumFreeHeap": 41480,
+    "heap8Bit": 34844,
+    "largestFree8BitBlock": 24564,
+    "minimumFree8BitHeap": 2616,
+    "uptime": 497
+  },
+  "idle_load": {
+    "passed": false,
+    "duration_s": 133.96650847792625,
+    "failures": [
+      "monitor: AssertionError('new transient byte-heap low below 8 KiB')"
+    ],
+    "busy_responses": 96,
+    "sse_events": [
+      123,
+      123
+    ]
+  },
+  "idle_load_memory": {
+    "initial": {
+      "heap": 78172,
+      "largestFreeBlock": 36852,
+      "minimumFreeHeap": 66624,
+      "heap8Bit": 38248,
+      "largestFree8BitBlock": 34804,
+      "minimumFree8BitHeap": 27760,
+      "uptime": 30
+    },
+    "final": {
+      "heap": 77796,
+      "largestFreeBlock": 36852,
+      "minimumFreeHeap": 45936,
+      "heap8Bit": 37872,
+      "largestFree8BitBlock": 32756,
+      "minimumFree8BitHeap": 7072,
+      "uptime": 164
+    },
+    "minimum_sampled_current_8bit": 16116,
+    "minimum_sampled_largest_8bit": 9716
+  },
+  "cleanup": {
+    "original_settings_preserved": true,
+    "new_motion_defaults": {
+      "ballMaxVelocity": 30,
+      "ballMaxAccel": 100,
+      "cornerTolerance": 0.1
+    },
+    "library_restored": true,
+    "playlist_restored": true,
+    "speed": 5,
+    "brightness": 50,
+    "state": "IDLE",
+    "expected_invalid_file_error_captured_and_cleared": true
+  },
+  "limits": [
+    "Commanded motor ledgers and software timestamps; no independent physical ball measurement.",
+    "180-second heavy web reserve criterion failed at 7072 bytes; no crash or unexpected logged error.",
+    "Presence calibration is volatile and resets on reboot."
+  ]
+}

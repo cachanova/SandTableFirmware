@@ -2,7 +2,10 @@
 
 Implemented on `assess/motion-accuracy`, starting from `main` at `f39a7ea`.
 The [assessment](MOTION_ACCURACY_ASSESSMENT.md) and its original artifacts remain
-as the historical baseline. This implementation has not been flashed to the table.
+as the historical baseline. The release was rebased onto `main` at `a1f1750`,
+preserving the memory fixes and presence sensing. See
+[deployment and hardware checks](MOTION_ACCURACY_HARDWARE.md) for the installed
+image, review follow-ups, measurements, and remaining physical-validation limits.
 
 ## Result
 
@@ -68,6 +71,8 @@ an explicit tradeoff of the new ball limit and curvature-aware path following.
   repeated float time additions. Queued event timestamps retain their existing
   32-bit near-future representation. Generation completes only after the final
   absolute motor target has been queued, including when it falls on a horizon.
+  Initial queued timestamps are anchored immediately before arming the timer,
+  so ESP32 queue-preparation time cannot cause an overdue first-pulse burst.
 - **Pause, stop, speed changes:** queued pulses remain immutable. Braking follows
   the current curve, continuing across existing source segments if necessary
   until a feasible zero-acceleration braking point. Resume stores the unfinished
@@ -80,7 +85,8 @@ an explicit tradeoff of the new ball limit and curvature-aware path following.
   over 127 bytes, and signed motor-step range overflow. Empty and unreadable
   files fail loading. It reports a source line and checks for cancellation
   during preflight. Existing blank lines, comma separators, and comments work.
-  The unused permissive `FilePosGen` was removed.
+  The unused permissive `FilePosGen` was removed. Main's interruptible 4 KiB
+  reader and allocation-failure handling are preserved during preflight.
 - **Settings and UI:** ball speed, ball acceleration, and smoothing tolerance
   are exposed through the tuning API/UI and persisted with existing settings.
   Older settings files use defaults for the new fields. Axis tuning values
@@ -112,12 +118,19 @@ pattern (including playlist transitions), so the pattern frame starts at the
 current physical angle. Within that frame, the planner preserves absolute THR
 angles and all unwrapped turns; it does not choose shortest angular moves.
 
-The production build uses **112,000 bytes static RAM (34.2%)** and
-**1,433,209 bytes flash (91.1%)**. Static RAM is 8,936 bytes above the assessed
-baseline; the 256-entry coordinate queue also grows by about 2 KiB at runtime.
-Native sizes are 680 bytes per segment and 27,392 bytes per planner. Soft-double
-arithmetic and geometry planning require an ESP32 throughput/heap check under
-web and SD load before deploying this as a proven real-time replacement.
+The final production build uses **95,368 bytes static RAM (29.1%)** and
+**1,465,941 bytes flash (93.2%)**, including current main's presence sensing.
+Static RAM is 2,496 bytes below that main baseline; the 256-entry coordinate
+queue grows by 2,048 bytes at runtime. Combined fixed storage is therefore
+448 bytes smaller. Task stacks and queue capacities are unchanged.
+
+Buffered segments store independent double-precision S-curve values and path
+geometry. A shared evaluation cache reconstructs their derived phase state and
+polynomial coefficients. Tests require bit-identical reconstructed motion,
+and the native segment/planner sizes are now 312 / 15,960 bytes. The initial
+680-byte segment version blocked index refresh on hardware and was replaced.
+The hardware report covers the resulting throughput and heap measurements;
+those tests do not establish electrical pulse quality or physical ball error.
 
 ## Verification and reproduction
 
