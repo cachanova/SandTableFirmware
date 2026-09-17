@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <dirent.h>
 #include <sys/stat.h>
+#include "UploadCommit.hpp"
 
 static constexpr size_t kResponseBufferSize = 256;
 static constexpr unsigned long kFileCacheThrottleMs = 500;
@@ -33,8 +34,12 @@ struct UploadContext {
     char tempPath[192];
     size_t maxBytes;
     size_t received;
+    size_t requestBytes;
+    std::atomic<uint32_t>* active;
     int status;
     bool originalImage;
+    bool pattern;
+    bool staged;
     bool complete;
 };
 
@@ -42,6 +47,7 @@ struct UploadContext {
 static void cleanUploadFile(AsyncWebServerRequest* request) {
     request->_tempFile.close();
     auto* upload = static_cast<UploadContext*>(request->_tempObject);
+    if (upload && upload->active) { upload->active->fetch_sub(1); upload->active = nullptr; }
     if (upload && !upload->complete && upload->tempPath[0]) {
         try { SD.remove(upload->tempPath); }
         catch (const std::bad_alloc&) { /* Leave an ignored staging file on SD. */ }
@@ -595,16 +601,39 @@ void SisyphusWebServer::begin(PolarControl *polarControl,
     m_server.on("/api/files/upload", HTTP_POST,
         [this](AsyncWebServerRequest *request) {
             UploadContext* upload = static_cast<UploadContext*>(request->_tempObject);
-            const int status = upload == nullptr ? 400 :
-                (upload->status ? upload->status : (upload->complete ? 0 : 400));
+            int status = upload == nullptr ? 400 :
+                (upload->status ? upload->status : (upload->staged ? 0 : 400));
+            size_t fileParts = 0;
+            for (size_t i = 0; i < request->params(); ++i) {
+                const auto* param = request->getParam(i);
+                if (!param->isPost()) continue;
+                if (!param->isFile() || param->name() != "file") status = 400;
+                else ++fileParts;
+            }
+            if (fileParts != 1 || !request->multipartComplete() ||
+                (upload && upload->requestBytes != request->contentLength())) status = 400;
+            if (!status) {
+                const String destination(upload->finalPath);
+                status = commitUpload(SD, String(upload->tempPath), destination, String(destination + ".bak"));
+                if (!status) {
+                    upload->complete = true;
+                    m_fileListDirty.store(true);
+                    const String base = destination.substring(destination.lastIndexOf('/') + 1,
+                                                              destination.length() - 4);
+                    if (upload->pattern) SD.remove(destination.substring(0, destination.length() - 4) + ".png");
+                    if (upload->originalImage || upload->pattern)
+                        SD.remove("/patterns/" + base + "/" + base + ".thumb.png");
+                    m_lastUploadActivity.store(millis());
+                }
+            }
             cleanUploadFile(request);
             request->_tempObject = nullptr;
             if (upload != nullptr) free(upload);
             if (status != 0) {
                 request->send(status, "application/json",
                     status == 503
-                        ? "{\"success\":false,\"message\":\"SD card storage is unavailable\"}"
-                        : "{\"success\":false,\"message\":\"Upload failed\"}");
+                        ? "{\"success\":false,\"message\":\"Storage busy or unavailable; retry shortly\"}"
+                        : "{\"success\":false,\"message\":\"Upload rejected; file was not accepted\"}");
                 return;
             }
             auto response = std_patch::make_unique<BufferedResponse>("application/json", 0, true);
@@ -855,7 +884,7 @@ void SisyphusWebServer::fileCacheTask(void* arg) {
             self->m_fileScanActive.store(true);
             // Publish scan admission before checking image admission. Image
             // handlers increment their count before checking this flag.
-            if (self->m_imageInflight.load() != 0) {
+            if (self->m_imageInflight.load() != 0 || self->m_uploadInflight.load() != 0) {
                 self->m_fileScanActive.store(false);
                 ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(kFileCacheThrottleMs));
                 continue;
@@ -2208,7 +2237,14 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
             return;
         }
 
-        if (!isSDCardReady()) {
+        upload->requestBytes = request->contentLength();
+        uint32_t expected = 0;
+        if (!m_uploadInflight.compare_exchange_strong(expected, 1)) {
+            upload->status = 503;
+            return;
+        }
+        upload->active = &m_uploadInflight;
+        if (m_fileScanActive.load() || !isSDCardReady()) {
             upload->status = 503;
             return;
         }
@@ -2226,6 +2262,7 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
             return;
         }
         upload->originalImage = filename.endsWith(".png") && !thumbnail;
+        upload->pattern = filename.endsWith(".thr");
         const String basename = filename.substring(0, filename.length() - 4);
         const String dirPath = "/patterns/" + basename;
         String finalPath = dirPath + "/" + (thumbnail ? basename + ".thumb.png" : filename);
@@ -2267,7 +2304,7 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
     UploadContext* upload = static_cast<UploadContext*>(request->_tempObject);
     if (upload == nullptr || upload->status != 0) return;
 
-    if (index != upload->received || len > upload->maxBytes - upload->received) {
+    if (upload->staged || index != upload->received || len > upload->maxBytes - upload->received) {
         upload->status = 413;
         request->_tempFile.close();
         SD.remove(upload->tempPath);
@@ -2286,6 +2323,12 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
 
     if (final) {
         request->_tempFile.flush();
+        if (!upload->received) {
+            request->_tempFile.close();
+            SD.remove(upload->tempPath);
+            upload->status = 400;
+            return;
+        }
         const bool completeWrite = !request->_tempFile.getWriteError() &&
             request->_tempFile.size() == upload->received;
         request->_tempFile.close();
@@ -2294,33 +2337,10 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
             SD.remove(upload->tempPath);
             return;
         }
-        const String backupPath = String(upload->finalPath) + ".bak";
-        SD.remove(backupPath);
-        const bool hadOriginal = SD.exists(upload->finalPath);
-        if (hadOriginal && !SD.rename(upload->finalPath, backupPath)) {
-            upload->status = 500;
-            SD.remove(upload->tempPath);
-            return;
-        }
-        if (!SD.rename(upload->tempPath, upload->finalPath)) {
-            upload->status = 500;
-            if (hadOriginal) SD.rename(backupPath, upload->finalPath);
-            SD.remove(upload->tempPath);
-            return;
-        }
-        upload->complete = true;
-        m_fileListDirty.store(true);
-        if (hadOriginal) SD.remove(backupPath);
-        if (upload->originalImage) {
-            // A changed full image invalidates the derivative. The browser
-            // uploads its newly generated thumbnail after the original.
-            const String originalPath(upload->finalPath);
-            const String base = originalPath.substring(originalPath.lastIndexOf('/') + 1,
-                                                       originalPath.length() - 4);
-            SD.remove("/patterns/" + base + "/" + base + ".thumb.png");
-        }
-        LOG("Upload complete: %s (%u bytes)\r\n",
-            filename.c_str(), static_cast<unsigned>(upload->received));
+        // Only stage here. Another part or malformed HTTP/MIME ending can
+        // still reject this request; promotion belongs to its final handler.
+        upload->staged = true;
+
     }
 }
 

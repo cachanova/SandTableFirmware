@@ -72,6 +72,7 @@ private:
     ClearingPattern m_activeClearingPattern;
 
     std::atomic<uint32_t> m_uploadSequence{0};
+    std::atomic<uint32_t> m_uploadInflight{0};
 
     // Route handlers
     void handlePosition(AsyncWebServerRequest *request);
