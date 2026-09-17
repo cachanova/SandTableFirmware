@@ -262,7 +262,7 @@ There were no JavaScript exceptions, transport failures, or unexpected API
 errors. Browser upload/abort failure checks were locally mocked; actual uploads
 and emergency stop were covered by the chip suites above. Serial is released.
 
-## Motor-connected verification still required
+## Motor-connected verification
 
 A combined run after the command-mailbox fix completed 24 rapid starts while
 fetching six complete images and polling diagnostics. Start acknowledgements
@@ -278,9 +278,45 @@ choices, and automatic playlist handoff. An active emergency stop also passed:
 playback canceled, the assumed origin was invalidated, restart returned 409,
 and a second stop was idempotent.
 
-Physical motor movement and sensorless homing still require connected motors.
-The accelerated bench firmware was temporary and is excluded from production.
-Full clearing completion was not awaited.
+After reconnecting and power-cycling, both configured axes reported connected.
+Production firmware completed sensorless homing with failure=0 and 285/285 valid
+UART samples. The operator confirmed motors running and authorized interrupting
+their pattern for testing. No accelerated bench firmware was used in this phase.
+
+The connected-motor suite passed 12 checks over 174 requests: stopping the
+operator's pattern, starting short two-axis fixtures, replacing a running
+pattern with and without clearing, interrupting clearing with a new pattern,
+pause/stationary/resume, automatic completion and handoff between two distinct
+playlist files, and inserting clearing before the second entry. Start responses
+were median 37.42 ms / maximum 68.20 ms; status median 28.20 ms / maximum 68.16 ms.
+There were no resets, new errors, planner underruns, or tuning changes. The
+commanded endpoint returned within 0.1 mm of the fixture's starting radius;
+this is planner telemetry, not independent encoder measurement. Timing history
+included one theta step 101 microseconds late against the 100-microsecond
+reporting threshold, during the pre-test pattern epoch; rho had no outliers.
+Full clearing completion was not awaited, as requested.
+
+Both temporary fixtures were deleted, and the original empty playlist, loop and
+clearing preferences were restored. Motor-test evidence is under
+`/tmp/sisyphus-responsiveness/motors-connected/physical-suite.json`.
+
+Two read-only Chromium captures then observed Spiral7 approaching the center
+and following its curved path. The second 28-second capture received 383 actual
+SSE events, showed the 800-pixel guide and 689 trace pixels, kept the ball at the
+latest trace point, and rendered in at most 0.4 ms. Actual positions were a
+median 1.45 and 95th-percentile 3.85 canvas pixels from the guide; the
+screenshot ball center matched reported coordinates within 0.64 display pixel.
+Status latency was median 35.35 ms and maximum 82 ms. There were no transport
+failures or uncaught JavaScript exceptions. Both captures received initial
+library and Machine-info 503 responses that recovered automatically; the older
+browser harness's overall flag remains false because it counts even a recovered
+Machine 503 as unexpected. The raw reports are preserved rather than relabeled
+as wholly passing.
+
+After browser validation the table was stopped and verified IDLE, with zero
+velocity, no errors or planner underruns, unchanged tuning, speed 10 (the
+operator's setting on entry), 29 original patterns, and the original empty
+playlist preferences. Serial was not needed for this connected-motor phase.
 
 Session measurements, serial captures, and host scripts are under
 `/tmp/sisyphus-responsiveness/`. `deployed-sleep-default.elf` matches the index
