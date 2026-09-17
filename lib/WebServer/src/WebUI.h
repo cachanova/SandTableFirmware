@@ -432,7 +432,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 <button class="t-btn" id="btn-pause">Pause</button>
                 <button class="t-btn" id="btn-stop">Stop</button>
                 <button class="t-btn" id="btn-home">Home</button>
-                <button class="t-btn" id="btn-home-abort" style="color: var(--danger); border-color: var(--danger);">Abort homing</button>
+                <button class="t-btn" id="btn-home-abort" style="color: var(--danger); border-color: var(--danger);" disabled>Abort homing</button>
             </div>
             <p id="home-abort-status" role="alert" aria-live="assertive"></p>
 
@@ -585,6 +585,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             constructor() {
                 this.apiBase = '/api';
                 this.statusInterval = null;
+                this.homingActive = false;
                 this.errorsInterval = null;
                 this.lastPatternName = '';
                 this.selectedPattern = null;
@@ -885,9 +886,8 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             async pausePattern() { await fetch(this.apiBase + '/pattern/pause', { method: 'POST' }); }
 
             async abortHoming() {
-                // Keep this control available even before the first status
-                // poll. Never delay a stop behind a confirmation dialog.
-                if (this.abortInFlight) return;
+                // Never delay an active homing stop behind a confirmation dialog.
+                if (!this.homingActive || this.abortInFlight) return;
                 this.abortInFlight = true;
                 const button = document.getElementById('btn-home-abort');
                 const message = document.getElementById('home-abort-status');
@@ -901,6 +901,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     });
                     const result = await response.json();
                     if (!response.ok || !result.success) throw new Error('Abort not acknowledged');
+                    this.homingActive = false;
                     message.textContent = result.requiresHoming
                         ? 'Abort acknowledged. Position is untrusted; home again before running patterns. If motion continues, switch off motor power.'
                         : 'Controller reports no active motion. If the motor is still moving, switch off motor power.';
@@ -909,7 +910,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 } finally {
                     clearTimeout(timeout);
                     this.abortInFlight = false;
-                    button.disabled = false;
+                    button.disabled = !this.homingActive;
                 }
                 try { await this.pollStatusOnce(); } catch (error) { /* Keep the abort message visible. */ }
             }
@@ -1129,6 +1130,8 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             }
 
             updateUI(status) {
+                this.homingActive = status.state === 'HOMING';
+                document.getElementById('btn-home-abort').disabled = !this.homingActive || !!this.abortInFlight;
                 const stateBadge = document.getElementById('state-badge');
                 stateBadge.textContent = status.state;
                 stateBadge.className = 'status-badge status-' + status.state.toLowerCase();
