@@ -1,7 +1,10 @@
 # Presence memory and performance checks
 
-Reviewed 2026-09-16 after rebasing onto pulled main `f39a7ea`. Nothing was
-flashed. These measurements supersede the pre-rebase sizes in PRESENCE_REVIEW.
+The measurements below describe the earlier 2026-09-16 review against main
+`f39a7ea`, when nothing was flashed. For the subsequent rebase onto `eeb368d`,
+updated build sizes, baseline load test, and OTA/startup outcome, see
+[PRESENCE_HARDWARE_TEST.md](PRESENCE_HARDWARE_TEST.md). Do not treat the earlier
+host checks as a successful on-device qualification of presence sensing.
 
 ## Build comparison
 
