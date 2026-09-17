@@ -100,6 +100,10 @@ The Web UI accepts `.thr` plus optional `.png` uploads with the same base name. 
 - Pause and stop use controlled deceleration; pause preserves planner targets
   that have not yet been generated.
 
+The [selected sound-tuned settings](docs/SOUND_TUNED_SETTINGS.md) summarize
+both axes' current profiles, including the accepted RHO 350 mA run / 200 mA
+hold setting, driver parameters, persistence, and qualification limits.
+
 Loaded theta commissioning, acoustic acceptance, known resonances, selected
 defaults, and the repeatable retuning procedure are documented in the
 [theta acoustic tuning playbook](docs/THETA_ACOUSTIC_TUNING.md).

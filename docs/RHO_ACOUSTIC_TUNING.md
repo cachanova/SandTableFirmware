@@ -10,11 +10,21 @@ the telemetry-aligned analysis in `scripts/acoustic_tuner.py`.
 
 The operator ended acoustic tuning for now and selected **5.5 mm/s** as the
 default. The microphone is no longer available. Adopt the complete short-screen
-candidate: acceleration 20 mm/s², jerk 100 mm/s³, run/hold requests 350 mA,
+candidate: acceleration 20 mm/s², jerk 100 mm/s³, run request 350 mA,
+and an accepted hold request of **200 mA** (reduced from the original 350 mA),
 u8/interpolation, StealthChop, VSENSE high sensitivity, F2/TBL0/REG1/LIM8,
 automatic current on, automatic gradient off, PWM_OFS128/GRAD0, CoolStep on
-with SEMIN2/SEMAX1/SEUP2/SEDN0/TCOOLTHRS1000. The firmware fallback defaults
-now match this selection; the device's saved settings already match it.
+with SEMIN2/SEMAX1/SEUP2/SEDN0/TCOOLTHRS1000. The device's saved settings
+match this selection. Firmware fallback still uses 350 mA hold; the saved
+200 mA setting overrides it on normal production boot. The other fallback
+parameters match. See [Selected sound-tuned settings](SOUND_TUNED_SETTINGS.md)
+for the complete RHO/theta parameter tables and persistence behavior.
+
+The hold-only update returned success and settled at live current scale CS6,
+with run setting CS10, valid UART, no driver faults, and no commanded movement.
+The operator accepted 200 mA holding for this profile. No new microphone test
+or independent physical holding measurement was performed; the original
+acoustic measurements below used their recorded hold settings.
 
 This is an operator acceptance decision, not a new acoustic qualification.
 Retain the earlier failures and inconclusive measurements. Full-travel/stress
@@ -22,14 +32,18 @@ sound qualification and the quieter tiers remain incomplete. Keep theta's
 0.225 rad/s profile, CW disabled and the dedicated homing parameters unchanged.
 Do not run more microphone tests as part of deployment.
 
-Deployment: uploaded regular `esp32dev_ota` firmware from source commit
+Original deployment (350 mA hold): uploaded regular `esp32dev_ota` firmware from source commit
 `e0545f7`, restoring the previously requested automatic startup homing. Readback
 confirmed 5.5 mm/s, the selected driver profile, theta unchanged and CW TOFF=0.
 The firmware completed startup homing (cycle 1, no failure, 307/307 valid UART
 samples) and reported IDLE at rho=0. No camera or microphone confirmed physical
-position. The SD mount still fails, so pattern storage is unavailable.
+position. At that deployment, the SD mount failed and pattern storage was unavailable.
 The release build, 102 host tests and native motion tests passed. See
 `docs/RHO_ADOPTED_PROFILE_DEPLOYMENT.json` for the binary hash and readback.
+That JSON preserves the original deployment snapshot. Later production checks
+in [Final review](FINAL_REVIEW.md#production-deployment-and-device-verification)
+verified working pattern storage; the current hold update also found storage
+available. Neither historical snapshot is a fresh read of runtime tuning.
 
 ### Speed-first search, 2026-09-16
 
@@ -57,7 +71,8 @@ recordings, window medians were -53.72/-53.35/-54.46 dBFS, with p95 values
 -46.63/-48.30/-40.76. The lower-current recording did not show a reversible
 median reduction. Changing stationary sound still masks the comparison; this
 does not prove that all of it comes from the room or that hold current has no
-acoustic effect. Restore hold current to 350 and the provisional speed to 5.5.
+acoustic effect. After that probe, hold current was restored to 350 and speed
+to 5.5. The later accepted 200 mA hold update is recorded above.
 
 The three earlier post-reset 4 mm/s trials inherited PWM_GRAD=2 (their result
 JSON records it). The new 5.5/5.75 comparisons explicitly set PWM_GRAD=0 to

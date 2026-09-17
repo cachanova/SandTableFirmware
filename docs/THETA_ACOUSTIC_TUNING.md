@@ -4,6 +4,10 @@ Use this playbook to re-establish the fastest useful theta settings at the
 operator-selected noise limits. It is written for an agent working with the
 operator present. The operator's report always overrides a microphone pass.
 
+For the selected production values for both axes, see
+[Selected sound-tuned settings](SOUND_TUNED_SETTINGS.md). Theta remains at
+0.225 rad/s, 700 mA run / 200 mA hold, with the loaded-retune driver profile.
+
 Theta is a continuous rotational axis and has no physical homing operation.
 `resetTheta()` assigns the current angle as logical zero. Sensorless homing and
 the UI confirmation flow apply only to rho.
