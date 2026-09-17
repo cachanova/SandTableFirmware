@@ -39,7 +39,8 @@ and homing procedure are unchanged. The final branch is rebased onto
   overlay requests are suppressed; stale results cannot replace a newer image.
 - The canvas batches received positions into animation frames, caches the ball
   sprite, repaints only its previous area, and throttles coordinate text. It
-  retains all foreground path samples, bounds hidden-tab queues, and breaks
+  retains received path samples even when animation frames pause, rasterizes
+  hidden-tab batches to bound memory, and breaks
   traces across reconnect gaps. The guide is darkened for contrast against
   sand. Clearing the trace preserves the last stationary ball. A local Chromium
   render using the device's cached Spiral7 PNG and 90 actual THR waypoints

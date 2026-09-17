@@ -75,10 +75,53 @@ misrepresent the traveled path.
   preservation on short write/flush/rename failure, and rejection of invalid or
   oversized loads without changing the live playlist.
 
-The new firmware has not yet been installed: Spiral7 remains running, and the
-operator was asked whether to interrupt it for the necessary reboot. The live
-browser check above used locally supplied HTML, not a device firmware update.
-On-device upload, persistence, and playback checks remain for that deployment.
+## Production deployment and device verification
+
+Installed commit `3d3163e` on `100.76.149.200` over OTA on 2026-09-16 after the
+operator authorized interruption. The production image SHA-256 is
+`9b165aa5319443a1cb8a89e7d3ff1b6482c7915eb83d275a0e528423be054778`.
+OTA completed in 32.6 seconds. Automatic homing succeeded with both fitted
+axes connected; the unused rho companion remains disabled. This is normal
+production firmware, with bench mode false and no commissioning axis.
+
+- Thirteen connected-motor checks passed across 186 requests: relative jog,
+  pattern start/replacement with and without clearing, pause/stability/resume,
+  short-pattern completion, automatic two-pattern playlist handoff, and clearing
+  between playlist entries. Median start/stop command response was about 37 ms;
+  median status response was 27 ms. No reset, logged error, or planner underrun
+  occurred. Positions are planner coordinates, not independent encoder feedback.
+  Full clearing completion was not awaited.
+- Saving the unchanged motion settings succeeded and all tuning read back
+  identically to the pre-install snapshot. Speed was restored to 10.
+- Interrupted image replacement preserved the original PNG; oversized thumbnails
+  were rejected, canceled downloads released their requests, and subsequent
+  uploads succeeded. A second multipart file was rejected without leaking its
+  context; the already committed first file remained, as intended by the
+  single-file upload protocol. Playlist reorder in both directions and removal
+  also passed.
+- Twelve full-resolution images matched their source bytes while uploads,
+  diagnostics, status polling, and two SSE clients ran concurrently. The streams
+  received 1,827 events with no transport failures or reboot. Admission control
+  returned 39 temporary busy responses, which recovered on retry. Large image
+  downloads still took 2–13 seconds under this load; this is not a claim of
+  instantaneous full-resolution image transfer.
+- Chromium then loaded HTML directly from the updated chip. With animation
+  callbacks withheld for 20 seconds, all 241 received trace segments survived;
+  pending samples stayed at or below 128, the resumed backlog was zero, and ball
+  coordinates equaled the trace endpoint. The 800-pixel guide stayed loaded and
+  no JavaScript exception occurred. This deliberately pauses animation callbacks;
+  it does not simulate a network disconnect or reconstruct missed telemetry.
+- Final idle free heap was 75,712 bytes, largest free block 38,900 bytes
+  (unchanged from the post-boot baseline), and minimum free heap 41,544 bytes.
+  These short tests found no continuing allocation loss; they are not a long
+  duration leak proof.
+- Test files were removed, the original library and empty playlist restored,
+  and the table stopped in IDLE. On-device errors and planner underruns were zero.
+
+Deployment artifacts and reports are under
+`/tmp/sisyphus-final-review/install/`. Early host-harness checks were corrected
+for the jog endpoint's expected HTTP 202 and retryable file-list HTTP 503;
+completed reports above use those endpoint semantics.
 
 Host artifacts for this pass are under `/tmp/sisyphus-final-review/`.
 
