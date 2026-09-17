@@ -42,7 +42,10 @@ public:
 
 // Mirror WebRequest::_onAck's public lifecycle: finished means close NOW.
 static void ack(KnownLengthResponse& response, AsyncWebServerRequest& request) {
-    if (!response._finished()) response._ack(&request, 1, 0);
+    auto* client = request.client();
+    const size_t length = client->bytes.size() - client->acknowledged;
+    client->acknowledged += length;
+    if (!response._finished()) response._ack(&request, length, 0);
     if (response._finished()) request.client()->close();
 }
 static std::string body(const AsyncClient& client) {
@@ -72,6 +75,34 @@ static void* refuseBuffer(size_t length) {
 
 int main() {
     const size_t all = std::numeric_limits<size_t>::max();
+    {
+        AsyncClient client;
+        AsyncWebServerRequest request(client);
+        SourceResponse response(payload(10000));
+        response._respond(&request);
+        assert(client.bytes.size() == KnownLengthResponse::kMaxInFlight);
+        const auto reads = response.reads;
+        for (unsigned poll = 0; poll < 20; ++poll) response._ack(&request, 0, 0);
+        assert(client.bytes.size() == KnownLengthResponse::kMaxInFlight);
+        assert(response.reads == reads); // polling cannot replenish ACK credit
+        client.acknowledged = 17;
+        response._ack(&request, 17, 0);
+        assert(client.bytes.size() == KnownLengthResponse::kMaxInFlight + 17);
+        response._ack(&request, 0, 0);
+        assert(client.bytes.size() == KnownLengthResponse::kMaxInFlight + 17);
+        drain(response, request);
+        assert(body(client) == response.source);
+        std::cout << "PASS: headers and body share an ACK-bound window; polls cannot grow the TCP backlog\n";
+    }
+    {
+        AsyncClient client;
+        AsyncWebServerRequest request(client);
+        SourceResponse response(payload(256), refuseBuffer);
+        response._respond(&request);
+        drain(response, request);
+        assert(body(client) == response.source && refusedAllocations == 0);
+        std::cout << "PASS: small replies use only inline staging without a heap allocation\n";
+    }
     {
         AsyncClient client;
         client.accept = {all, 0, 0, all};
@@ -129,7 +160,7 @@ int main() {
         assert(response.sent() == 0 && !client.closed);
         const auto calls = client.addCalls;
         ack(response, request);
-        assert(client.addCalls - calls == 4 && response.sent() == 4096);
+        assert(client.addCalls - calls == 3 && response.sent() == KnownLengthResponse::kMaxInFlight);
         drain(response, request);
         assert(body(client) == response.source && response.maxRead <= 1024);
         std::cout << "PASS: TRY_AGAIN yields, later polls recover, image pumping stays bounded\n";

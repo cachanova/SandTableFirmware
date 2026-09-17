@@ -9,6 +9,7 @@
 #include <string>
 
 using String = std::string;
+static constexpr size_t TCP_MSS = 1436; // pinned ESP32 SDK configuration
 static constexpr size_t RESPONSE_TRY_AGAIN = 0xFFFFFFFF;
 enum WebResponseState {
     RESPONSE_SETUP, RESPONSE_HEADERS, RESPONSE_CONTENT,
@@ -20,6 +21,7 @@ struct AsyncClient {
     std::string bytes;
     size_t window = 8192;
     size_t addCalls = 0, sendCalls = 0;
+    size_t acknowledged = 0;
     bool closed = false, sendSucceeds = true;
     size_t space() const { return window; }
     size_t add(const char* data, size_t length) {

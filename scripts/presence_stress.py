@@ -17,6 +17,16 @@ import urllib.parse
 import urllib.request
 
 
+def check_memory(info):
+    """A previous low-water failure cannot become a pass on the same boot."""
+    assert info.get('heap8Bit', info['heap']) >= 8192, 'heap reserve guard'
+    assert info.get('largestFree8BitBlock', info['largestFreeBlock']) >= 4096, \
+        'fragmentation guard'
+    if 'minimumFree8BitHeap' in info:
+        assert info['minimumFree8BitHeap'] >= 8192, \
+            'transient byte-heap low below 8 KiB; reboot before retesting'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base', default='http://100.76.149.200')
@@ -74,6 +84,7 @@ def main():
     assert initial and initial['state'] == 'IDLE', 'refusing load: table is not idle'
     initial_info = get_json('/api/system/info')
     assert initial_info, 'system info busy; retry later'
+    check_memory(initial_info)
     initial_errors = get_json('/api/errors')
     assert initial_errors is not None, 'error log busy; retry later'
     if args.presence:
@@ -101,14 +112,7 @@ def main():
                 assert status['state'] == 'IDLE', 'table state changed; stopping load'
                 # Allow the designed 16 KiB presence pause / 24 KiB resume
                 # hysteresis to operate, while keeping an 8 KiB hard floor.
-                assert info.get('heap8Bit', info['heap']) >= 8192, 'heap reserve guard'
-                assert info.get('largestFree8BitBlock', info['largestFreeBlock']) >= 4096, \
-                    'fragmentation guard'
-                if 'minimumFree8BitHeap' in info:
-                    minimum = info['minimumFree8BitHeap']
-                    old_minimum = initial_info.get('minimumFree8BitHeap', minimum)
-                    assert not (minimum < old_minimum and minimum < 8192), \
-                        'new transient byte-heap low below 8 KiB'
+                check_memory(info)
                 if args.presence:
                     presence = status['presence']
                     assert presence['available'], 'CSI unavailable'
@@ -176,11 +180,12 @@ def main():
     final = final_info = errors = logs = None
     try:
         final = get_json('/api/status')
-        final_info = get_json('/api/system/info')
         errors = get_json('/api/errors')
         body = request('/api/logs/text')
         logs = body.decode() if body is not None else None
+        final_info = get_json('/api/system/info')
         assert final and final_info, 'recovery endpoints busy'
+        check_memory(final_info)
         assert final['state'] == 'IDLE' and final['uptime'] >= initial['uptime']
         if args.presence:
             assert final['presence']['receiving'] and not final['presence']['suppressed'], \

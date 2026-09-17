@@ -11,6 +11,9 @@
 // Keep source reads and TCP acceptance separate, without SDK-private state.
 class KnownLengthResponse : public AsyncWebServerResponse {
 public:
+    // Two full TCP segments keep delayed ACKs moving without filling the
+    // SDK's 5760-byte send buffer on every concurrent HTTP connection.
+    static constexpr size_t kMaxInFlight = 2 * TCP_MSS;
     using BufferAllocator = void* (*)(size_t);
     explicit KnownLengthResponse(BufferAllocator allocator = std::malloc)
         : m_allocator(allocator) {}
@@ -37,7 +40,7 @@ public:
     }
 
     size_t _ack(AsyncWebServerRequest* request, size_t length, uint32_t) final {
-        _ackedLength += length;
+        _ackedLength += std::min(length, _writtenLength - _ackedLength);
         return pump(request);
     }
 
@@ -57,7 +60,8 @@ private:
         // Bound work to four 1 KB body writes (at most four 5 ms prefetch
         // waits), while allowing enough queued data to prompt timely TCP ACKs.
         for (unsigned attempt = 0; attempt < 4; ++attempt) {
-            const size_t space = client->space();
+            const size_t outstanding = _writtenLength - _ackedLength;
+            const size_t space = std::min(client->space(), kMaxInFlight - outstanding);
             if (!space) break;
 
             if (_state == RESPONSE_HEADERS) {
@@ -80,7 +84,9 @@ private:
                 // recoverable because the inline buffer still sends exact bytes.
                 if (!m_allocationAttempted) {
                     m_allocationAttempted = true;
-                    m_heapBuffer = static_cast<uint8_t*>(m_allocator(1024));
+                    if (_contentLength > sizeof(m_inlineBuffer)) {
+                        m_heapBuffer = static_cast<uint8_t*>(m_allocator(1024));
+                    }
                 }
                 // A source may consume/free its own storage here. Keep the bytes
                 // locally until add() has copied every one into TCP's queue.
