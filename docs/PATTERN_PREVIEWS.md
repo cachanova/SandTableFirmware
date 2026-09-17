@@ -118,3 +118,26 @@ total transfer deadline.
 ring wraps, includes watchdog resets, and reports the running firmware's MD5.
 Match that fingerprint to the uploaded binary before decoding addresses with its
 ELF. The endpoint does not initiate a reset or enable diagnostic auto-restarts.
+
+## Long SD operations
+
+Removing an archived 34,716,452-byte truncated legacy THR triggered a task watchdog
+reset while the same firmware was running. The entry was absent after reboot.
+The synchronous delete path can walk a large FAT cluster chain without returning
+to the HTTP task; feeding only between upload chunks does not cover that work.
+
+`src/SDProgress.cpp` wraps registration of the pinned Arduino SPI SD callbacks.
+After a successful sector read or write returns and releases its SPI lock, it
+services the current task's watchdog if subscribed and yields at most once per
+20 ms. Failed or stuck disk I/O does not receive a watchdog reset. Other disk
+drivers and callback registration/unregistration retain their SDK behavior.
+The framework installation is not modified, and watchdog timeouts remain enabled.
+
+The callback regression checks forwarding, error handling, unsubscribed tasks,
+yield throttling, and tick rollover:
+
+```sh
+g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -Itest/support/sd_progress test/test_sd_progress.cpp -o /tmp/test_sd_progress
+/tmp/test_sd_progress
+```
