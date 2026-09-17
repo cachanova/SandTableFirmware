@@ -73,6 +73,9 @@ struct Segment {
     double entryVelocity = 0, exitVelocity = 0;
     double maxVelocity = 0, maxAcceleration = 0, maxJerk = 0;
     double duration = 0;
+    // Speed-independent steady-state estimate (see NominalTime.hpp), kept for
+    // progress/remaining-time accounting rather than motion execution.
+    double nominalDuration = 0;
     uint64_t durationUs = 0, nextSampleUs = 0;
     bool calculated = false, executing = false, generationComplete = false;
     bool geometryLocked = false, braking = false, limitsCalculated = false;
@@ -230,8 +233,16 @@ public:
     // Get count of completed segments
     uint32_t getCompletedCount() const { return m_completedCount; }
 
-    // Reset completed count
-    void resetCompletedCount() { m_completedCount = 0; }
+    // Sum of completed segments' nominal durations at speed multiplier 1.
+    // Divide the remainder against a preflight total by the current speed
+    // multiplier to estimate time left.
+    double getCompletedNominalSec() const { return m_completedNominalSec; }
+
+    // Reset completed count and nominal-duration accumulator
+    void resetCompletedCount() {
+        m_completedCount = 0;
+        m_completedNominalSec = 0.0;
+    }
 
     // Get diagnostic info
     void getDiagnostics(uint32_t& queueDepth, uint32_t& underruns) const;
@@ -368,6 +379,7 @@ private:
     bool m_endOfPattern;
     bool m_stopEventQueued = false;
     uint32_t m_completedCount;
+    double m_completedNominalSec = 0.0;
     bool m_startupHoldoff = false;
 
     // Timer handle (ESP32 specific)

@@ -5,6 +5,7 @@
 #include "RhoAcousticProfile.hpp"
 #include "PolarUtils.hpp"
 #include "ThrParser.hpp"
+#include "NominalTime.hpp"
 #include "MakeUnique.hpp"
 #include "Logger.hpp"
 #include "ErrorLog.hpp"
@@ -2614,6 +2615,9 @@ bool PolarControl::loadAndRunFile(String filePath, float maxRho) {
     cmd.filename[sizeof(cmd.filename) - 1] = '\0';
     cmd.maxRho = maxRho;
     cmd.generation = m_fileGeneration.fetch_add(1) + 1;
+    cmd.tMaxVel = m_motionSettings.tMaxVelocity;
+    cmd.rMaxVel = m_motionSettings.rMaxVelocity;
+    cmd.ballMaxVel = m_motionSettings.ballMaxVelocity;
 
     // Set flag explicitly BEFORE command to prevent race condition with feedPlanner
     m_fileLoading = true;
@@ -2852,15 +2856,47 @@ int PolarControl::getProgressPercent() const {
     if (m_posGen) {
         progress = m_posGen->getProgressPercent();
     } else {
-        uint32_t size = m_lastFileSize.load();
-        if (size > 0) {
-            uint32_t pos = m_lastFilePos.load();
-            if (pos > size) pos = size;
-            progress = static_cast<int>((pos * 100) / size);
+        const uint32_t totalPoints = m_patternTotalPoints.load();
+        if (totalPoints > 0) {
+            // Count segments the planner has executed, not bytes the reader
+            // has buffered: the 256-coordinate queue plus the planner's own
+            // lookahead otherwise report a large head start on short files.
+            uint32_t completed = m_planner.getCompletedCount();
+            if (completed > totalPoints) completed = totalPoints;
+            progress = static_cast<int>(
+                (static_cast<uint64_t>(completed) * 100u) / totalPoints);
+        } else {
+            uint32_t size = m_lastFileSize.load();
+            if (size > 0) {
+                uint32_t pos = m_lastFilePos.load();
+                if (pos > size) pos = size;
+                progress = static_cast<int>((pos * 100) / size);
+            }
         }
     }
     xSemaphoreGive(m_mutex);
     return progress;
+}
+
+int PolarControl::getEtaSeconds() const {
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    int etaSeconds = -1;
+    const float totalNominalSec = m_patternNominalSec.load();
+    if (!m_posGen && totalNominalSec > 0.0f) {
+        const State_t state = m_state.load();
+        if (state == RUNNING || state == PAUSED || state == STOPPING ||
+            state == PREPARING) {
+            double remaining = totalNominalSec - m_planner.getCompletedNominalSec();
+            if (remaining < 0.0) remaining = 0.0;
+            // Same mapping and clamp as updateSpeedSettings/setSpeedMultiplier,
+            // read from the requested speed so the estimate reacts immediately.
+            const float multiplier =
+                std::max(0.1f, std::min(1.0f, m_speed.load() / 10.0f));
+            etaSeconds = static_cast<int>(std::lround(remaining / multiplier));
+        }
+    }
+    xSemaphoreGive(m_mutex);
+    return etaSeconds;
 }
 
 void PolarControl::emergencyStop(bool disableRho) {
@@ -4431,6 +4467,8 @@ void PolarControl::fileReadTask(void* arg) {
                     if (directFile) directFile.close();
                     hasPendingPos = false;
                     xQueueReset(pc->m_coordQueue);
+                    pc->m_patternTotalPoints.store(0);
+                    pc->m_patternNominalSec.store(0.0f);
                     pc->m_fileLoading.store(true);
                     LOG("FileTask: Opening %s with maxRho=%.2f\r\n", cmd.filename, cmd.maxRho);
                     strncpy(currentFilename, cmd.filename, sizeof(currentFilename) - 1);
@@ -4453,6 +4491,9 @@ void PolarControl::fileReadTask(void* arg) {
                         // large THR does not consume extra heap or task stack.
                         bool valid = true, cancelled = false;
                         uint32_t lines = 0;
+                        double nominalTotalSec = 0.0;
+                        bool havePreviousPoint = false;
+                        PolarCord_t previousPoint{};
                         ThrValidator validator(directMaxRho, pc->getStepsPerRadian());
                         while (readPatternLine(directFile, directBuffer, sizeof(directBuffer),
                                 directBufLen, directBufPos, directEof, lineBuffer,
@@ -4465,6 +4506,17 @@ void PolarControl::fileReadTask(void* arg) {
                             if (parsed == ThrLine::Invalid) {
                                 valid = false;
                                 break;
+                            }
+                            if (parsed == ThrLine::Coordinate) {
+                                if (havePreviousPoint) {
+                                    nominalTotalSec += nominalSegmentSeconds(
+                                        pendingPos.theta - previousPoint.theta,
+                                        pendingPos.rho - previousPoint.rho,
+                                        previousPoint.rho, pendingPos.rho,
+                                        cmd.tMaxVel, cmd.rMaxVel, cmd.ballMaxVel);
+                                }
+                                previousPoint = pendingPos;
+                                havePreviousPoint = true;
                             }
                             if ((lines % 16) == 0) {
                                 FileCommand pendingCommand;
@@ -4491,6 +4543,10 @@ void PolarControl::fileReadTask(void* arg) {
                             directActive = false;
                             pc->m_fileLoading = false;
                         }
+                        if (directActive) {
+                            pc->m_patternTotalPoints.store(validator.points());
+                            pc->m_patternNominalSec.store(static_cast<float>(nominalTotalSec));
+                        }
                         directBufLen = directBufPos = 0;
                         directEof = false;
                         LOG("FileTask: THR preflight %s (%lu points)\r\n",
@@ -4516,6 +4572,8 @@ void PolarControl::fileReadTask(void* arg) {
                     pc->m_fileLoading = false;
                     pc->m_lastFilePos.store(0);
                     pc->m_lastFileSize.store(0);
+                    pc->m_patternTotalPoints.store(0);
+                    pc->m_patternNominalSec.store(0.0f);
                     // Clear queue
                     PolarCord_t dummy;
                     while (xQueueReceive(pc->m_coordQueue, &dummy, 0) == pdTRUE);
@@ -4610,6 +4668,8 @@ void PolarControl::fileReadTask(void* arg) {
             pc->m_fileLoading.store(false);
             pc->m_lastFilePos.store(0);
             pc->m_lastFileSize.store(0);
+            pc->m_patternTotalPoints.store(0);
+            pc->m_patternNominalSec.store(0.0f);
             if (cmd.type == FileCommand::CMD_LOAD) {
                 pc->m_fileReadyGeneration.store(cmd.generation);
             }

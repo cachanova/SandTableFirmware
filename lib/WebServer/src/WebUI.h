@@ -1650,12 +1650,16 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 const npProgressText = document.getElementById('np-file-progress-text');
 
                 if (isRunning && progress >= 0) {
+                    const etaSuffix = !isClearing && Number.isFinite(status.etaSeconds) &&
+                        status.etaSeconds >= 0
+                        ? ` · ~${this.formatEta(status.etaSeconds)} left` : '';
+                    const progressLabel = progress + '%' + etaSuffix;
                     statusProgressContainer.style.display = 'block';
                     statusProgressBar.style.width = progress + '%';
-                    statusProgressText.textContent = progress + '%';
+                    statusProgressText.textContent = progressLabel;
                     npProgressContainer.style.display = 'block';
                     npProgressBar.style.width = progress + '%';
-                    npProgressText.textContent = progress + '%';
+                    npProgressText.textContent = progressLabel;
                 } else {
                     statusProgressContainer.style.display = 'none';
                     npProgressContainer.style.display = 'none';
@@ -1719,6 +1723,15 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     line.appendChild(msg);
                     logContainer.appendChild(line);
                 }
+            }
+
+            formatEta(seconds) {
+                if (seconds < 60) return `${seconds}s`;
+                const minutes = Math.round(seconds / 60);
+                if (minutes < 60) return `${minutes} min`;
+                const h = Math.floor(minutes / 60);
+                const m = minutes % 60;
+                return m > 0 ? `${h}h ${m}m` : `${h}h`;
             }
 
             formatLogTime(ms) {

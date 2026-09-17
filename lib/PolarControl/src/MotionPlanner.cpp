@@ -1,4 +1,5 @@
 #include "MotionPlanner.hpp"
+#include "NominalTime.hpp"
 #include <cmath>
 #include <cstdio>
 #include <algorithm>
@@ -128,6 +129,7 @@ void MotionPlanner::init(double stepsPerMmR, double stepsPerRadT, float maxRho, 
     m_stepQueueHead = 0;
     m_stepQueueTail = 0;
     m_completedCount = 0;
+    m_completedNominalSec = 0.0;
     m_stopEventQueued = false;
     m_underrunCount.store(0);
     m_consecutiveUnderruns.store(0);
@@ -173,6 +175,9 @@ bool MotionPlanner::addSegment(double theta, double rho) {
     const PathPoint target{theta, rho};
     seg.path.line({m_targetTheta, m_targetRho}, target, m_maxRho);
     seg.endDistance = seg.path.length;
+    seg.nominalDuration = nominalSegmentSeconds(theta - m_targetTheta, rho - m_targetRho,
+                                                m_targetRho, rho, m_tMaxVel, m_rMaxVel,
+                                                m_ballMaxVelocity);
     if (m_resumeReady) {
         if (std::abs(theta - m_resumePath.end.theta) < 1e-10 &&
             std::abs(rho - m_resumePath.end.rho) < 1e-10) {
@@ -853,6 +858,7 @@ void MotionPlanner::process() {
             // Segment complete
             current.executing = false;
             m_completedCount++;
+            m_completedNominalSec += current.nominalDuration;
 
             // Move to next segment
             m_segmentTail = (m_segmentTail + 1) % SEGMENT_BUFFER_SIZE;
