@@ -97,9 +97,19 @@ Text file of polar coordinates in radians and normalized radius:
 File parsing ignores empty/comment lines. Lines longer than 127 characters are skipped and reported to the error log.
 
 ## File Storage Layout
-- Required: `/patterns/name/name.thr` and `/patterns/name/name.png`
 
-The Web UI accepts `.thr` plus optional `.png` uploads with the same base name. This png should be an image of the path produced by the thr with a white line and transparent backgroud. This will be overlayed on the webpage over the position viewer.
+- Pattern: `/patterns/name/name.thr`
+- Optional preview: `/patterns/name/name.png`
+- Optional thumbnail: `/patterns/name/name.thumb.png`
+
+Legacy `/patterns/name.thr` and `/patterns/name.png` pairs are also supported;
+replacement uploads preserve that layout. Thumbnails always use the nested path.
+Upload thumbnails as `name.png` with `?thumbnail=1` on `/api/files/upload`.
+
+Previews use white lines on a transparent background and overlay the position
+viewer. Generate them from the same THR using unwrapped polar interpolation;
+connecting Cartesian endpoints can omit complete turns. See
+[preview generation, backup, and upload guarantees](docs/PATTERN_PREVIEWS.md).
 
 ## Motion Planning
 - One jerk-limited progress profile drives both axes along each polar THR segment.
