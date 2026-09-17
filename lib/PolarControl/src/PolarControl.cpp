@@ -413,7 +413,8 @@ bool PolarControl::begin() {
 
     // Create queues for async file reading
     m_coordQueue = xQueueCreate(256, sizeof(PolarCord_t));
-    m_cmdQueue = xQueueCreate(5, sizeof(FileCommand));
+    // A new LOAD replaces all pending file actions; STOP must never be dropped.
+    m_cmdQueue = xQueueCreate(1, sizeof(FileCommand));
     if (m_coordQueue == NULL || m_cmdQueue == NULL) {
         ErrorLog::instance().log("ERROR", "MOTOR", "QUEUE_CREATE_FAILED",
                                  "Could not allocate motor command queues");
@@ -2623,7 +2624,7 @@ bool PolarControl::loadAndRunFile(String filePath, float maxRho) {
     m_planner.resetCompletedCount();
 
     // Send command
-    if (xQueueSend(m_cmdQueue, &cmd, 0) != pdTRUE) {
+    if (xQueueOverwrite(m_cmdQueue, &cmd) != pdTRUE) {
         LOG("ERROR: Failed to send load command\r\n");
         ErrorLog::instance().log("ERROR", "FILE", "QUEUE_SEND_FAILED",
                                  "Failed to send load command");
@@ -2682,7 +2683,7 @@ bool PolarControl::stop() {
         // Send stop command to file task
         FileCommand cmd;
         cmd.type = FileCommand::CMD_STOP;
-        xQueueSend(m_cmdQueue, &cmd, 0);
+        xQueueOverwrite(m_cmdQueue, &cmd);
 
         if (m_state == PAUSED) {
             m_planner.stop();
@@ -2896,7 +2897,7 @@ void PolarControl::emergencyStop(bool disableRho) {
     if (m_cmdQueue) {
         FileCommand cmd{};
         cmd.type = FileCommand::CMD_STOP;
-        xQueueSend(m_cmdQueue, &cmd, 0);
+        xQueueOverwrite(m_cmdQueue, &cmd);
     }
     xSemaphoreGive(m_mutex);
     LOG("Emergency stop; homing is required before motion resumes\r\n");
@@ -3009,7 +3010,7 @@ void PolarControl::feedPlanner() {
                                          "A streamed pattern waypoint was rejected by the planner");
                 FileCommand stopCmd{};
                 stopCmd.type = FileCommand::CMD_STOP;
-                xQueueSend(m_cmdQueue, &stopCmd, 0);
+                xQueueOverwrite(m_cmdQueue, &stopCmd);
                 xQueueReset(m_coordQueue);
                 m_fileLoading.store(false);
                 m_planner.setEndOfPattern(true);

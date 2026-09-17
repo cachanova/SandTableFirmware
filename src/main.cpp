@@ -11,7 +11,6 @@
 #include <LEDController.hpp>
 
 #include <Config.h>
-
 PolarControl polarControl;
 SisyphusWebServer webServer(Config::kWebServerPort);
 LEDController ledController(Config::kLedPin);
@@ -141,6 +140,8 @@ void webTask(void *parameter) {
                 static_cast<unsigned int>(fileStack),
                 reqTotal,
                 reqInflight);
+            LOG("[WIFI] status:%d RSSI:%d IP:%s\r\n", WiFi.status(), WiFi.RSSI(),
+                WiFi.localIP().toString().c_str());
 
 
             lastStats = now;
@@ -179,6 +180,13 @@ void setup() {
 
     // WiFi Setup
     LOG("Setting up WiFi...\r\n");
+    WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+        if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+            LOG("[WIFI] disconnected reason:%u\r\n", info.wifi_sta_disconnected.reason);
+        } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+            LOG("[WIFI] acquired IP\r\n");
+        }
+    });
     WiFi.mode(WIFI_STA);
 #ifdef SISYPHUS_SKIP_MOTOR_HARDWARE
     WiFi.setTxPower(WIFI_POWER_MINUS_1dBm);
@@ -198,10 +206,10 @@ void setup() {
         ESP.restart();
     }
 
-    LOG("WiFi connected!\r\n");
-    // This mains-powered controller prioritizes control/stream latency over
-    // modem sleep, which otherwise delays packet delivery between DTIM wakes.
+    // The controller is mains powered; avoid modem-sleep latency for controls.
     WiFi.setSleep(false);
+
+    LOG("WiFi connected!\r\n");
     LOG("IP Address: %s\r\n", WiFi.localIP().toString().c_str());
     LOG("SSID: %s\r\n", WiFi.SSID().c_str());
 

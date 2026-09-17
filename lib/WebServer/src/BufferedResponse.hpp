@@ -11,8 +11,8 @@ static constexpr char kResponseUnavailable[] =
 // assembled responses. Return a complete 503 document if allocation is refused.
 class BufferedResponse : public AsyncAbstractResponse, public Print {
 public:
-    explicit BufferedResponse(const char* contentType, size_t = 0)
-        : m_buffer(65536, allocateBlock) {
+    explicit BufferedResponse(const char* contentType, size_t = 0, bool control = false)
+        : m_buffer(65536, control ? allocateControlBlock : allocateBlock) {
         _code = 200;
         _contentType = contentType;
         _sendContentLength = true;
@@ -43,6 +43,12 @@ public:
         return count;
     }
 private:
+    static void* allocateControlBlock(size_t size) {
+        // Status and command acknowledgements may use the control reserve
+        // that bulk diagnostics leave behind; retain room for TCP framing.
+        if (heap_caps_get_free_size(MALLOC_CAP_8BIT) < size + 4096) return nullptr;
+        return malloc(size);
+    }
     static void* allocateBlock(size_t size) {
         // Keep headroom for TCP buffers, file IO, and control replies.
         if (heap_caps_get_free_size(MALLOC_CAP_8BIT) < size + 16384) return nullptr;

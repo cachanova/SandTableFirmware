@@ -62,6 +62,19 @@ const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve()
         console.log('PASS: lost connection replaces stale state and permits recovery');
     }
     {
+        const h = setup(async () => ({ok: false, status: 503,
+            json: async () => ({message: 'Controller busy; retry shortly'})}));
+        await assert.rejects(h.controller.pollStatusOnce(), /Controller busy/);
+        assert.equal(h.elements['state-badge'].textContent, 'TABLE BUSY');
+        assert.equal(h.elements['btn-start'].disabled, true);
+        assert.equal(h.controller.statusRequest, null);
+        h.controller.getStatus = async () => ({state: 'IDLE'});
+        h.controller.updateUI = status => { h.elements['state-badge'].textContent = status.state; };
+        await h.controller.pollStatusOnce();
+        assert.equal(h.elements['state-badge'].textContent, 'IDLE');
+        console.log('PASS: explicit backpressure is busy, not offline, and the next poll recovers');
+    }
+    {
         const h = setup(async () => ({ok: false, status: 503, json: async () => ({message: 'Indexing'})}));
         h.controller.files = [{name: 'keep.thr'}]; h.controller.selectedPattern = 'keep.thr';
         h.controller.renderPatternList = () => { throw new Error('must retain existing library'); };

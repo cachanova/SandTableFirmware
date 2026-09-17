@@ -46,14 +46,14 @@ const ok = { ok: true, blob: async () => ({}) };
     controller.storageAvailable = true;
     controller.selectedPattern = 'spiral.thr';
     controller.files = [
-        { name: 'spiral.thr', hasImage: true, imageTime: 123, size: 8192 },
+        { name: 'spiral.thr', hasImage: true, imageTime: 123, thumbnailTime: 456, size: 8192 },
         { name: 'missing.thr', hasImage: false, size: 1024 }
     ];
     controller.escapeHtml = value => value;
     controller.renderPatternList();
     assert.match(container.innerHTML, /<button type="button"[^>]*aria-pressed="true"/);
     assert.equal((container.innerHTML.match(/data-preview-url=/g) || []).length, 1);
-    assert.match(container.innerHTML, /file=spiral.thr&t=123/);
+    assert.match(container.innerHTML, /file=spiral.thr&thumbnail=1&t=456/);
     assert.doesNotMatch(container.innerHTML, / KB|pattern-size|<img[^>]*\ssrc=/);
     assert.match(container.innerHTML, /No preview/);
     assert.equal(requests.length, 0, 'rendering must not issue image requests');
@@ -171,4 +171,123 @@ const ok = { ok: true, blob: async () => ({}) };
     assert.equal(overlay.src, 'blob:early');
     assert.equal(overlay.style.display, 'block');
     console.log('PASS: status arriving before the file library still displays its pattern overlay');
+
+    const shared = Object.create(context.Controller.prototype);
+    const deferredThumb = image('deferred-thumb'), nextThumb = image('next-thumb');
+    Object.assign(shared, { overlayRequestId: 0, fileHasImage: { 'one.thr': true, 'two.thr': true },
+        fileImageTimes: {}, fileTimes: {}, thumbnailQueue: [deferredThumb, nextThumb],
+        visibleThumbnails: new Set([deferredThumb, nextThumb]) });
+    shared.loadNextPatternThumbnail();
+    const thumbRequest = requests.at(-1), beforeOverlay = requests.length;
+    const firstPriority = shared.setOverlayImage('one.thr');
+    assert.equal(thumbRequest.options.signal.aborted, true);
+    assert.equal(requests.length, beforeOverlay, 'overlay waits for thumbnail abort to settle');
+    await flush();
+    const firstPriorityRequest = requests.at(-1);
+    assert.match(firstPriorityRequest.url, /file=one.thr/);
+    assert.equal(deferredThumb.dataset.previewState, 'queued');
+    assert.equal(deferredThumb.previousElementSibling.textContent, 'Preview');
+    assert.equal(shared.thumbnailLoading, false);
+    const secondPriority = shared.setOverlayImage('two.thr');
+    assert.equal(firstPriorityRequest.options.signal.aborted, true);
+    await flush();
+    const secondPriorityRequest = requests.at(-1);
+    assert.match(secondPriorityRequest.url, /file=two.thr/);
+    assert.equal(shared.overlayLoading, true);
+    await shared.setOverlayImage('None');
+    assert.equal(secondPriorityRequest.options.signal.aborted, true);
+    await Promise.all([firstPriority, secondPriority]);
+    await flush();
+    assert.equal(requests.at(-1).url, deferredThumb.dataset.previewUrl, 'canceled overlay resumes deferred preview first');
+    assert.equal(shared.overlayLoading, false);
+    requests.at(-1).resolve(ok); await flush(); deferredThumb.onload();
+    assert.equal(requests.at(-1).url, nextThumb.dataset.previewUrl);
+    requests.at(-1).resolve(ok); await flush(); nextThumb.onload();
+    console.log('PASS: overlays preempt and defer thumbnails; supersession and stop cancel work and resume previews');
+
+    const successThumb = image('after-success');
+    shared.thumbnailQueue.push(successThumb); shared.visibleThumbnails.add(successThumb);
+    const successOverlay = shared.setOverlayImage('one.thr');
+    const successRequest = requests.at(-1);
+    await shared.setOverlayImage('one.thr');
+    assert.equal(successRequest.options.signal.aborted, false, 'same-version library refresh reuses the active overlay');
+    shared.loadNextPatternThumbnail();
+    assert.equal(requests.at(-1), successRequest, 'thumbnails stay paused while overlay fetch is active');
+    successRequest.resolve(ok); await successOverlay;
+    assert.equal(requests.at(-1).url, successThumb.dataset.previewUrl);
+    overlay.onload(); requests.at(-1).resolve(ok); await flush(); successThumb.onload();
+    const afterSuccessCount = requests.length;
+    await shared.setOverlayImage('one.thr');
+    assert.equal(requests.length, afterSuccessCount, 'already visible same-version overlay is not fetched again');
+    const retryOverlay = shared.setOverlayImage('two.thr');
+    requests.at(-1).resolve({ ok: false, status: 503, headers: { get: () => '5' } });
+    await flush();
+    const countBeforeCancel = requests.length;
+    await shared.setOverlayImage('None');
+    await retryOverlay;
+    assert.equal(requests.length, countBeforeCancel, 'cancel interrupts Retry-After without another request');
+    assert.equal(timers.size, 0);
+    assert.equal(shared.overlayLoading, false);
+    console.log('PASS: successful overlays resume previews; canceled retry waits release all timers');
+
+    const busy = { ok: false, status: 503, headers: { get: () => '1' } };
+    const retryThumb = image('busy-preview'), afterBusy = image('after-busy');
+    shared.thumbnailQueue.push(retryThumb, afterBusy);
+    shared.visibleThumbnails.add(retryThumb); shared.visibleThumbnails.add(afterBusy);
+    const beforeBusy = requests.length;
+    shared.loadNextPatternThumbnail();
+    for (let attempt = 0; attempt < 3; attempt++) {
+        requests.at(-1).resolve(busy); await flush();
+        if (attempt < 2) {
+            assert.equal(requests.length, beforeBusy + attempt + 1, 'busy retry waits instead of spinning');
+            assert.equal(timers.size, 2, 'one request deadline plus one retry delay');
+            [...timers.values()].at(-1)(); await flush();
+        }
+    }
+    assert.equal(requests.filter(r => r.url === retryThumb.dataset.previewUrl).length, 3);
+    assert.equal(retryThumb.dataset.previewState, 'unavailable');
+    assert.equal(requests.at(-1).url, afterBusy.dataset.previewUrl, 'exhausted retries let next preview proceed');
+    requests.at(-1).resolve(ok); await flush(); afterBusy.onload();
+    assert.equal(timers.size, 0);
+    console.log('PASS: explicit busy responses get at most two delayed retries and then advance the queue');
+
+    const scrollAway = image('scroll-away');
+    shared.thumbnailQueue.push(scrollAway); shared.visibleThumbnails.add(scrollAway);
+    shared.loadNextPatternThumbnail(); requests.at(-1).resolve(busy); await flush();
+    shared.visibleThumbnails.delete(scrollAway);
+    const beforeScrollAway = requests.length;
+    [...timers.values()].at(-1)(); await flush();
+    assert.equal(requests.length, beforeScrollAway, 'offscreen retry is not sent');
+    assert.equal(scrollAway.dataset.previewState, undefined);
+    assert.equal(scrollAway.dataset.previewRetries, '1', 'visibility changes do not reset retry budget');
+    assert.equal(timers.size, 0);
+    console.log('PASS: scrolling offscreen cancels delayed retries without resetting their budget');
+
+    const busyDeferred = image('busy-deferred');
+    shared.thumbnailQueue.push(busyDeferred); shared.visibleThumbnails.add(busyDeferred);
+    shared.loadNextPatternThumbnail(); requests.at(-1).resolve(busy); await flush();
+    const prioritised = shared.setOverlayImage('one.thr');
+    await flush();
+    assert.match(requests.at(-1).url, /file=one.thr/);
+    assert.equal(busyDeferred.dataset.previewState, 'queued');
+    assert.equal(timers.size, 1, 'overlay preemption cancels thumbnail retry timer');
+    requests.at(-1).resolve(ok); await prioritised; overlay.onload();
+    assert.equal(requests.at(-1).url, busyDeferred.dataset.previewUrl);
+    requests.at(-1).resolve(ok); await flush(); busyDeferred.onload();
+    assert.equal(busyDeferred.dataset.previewState, 'loaded');
+    assert.equal(timers.size, 0);
+    console.log('PASS: overlays interrupt busy retry waits, and deferred previews resume successfully');
+
+    const retired = image('retired-generation');
+    shared.thumbnailQueue.push(retired); shared.visibleThumbnails.add(retired);
+    shared.loadNextPatternThumbnail();
+    const retiredRequest = requests.at(-1);
+    retiredRequest.resolve(busy); await flush();
+    retired.isConnected = false; shared.storageAvailable = false;
+    const beforeRetirement = requests.length;
+    shared.renderPatternList(); await flush();
+    assert.equal(retiredRequest.options.signal.aborted, true);
+    assert.equal(timers.size, 0, 'rerender cancels both deadline and retry timer');
+    assert.equal(requests.length, beforeRetirement, 'old generation cannot retry after rerender');
+    console.log('PASS: replacing the pattern list cleans up pending retry work');
 })().catch(error => { console.error(error); process.exitCode = 1; });

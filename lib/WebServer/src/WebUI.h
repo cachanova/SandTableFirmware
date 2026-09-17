@@ -224,10 +224,11 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
         .pattern-thumbnail {
             position: relative; display: grid; place-items: center;
             width: 56px; height: 56px; flex: none; overflow: hidden;
-            border: 1px solid var(--hair); border-radius: 50%; background: var(--wash);
+            border: 1px solid var(--hair); border-radius: 50%; background: var(--sand);
+            box-shadow: inset 0 1px 14px rgba(26, 25, 23, 0.10);
             color: var(--ink-faint); font-size: 10px; text-align: center;
         }
-        .pattern-thumbnail img { position: absolute; width: 100%; height: 100%; object-fit: contain; background: var(--ink); }
+        .pattern-thumbnail img { position: absolute; width: 100%; height: 100%; object-fit: contain; filter: brightness(0); }
         .pattern-info { flex: 1; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
         .pattern-name {
             font-family: var(--serif);
@@ -594,6 +595,37 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
     </main>
 
     <script>
+        async function uploadPatternThumbnail(apiBase, imageFile, imageName) {
+            // Keep full-size uploads for the canvas; list previews need only 128px.
+            let bitmap;
+            try {
+                bitmap = await createImageBitmap(imageFile);
+                const canvas = document.createElement('canvas');
+                canvas.width = canvas.height = 128;
+                const scale = 128 / Math.max(bitmap.width, bitmap.height);
+                const width = bitmap.width * scale, height = bitmap.height * scale;
+                canvas.getContext('2d').drawImage(bitmap, (128 - width) / 2, (128 - height) / 2, width, height);
+                const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+                if (!blob) return;
+                const formData = new FormData();
+                formData.append('file', blob, imageName);
+                const abort = new AbortController();
+                const timeout = setTimeout(() => abort.abort(), 8000);
+                try {
+                    const response = await fetch(apiBase + '/files/upload?thumbnail=1',
+                        { method: 'POST', body: formData, signal: abort.signal });
+                    if (!response.ok) throw new Error('Thumbnail upload failed');
+                } finally {
+                    clearTimeout(timeout);
+                }
+            } catch (error) {
+                // The original image remains usable when thumbnail generation/upload fails.
+                console.warn('Small preview unavailable:', error);
+            } finally {
+                if (bitmap) bitmap.close();
+            }
+        }
+
         class SisyphusController {
             constructor() {
                 this.apiBase = '/api';
@@ -688,6 +720,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                         fdImage.append('file', imageFile, imageName);
                         const imageResponse = await fetch(this.apiBase + '/files/upload', { method: 'POST', body: fdImage });
                         if (!imageResponse.ok) throw new Error((await imageResponse.json()).message || 'Image upload failed');
+                        await uploadPatternThumbnail(this.apiBase, imageFile, imageName);
                     }
 
                     alert('Upload complete!');
@@ -933,7 +966,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     return status;
                 }).catch(error => {
                     const badge = document.getElementById('state-badge');
-                    badge.textContent = 'CONNECTION LOST';
+                    badge.textContent = error.status === 503 ? 'TABLE BUSY' : 'CONNECTION LOST';
                     badge.className = 'status-badge status-warning';
                     document.getElementById('btn-start').disabled = true;
                     throw error;
@@ -1064,6 +1097,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 const container = document.getElementById('pattern-list-container');
                 if (this.thumbnailObserver) this.thumbnailObserver.disconnect();
                 if (this.thumbnailScrollHandler) container.removeEventListener('scroll', this.thumbnailScrollHandler);
+                if (this.activeThumbnail) this.activeThumbnail.abort.abort();
                 this.thumbnailQueue = [];
                 this.visibleThumbnails = new Set();
                 if (!this.storageAvailable) {
@@ -1079,9 +1113,9 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     const isSelected = this.selectedPattern === file.name;
                     const displayName = file.name.replace('.thr', '');
                     const hasImage = !!file.hasImage;
-                    const imgTime = hasImage ? (file.imageTime || file.time || 0) : 0;
+                    const imgTime = hasImage ? (file.thumbnailTime || file.imageTime || file.time || 0) : 0;
                     const thumbUrl = hasImage
-                        ? `/api/pattern/image?file=${encodeURIComponent(file.name)}&t=${imgTime}`
+                        ? `/api/pattern/image?file=${encodeURIComponent(file.name)}&thumbnail=1&t=${imgTime}`
                         : '';
                     
                     return `
@@ -1140,7 +1174,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
 
             async loadNextPatternThumbnail() {
                 // Only one SD image read at a time, and only for rows still in view.
-                if (this.thumbnailLoading) return;
+                if (this.thumbnailLoading || this.overlayLoading || !this.thumbnailQueue) return;
                 let img;
                 while ((img = this.thumbnailQueue.shift())) {
                     if (img.isConnected && this.visibleThumbnails.has(img)) break;
@@ -1151,13 +1185,33 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 this.thumbnailLoading = true;
                 img.dataset.previewState = 'loading';
                 const abort = new AbortController();
+                let complete;
+                const active = { abort, deferred: false, done: new Promise(resolve => { complete = resolve; }) };
+                this.activeThumbnail = active;
                 const timeout = setTimeout(() => abort.abort(), 8000);
                 let objectUrl = null;
                 try {
                     // Versioned URLs share the browser cache with the full pattern image.
-                    const response = await fetch(img.dataset.previewUrl, { signal: abort.signal, cache: 'default' });
+                    let response;
+                    while (true) {
+                        response = await fetch(img.dataset.previewUrl, { signal: abort.signal, cache: 'default' });
+                        if (response.status !== 503) break;
+                        const retries = Number(img.dataset.previewRetries || 0);
+                        if (retries >= 2) throw new Error('Preview busy');
+                        img.dataset.previewRetries = String(retries + 1);
+                        const seconds = Number(response.headers.get('Retry-After'));
+                        const delay = Number.isFinite(seconds) && seconds > 0
+                            ? Math.min(seconds * 1000, 5000) : 1000;
+                        await this.sleep(delay, abort.signal);
+                        if (abort.signal.aborted) throw new Error('Preview canceled');
+                        if (!img.isConnected || !this.visibleThumbnails.has(img)) {
+                            delete img.dataset.previewState;
+                            return;
+                        }
+                    }
                     if (!response.ok) throw new Error('Preview unavailable');
                     const blob = await response.blob();
+                    if (active.deferred) throw new Error('Preview deferred for overlay');
                     if (!img.isConnected) return;
                     objectUrl = URL.createObjectURL(blob);
                     const release = () => {
@@ -1177,11 +1231,18 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     img.src = objectUrl;
                     img.dataset.previewState = 'loaded';
                 } catch (error) {
-                    img.dataset.previewState = 'unavailable';
-                    if (img.isConnected) img.previousElementSibling.textContent = 'No preview';
+                    if (active.deferred && img.isConnected) {
+                        img.dataset.previewState = 'queued';
+                        this.thumbnailQueue.unshift(img);
+                    } else {
+                        img.dataset.previewState = 'unavailable';
+                        if (img.isConnected) img.previousElementSibling.textContent = 'No preview';
+                    }
                 } finally {
                     clearTimeout(timeout);
                     this.thumbnailLoading = false;
+                    this.activeThumbnail = null;
+                    complete();
                     this.loadNextPatternThumbnail();
                 }
             }
@@ -1202,24 +1263,19 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 });
             }
 
-            preloadPatternImage(filename) {
-                if (!filename || filename === 'None') return;
-                if (!this.fileHasImage[filename]) return;
-                const t = this.fileImageTimes[filename] || this.fileTimes[filename] || 0;
-                const url = `/api/pattern/image?file=${encodeURIComponent(filename)}&t=${t}`;
-                this.fetchPatternImageUrl(url, 1).then(result => {
-                    if (result && result.revoke) {
-                        URL.revokeObjectURL(result.src);
-                    }
-                });
-            }
-
             async setOverlayImage(filename) {
                 const img = document.getElementById('pattern-overlay');
+                const hasImage = filename && filename !== 'None' && this.fileHasImage[filename];
+                const t = this.fileImageTimes[filename] || this.fileTimes[filename] || 0;
+                const nextSrc = hasImage ? `/api/pattern/image?file=${encodeURIComponent(filename)}&t=${t}` : '';
+                if (nextSrc && nextSrc === this.overlaySourceUrl &&
+                    ((this.overlayAbort && !this.overlayAbort.signal.aborted) || img.style.display === 'block')) return;
+                this.overlaySourceUrl = nextSrc;
                 const requestId = ++this.overlayRequestId;
+                if (this.overlayAbort) this.overlayAbort.abort();
                 if (this.overlayFilename !== filename) img.style.display = 'none';
                 this.overlayFilename = filename;
-                if (!filename || filename === 'None' || !this.fileHasImage[filename]) {
+                if (!hasImage) {
                     img.style.display = 'none';
                     img.src = '';
                     if (this.overlayObjectUrl && this.overlayObjectUrlIsTemp) {
@@ -1227,11 +1283,29 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     }
                     this.overlayObjectUrl = null;
                     this.overlayObjectUrlIsTemp = false;
+                    // The canceled loader resumes thumbnails once its fetch has settled.
+                    if (!this.overlayAbort) this.loadNextPatternThumbnail();
                     return;
                 }
-                const t = this.fileImageTimes[filename] || this.fileTimes[filename] || 0;
-                const nextSrc = `/api/pattern/image?file=${encodeURIComponent(filename)}&t=${t}`;
-                const result = await this.fetchPatternImageUrl(nextSrc, 3);
+                const abort = new AbortController();
+                this.overlayAbort = abort;
+                this.overlayLoading = true;
+                let result = null;
+                try {
+                    const thumbnail = this.activeThumbnail;
+                    if (thumbnail) {
+                        thumbnail.deferred = true;
+                        thumbnail.abort.abort();
+                        await thumbnail.done;
+                    }
+                    if (!abort.signal.aborted) result = await this.fetchPatternImageUrl(nextSrc, 3, abort.signal);
+                } finally {
+                    if (this.overlayAbort === abort) {
+                        this.overlayAbort = null;
+                        this.overlayLoading = false;
+                        this.loadNextPatternThumbnail();
+                    }
+                }
                 if (requestId !== this.overlayRequestId) {
                     if (result && result.revoke) URL.revokeObjectURL(result.src);
                     return;
@@ -1265,14 +1339,28 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 this.overlayObjectUrlIsTemp = result.revoke;
             }
 
-            sleep(ms) {
-                return new Promise(resolve => setTimeout(resolve, ms));
+            sleep(ms, signal) {
+                return new Promise(resolve => {
+                    const finish = () => {
+                        clearTimeout(timer);
+                        if (signal) signal.removeEventListener('abort', finish);
+                        resolve();
+                    };
+                    const timer = setTimeout(finish, ms);
+                    if (signal) {
+                        signal.addEventListener('abort', finish, { once: true });
+                        if (signal.aborted) finish();
+                    }
+                });
             }
 
-            async fetchPatternImageUrl(url, retries) {
+            async fetchPatternImageUrl(url, retries, signal) {
                 let attempt = 0;
                 while (attempt <= retries) {
+                    if (signal && signal.aborted) return null;
                     const abort = new AbortController();
+                    const cancel = () => abort.abort();
+                    if (signal) signal.addEventListener('abort', cancel, { once: true });
                     const timeout = setTimeout(() => abort.abort(), 8000);
                     try {
                         const response = await fetch(url, { cache: 'default', signal: abort.signal });
@@ -1286,7 +1374,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                                 }
                             }
                             if (attempt === retries) return null;
-                            await this.sleep(delayMs);
+                            await this.sleep(Math.min(delayMs, 5000), signal);
                             attempt += 1;
                             continue;
                         }
@@ -1299,11 +1387,12 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                         const blob = await response.blob();
                         return { src: URL.createObjectURL(blob), revoke: true };
                     } catch (error) {
-                        if (attempt === retries) return null;
-                        await this.sleep(1000);
+                        if (attempt === retries || (signal && signal.aborted)) return null;
+                        await this.sleep(1000, signal);
                         attempt += 1;
                     } finally {
                         clearTimeout(timeout);
+                        if (signal) signal.removeEventListener('abort', cancel);
                     }
                 }
                 return null;
@@ -1402,6 +1491,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     if (!this.overlaySuppressed) {
                         this.overlaySuppressed = true;
                         this.overlayRequestId++;
+                        if (this.overlayAbort) this.overlayAbort.abort();
                         const img = document.getElementById('pattern-overlay');
                         if (this.overlayObjectUrl && this.overlayObjectUrlIsTemp) {
                             URL.revokeObjectURL(this.overlayObjectUrl);

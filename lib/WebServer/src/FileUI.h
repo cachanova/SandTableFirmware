@@ -158,6 +158,37 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
     </div>
 
     <script>
+        async function uploadPatternThumbnail(apiBase, imageFile, imageName) {
+            // Keep full-size uploads for the canvas; list previews need only 128px.
+            let bitmap;
+            try {
+                bitmap = await createImageBitmap(imageFile);
+                const canvas = document.createElement('canvas');
+                canvas.width = canvas.height = 128;
+                const scale = 128 / Math.max(bitmap.width, bitmap.height);
+                const width = bitmap.width * scale, height = bitmap.height * scale;
+                canvas.getContext('2d').drawImage(bitmap, (128 - width) / 2, (128 - height) / 2, width, height);
+                const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+                if (!blob) return;
+                const formData = new FormData();
+                formData.append('file', blob, imageName);
+                const abort = new AbortController();
+                const timeout = setTimeout(() => abort.abort(), 8000);
+                try {
+                    const response = await fetch(apiBase + '/files/upload?thumbnail=1',
+                        { method: 'POST', body: formData, signal: abort.signal });
+                    if (!response.ok) throw new Error('Thumbnail upload failed');
+                } finally {
+                    clearTimeout(timeout);
+                }
+            } catch (error) {
+                // The original image remains usable when thumbnail generation/upload fails.
+                console.warn('Small preview unavailable:', error);
+            } finally {
+                if (bitmap) bitmap.close();
+            }
+        }
+
         const apiBase = '/api';
         let storageAvailable = true;
 
@@ -282,6 +313,7 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
                     fdImage.append('file', imageFile, imageName);
                     const imageResponse = await fetch(apiBase + '/files/upload', { method: 'POST', body: fdImage });
                     if (!imageResponse.ok) throw new Error((await imageResponse.json()).message || 'Image upload failed');
+                    await uploadPatternThumbnail(apiBase, imageFile, imageName);
                 }
 
                 await loadFileList();

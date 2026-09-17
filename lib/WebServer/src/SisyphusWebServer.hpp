@@ -1,6 +1,7 @@
 #pragma once
 #include <ESPAsyncWebServer.h>
 #include <vector>
+#include <deque>
 #include <ArduinoJson.h>
 #include <freertos/semphr.h>
 #include <atomic>
@@ -149,7 +150,7 @@ private:
     String getStateString();
     void noteRequest(AsyncWebServerRequest *request);
     
-    void updateFileListCache();
+    bool updateFileListCache();
     static void fileCacheTask(void* arg);
     String resolvePatternPath(const String& filename);
     struct FileEntry;
@@ -164,6 +165,7 @@ private:
     std::atomic<uint32_t> m_requestTotal{0};
     std::atomic<uint32_t> m_requestInflight{0};
     std::atomic<uint32_t> m_imageInflight{0};
+    std::atomic<uint32_t> m_lastUploadActivity{0};
 
     std::atomic<bool> m_fileListDirty; // Flag to trigger regeneration of cache
     std::atomic<bool> m_fileScanActive{false};
@@ -178,6 +180,8 @@ private:
         bool hasImage;
         time_t imageTime;
         size_t imageSize;
+        size_t thumbnailSize;
+        time_t thumbnailTime;
         bool isDirectory;
         String pngPath;
     };
@@ -185,19 +189,12 @@ private:
         String baseName;
         size_t index;
     };
-    std::vector<FileEntry> m_fileCache;
-    std::vector<FileIndexEntry> m_fileIndex;
+    // Segmented storage avoids multi-kilobyte contiguous reallocations while
+    // old metadata and active HTTP responses share a fragmented ESP32 heap.
+    std::deque<FileEntry> m_fileCache;
+    std::deque<FileIndexEntry> m_fileIndex;
     SemaphoreHandle_t m_cacheMutex = nullptr;
     SemaphoreHandle_t m_stateMutex = nullptr;
 
-    String m_statusCache;
-    unsigned long m_statusCacheAt = 0;
-    uint8_t m_lastStatusState = 0;
-    int m_lastStatusProgress = -1;
 
-    String m_errorsCache;
-    unsigned long m_errorsCacheAt = 0;
-    uint32_t m_errorsTotal = 0;
-    uint32_t m_errorsDropped = 0;
-    uint32_t m_errorsSize = 0;
 };

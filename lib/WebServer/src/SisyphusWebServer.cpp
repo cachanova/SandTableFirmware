@@ -22,8 +22,6 @@
 #include <sys/stat.h>
 
 static constexpr size_t kResponseBufferSize = 256;
-static constexpr unsigned long kStatusCacheMs = 300;
-static constexpr unsigned long kErrorsCacheMs = 1000;
 static constexpr unsigned long kFileCacheThrottleMs = 500;
 
 struct UploadContext {
@@ -33,6 +31,7 @@ struct UploadContext {
     size_t maxBytes;
     size_t received;
     int status;
+    bool originalImage;
 };
 
 class SemaphoreGuard {
@@ -47,27 +46,6 @@ public:
     SemaphoreGuard& operator=(const SemaphoreGuard&) = delete;
 private:
     SemaphoreHandle_t m_mutex;
-};
-
-class StringPrint : public Print {
-public:
-    explicit StringPrint(String& out) : m_out(out) {}
-
-    size_t write(uint8_t c) override {
-        m_out += static_cast<char>(c);
-        return 1;
-    }
-
-    size_t write(const uint8_t* buffer, size_t size) override {
-        m_out.reserve(m_out.length() + size);
-        for (size_t i = 0; i < size; ++i) {
-            m_out += static_cast<char>(buffer[i]);
-        }
-        return size;
-    }
-
-private:
-    String& m_out;
 };
 
 static void writeJsonString(Print& out, const String& value) {
@@ -211,7 +189,9 @@ void SisyphusWebServer::getRequestStats(uint32_t& total, uint32_t& inflight) con
 }
 
 void SisyphusWebServer::noteRequest(AsyncWebServerRequest *request) {
-    m_requestTotal.fetch_add(1);
+    if (m_requestTotal.fetch_add(1) == 0) {
+        LOG("HTTP callbacks running on Core %d\r\n", xPortGetCoreID());
+    }
     m_requestInflight.fetch_add(1);
     const bool imageRequest = request->url() == "/api/pattern/image";
     if (imageRequest) m_imageInflight.fetch_add(1);
@@ -404,7 +384,7 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
             if (!requirePatternStorage(request)) return;
 
             // Limit concurrent file operations to prevent FD exhaustion (FATFS limit is low)
-            if (m_imageInflight > 2) {
+            if (m_imageInflight > 1 || m_fileScanActive.load()) {
                 AsyncWebServerResponse* response = request->beginResponse(503);
                 response->addHeader("Retry-After", "1");
                 request->send(response);
@@ -434,6 +414,14 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
                     imgTime = entry->imageTime;
                     imageSize = entry->imageSize;
                     pngPath = entry->pngPath;
+                    if (request->hasParam("thumbnail") &&
+                        request->getParam("thumbnail")->value() == "1" &&
+                        entry->thumbnailSize > 0) {
+                        pngPath = "/patterns/" + entry->baseName + "/" +
+                                  entry->baseName + ".thumb.png";
+                        imageSize = entry->thumbnailSize;
+                        imgTime = entry->thumbnailTime;
+                    }
                 }
                 xSemaphoreGive(m_cacheMutex);
             }
@@ -500,7 +488,9 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
                         : "{\"success\":false,\"message\":\"Upload failed\"}");
                 return;
             }
-            request->send(200, "application/json", "{\"success\":true}");
+            auto* response = new BufferedResponse("application/json", 0, true);
+            response->print("{\"success\":true}");
+            request->send(response);
         },
         [this](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
             handleFileUpload(request, filename, index, data, len, final);
@@ -727,33 +717,61 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
 void SisyphusWebServer::fileCacheTask(void* arg) {
     auto* self = static_cast<SisyphusWebServer*>(arg);
     for (;;) {
+        uint32_t waitMs = kFileCacheThrottleMs;
         // Consume dirty BEFORE scanning so uploads/deletes during a scan are
         // never lost. Keep the previous complete index available until swap.
-        if (self->m_fileListDirty.load()) {
+        // Keep the previous index while images are streaming. Rebuilding two
+        // indexes alongside SD/TCP buffers fragments the same small heap and
+        // makes both transfers and metadata work slower.
+        if (self->m_fileListDirty.load() &&
+            millis() - self->m_lastUploadActivity.load() >= 750) {
             self->m_fileScanActive.store(true);
+            // Publish scan admission before checking image admission. Image
+            // handlers increment their count before checking this flag.
+            if (self->m_imageInflight.load() != 0) {
+                self->m_fileScanActive.store(false);
+                ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(kFileCacheThrottleMs));
+                continue;
+            }
             self->m_fileListDirty.exchange(false);
-            self->updateFileListCache();
+            try {
+                if (!self->updateFileListCache()) {
+                    self->m_fileListDirty.store(true);
+                    waitMs = 2000;
+                }
+            } catch (const std::bad_alloc&) {
+                // Keep the complete previous index and retry after active
+                // responses release memory. An index refresh must not reboot.
+                self->m_fileListDirty.store(true);
+                waitMs = 2000;
+                LOG("Pattern index deferred: allocation unavailable\r\n");
+            }
             self->m_fileScanActive.store(false);
         }
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(kFileCacheThrottleMs));
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(waitMs));
     }
 }
 
-void SisyphusWebServer::updateFileListCache() {
+bool SisyphusWebServer::updateFileListCache() {
     const uint32_t started = millis();
-    std::vector<FileEntry> newCache;
-    std::vector<FileIndexEntry> newIndex;
+    std::deque<FileEntry> newCache;
+    std::deque<FileIndexEntry> newIndex;
     if (isSDCardReady()) {
         // Arduino SD.open/exists/openNextFile each repeat stat/open work.
         // Enumerate names once and stat only the two metadata records needed;
         // never open a .thr or .png just to learn its size or modification time.
-        DIR* root = opendir("/sd/patterns");
+        std::unique_ptr<DIR, decltype(&closedir)> root(opendir("/sd/patterns"), closedir);
         if (!root) {
             ErrorLog::instance().log("ERROR", "SD", "OPEN_DIR_FAILED",
                                      "Failed to index patterns directory", "/patterns");
-            return;
+            return false;
         }
-        while (dirent* file = readdir(root)) {
+        while (dirent* file = readdir(root.get())) {
+            if (ESP.getFreeHeap() < 24576 ||
+                heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < 4096) {
+                LOG("Pattern index deferred: memory pressure\r\n");
+                return false;
+            }
             const String name(file->d_name);
             vTaskDelay(pdMS_TO_TICKS(1));
             if (name.startsWith(".")) continue;
@@ -774,10 +792,17 @@ void SisyphusWebServer::updateFileListCache() {
             struct stat imageInfo{};
             const bool hasImage = stat(("/sd" + pngPath).c_str(), &imageInfo) == 0 &&
                 S_ISREG(imageInfo.st_mode);
+            struct stat thumbnailInfo{};
+            const String thumbnailPath = "/sd/patterns/" + base + "/" + base + ".thumb.png";
+            const bool hasThumbnail = hasImage &&
+                stat(thumbnailPath.c_str(), &thumbnailInfo) == 0 &&
+                S_ISREG(thumbnailInfo.st_mode) && thumbnailInfo.st_size > 0;
             FileEntry entry{patternName, base, static_cast<size_t>(patternInfo.st_size),
                             patternInfo.st_mtime, hasImage,
                             hasImage ? imageInfo.st_mtime : 0,
-                            hasImage ? static_cast<size_t>(imageInfo.st_size) : 0, nested,
+                            hasImage ? static_cast<size_t>(imageInfo.st_size) : 0,
+                            hasThumbnail ? static_cast<size_t>(thumbnailInfo.st_size) : 0,
+                            hasThumbnail ? thumbnailInfo.st_mtime : 0, nested,
                             hasImage ? pngPath : ""};
             auto existing = std::find_if(newCache.begin(), newCache.end(),
                 [&](const FileEntry& item) { return item.baseName == base; });
@@ -787,9 +812,7 @@ void SisyphusWebServer::updateFileListCache() {
             else if (nested) *existing = std::move(entry);
 
         }
-        closedir(root);
     }
-    newIndex.reserve(newCache.size());
     for (size_t i = 0; i < newCache.size(); ++i) newIndex.push_back({newCache[i].baseName, i});
     std::sort(newIndex.begin(), newIndex.end(), [](const FileIndexEntry& a, const FileIndexEntry& b) {
         return a.baseName.compareTo(b.baseName) < 0;
@@ -803,6 +826,7 @@ void SisyphusWebServer::updateFileListCache() {
     }
     LOG("Pattern index: %u files in %lums (metadata only)\r\n",
         static_cast<unsigned>(count), static_cast<unsigned long>(millis() - started));
+    return true;
 }
 
 const SisyphusWebServer::FileEntry* SisyphusWebServer::findFileEntryByBase(const String& baseName) const {
@@ -1108,7 +1132,6 @@ void SisyphusWebServer::clearPlaybackLocked() {
     m_hasQueuedPattern = false;
     m_queuedPattern = "";
     m_currentPattern = "";
-    m_statusCache = "";
     m_pendingPattern = "";
     m_runningClearing = false;
     m_singlePatternClearing = false;
@@ -1185,57 +1208,19 @@ void SisyphusWebServer::handleRoot(AsyncWebServerRequest *request) {
 
 void SisyphusWebServer::handleStatus(AsyncWebServerRequest *request) {
     SemaphoreGuard stateLock(m_stateMutex);
-    auto state = m_polarControl->getState();
-    int progress = m_polarControl->getProgressPercent();
-    unsigned long now = millis();
-    bool stateChanged = (static_cast<uint8_t>(state) != m_lastStatusState) || (progress != m_lastStatusProgress);
-
-    if (!stateChanged && m_statusCache.length() > 0 && (now - m_statusCacheAt) < kStatusCacheMs) {
-        request->send(200, "application/json", m_statusCache);
-        return;
-    }
-
-    m_lastStatusState = static_cast<uint8_t>(state);
-    m_lastStatusProgress = progress;
-    m_statusCache = "";
-    m_statusCache.reserve(kResponseBufferSize);
-    StringPrint printer(m_statusCache);
-    writeStatusJSON(printer);
-    m_statusCacheAt = now;
-    request->send(200, "application/json", m_statusCache);
+    auto* response = new BufferedResponse("application/json", 0, true);
+    writeStatusJSON(*response);
+    request->send(response);
 }
 
 void SisyphusWebServer::handleErrors(AsyncWebServerRequest *request) {
-    SemaphoreGuard stateLock(m_stateMutex);
-    uint32_t total = ErrorLog::instance().totalCount();
-    uint32_t dropped = ErrorLog::instance().droppedCount();
-    uint32_t size = ErrorLog::instance().size();
-    unsigned long now = millis();
-    bool changed = (total != m_errorsTotal) || (dropped != m_errorsDropped) || (size != m_errorsSize);
-
-    if (!changed && m_errorsCache.length() > 0 && (now - m_errorsCacheAt) < kErrorsCacheMs) {
-        request->send(200, "application/json", m_errorsCache);
-        return;
-    }
-
-    m_errorsTotal = total;
-    m_errorsDropped = dropped;
-    m_errorsSize = size;
-    m_errorsCache = "";
-    m_errorsCache.reserve(1024);
-    StringPrint printer(m_errorsCache);
-    ErrorLog::instance().writeJson(printer);
-    m_errorsCacheAt = now;
-    request->send(200, "application/json", m_errorsCache);
+    auto* response = new BufferedResponse("application/json");
+    ErrorLog::instance().writeJson(*response);
+    request->send(response);
 }
 
 void SisyphusWebServer::handleErrorsClear(AsyncWebServerRequest *request) {
-    SemaphoreGuard stateLock(m_stateMutex);
     ErrorLog::instance().clear();
-    m_errorsCache = "";
-    m_errorsTotal = 0;
-    m_errorsDropped = 0;
-    m_errorsSize = 0;
     request->send(200, "application/json", "{\"success\":true}");
 }
 
@@ -1343,7 +1328,6 @@ void SisyphusWebServer::handlePatternStart(AsyncWebServerRequest *request) {
     m_selectedClearing = selectedClearing;
     m_queuedPattern = file;
     m_hasQueuedPattern = true;
-    m_statusCache = "";
 
     request->send(202, "application/json", "{\"success\":true,\"message\":\"Pattern queued\"}");
 }
@@ -1924,9 +1908,10 @@ void SisyphusWebServer::handleFileList(AsyncWebServerRequest *request) {
             if (i > 0) response->print(",");
             response->print("{\"name\":");
             writeJsonString(*response, m_fileCache[i].name);
-            response->printf(",\"size\":%u,\"time\":%u,\"hasImage\":%s,\"imageTime\":%u}",
+            response->printf(",\"size\":%u,\"time\":%u,\"hasImage\":%s,\"imageTime\":%u,\"hasThumbnail\":%s,\"thumbnailTime\":%u}",
                 m_fileCache[i].size, m_fileCache[i].time,
-                m_fileCache[i].hasImage ? "true" : "false", m_fileCache[i].imageTime);
+                m_fileCache[i].hasImage ? "true" : "false", m_fileCache[i].imageTime,
+                m_fileCache[i].thumbnailSize > 0 ? "true" : "false", m_fileCache[i].thumbnailTime);
         }
         xSemaphoreGive(m_cacheMutex);
     }
@@ -1937,6 +1922,8 @@ void SisyphusWebServer::handleFileList(AsyncWebServerRequest *request) {
 
 void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String filename,
                                         size_t index, uint8_t *data, size_t len, bool final) {
+    // Coalesce a batch of uploads into one refresh after its writes settle.
+    m_lastUploadActivity.store(millis());
     if (index == 0) {
         UploadContext* upload = static_cast<UploadContext*>(calloc(1, sizeof(UploadContext)));
         request->_tempObject = upload;
@@ -1955,12 +1942,20 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
             return;
         }
 
+        const bool thumbnail = request->hasParam("thumbnail") &&
+            request->getParam("thumbnail")->value() == "1";
+        if (thumbnail && !filename.endsWith(".png")) {
+            upload->status = 400;
+            return;
+        }
+        upload->originalImage = filename.endsWith(".png") && !thumbnail;
         const String basename = filename.substring(0, filename.length() - 4);
         const String dirPath = "/patterns/" + basename;
-        const String finalPath = dirPath + "/" + filename;
+        const String finalPath = dirPath + "/" + (thumbnail ? basename + ".thumb.png" : filename);
         const uint32_t sequence = m_uploadSequence.fetch_add(1) + 1;
         const String tempPath = dirPath + "/.upload-" + String(sequence);
-        upload->maxBytes = filename.endsWith(".thr") ? 8U * 1024U * 1024U : 2U * 1024U * 1024U;
+        upload->maxBytes = thumbnail ? 128U * 1024U :
+            (filename.endsWith(".thr") ? 8U * 1024U * 1024U : 2U * 1024U * 1024U);
         snprintf(upload->finalPath, sizeof(upload->finalPath), "%s", finalPath.c_str());
         snprintf(upload->tempPath, sizeof(upload->tempPath), "%s", tempPath.c_str());
 
@@ -1981,6 +1976,7 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
                                      "Failed to open upload staging file", upload->tempPath);
             return;
         }
+        request->_tempFile.setBufferSize(512);
         LOG("Upload start: %s\r\n", filename.c_str());
     }
 
@@ -2021,6 +2017,12 @@ void SisyphusWebServer::handleFileUpload(AsyncWebServerRequest *request, String 
             return;
         }
         if (hadOriginal) SD.remove(backupPath);
+        if (upload->originalImage) {
+            // A changed full image invalidates the derivative. The browser
+            // uploads its newly generated thumbnail after the original.
+            const String originalPath(upload->finalPath);
+            SD.remove(originalPath.substring(0, originalPath.length() - 4) + ".thumb.png");
+        }
         m_fileListDirty.store(true);
         LOG("Upload complete: %s (%u bytes)\r\n",
             filename.c_str(), static_cast<unsigned>(upload->received));
