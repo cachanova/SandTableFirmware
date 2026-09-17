@@ -50,10 +50,10 @@ test('rapid edits keep one request in flight and send only the final pending val
     h.requests[0].resolve(ok()); await flush();
     assert.equal(h.requests.length, 2);
     assert.equal(h.requests[1].options.body.get('brightness'), '80');
-    assert.match(h.nodes['brightness-message'].textContent, /Setting light to 80/);
+    assert.equal(h.nodes['brightness-message'].textContent, '');
     h.requests[1].resolve(ok()); await flush();
     assert.equal(h.controller.brightnessInFlight, false);
-    assert.match(h.nodes['brightness-message'].textContent, /Light set to 80/);
+    assert.equal(h.nodes['brightness-message'].textContent, '');
     assert.equal(h.timers.size, 0);
 });
 

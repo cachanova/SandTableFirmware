@@ -151,6 +151,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
         }
         .slider-value { font-family: var(--mono); color: var(--ink); }
         #brightness-message { margin-top: 8px; font-size: 12px; color: var(--ink-faint); }
+        #brightness-message:empty { display: none; }
         input[type="range"] {
             width: 100%;
             -webkit-appearance: none;
@@ -1075,7 +1076,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 this.brightnessFailed = false;
                 this.brightnessRevision = (this.brightnessRevision || 0) + 1;
                 document.getElementById('brightness-value').textContent = value + '%';
-                document.getElementById('brightness-message').textContent = `Setting light to ${value}%…`;
+                document.getElementById('brightness-message').textContent = '';
                 this.scheduleBrightness();
             }
 
@@ -1098,7 +1099,6 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             async sendBrightness() {
                 if (this.brightnessInFlight || this.brightnessPending === undefined) return;
                 const value = this.brightnessPending;
-                const revision = this.brightnessRevision;
                 this.brightnessPending = undefined;
                 this.brightnessInFlight = true;
                 this.brightnessLastSentAt = Date.now();
@@ -1106,9 +1106,6 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 formData.append('brightness', value);
                 try {
                     await this.requestJSON('/led/brightness', {method: 'POST', body: formData}, 2500);
-                    if (revision === this.brightnessRevision) {
-                        document.getElementById('brightness-message').textContent = `Light set to ${value}%.`;
-                    }
                 } catch (error) {
                     // A lost acknowledgement may still have changed the output.
                     // Never automatically replay uncertain commands after reconnect.
