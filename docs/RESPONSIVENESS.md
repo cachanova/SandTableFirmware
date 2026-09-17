@@ -2,7 +2,8 @@
 
 Device: `100.76.149.200`. Work is based on `bca8e0c`, the merged
 `codex/rho-final-sound` deployment. The adopted driver settings, motion limits,
-and homing procedure are unchanged.
+and homing procedure are unchanged. The final branch is rebased onto
+`a4d91e4`, including the separate Abort homing button availability fix.
 
 ## Confirmed causes and changes
 
