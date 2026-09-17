@@ -103,9 +103,9 @@ test('server rejection is visible and does not claim the light changed', async (
     const h = page();
     h.controller.setBrightness(40);
     h.requests[0].resolve({ok: false, status: 503,
-        json: async () => ({success: false, message: 'LED PWM update failed'})});
+        json: async () => ({success: false, message: 'LED controller not ready'})});
     await flush();
-    assert.match(h.nodes['brightness-message'].textContent, /LED PWM update failed/);
+    assert.match(h.nodes['brightness-message'].textContent, /LED controller not ready/);
     assert.equal(h.controller.brightnessFailed, true);
 });
 

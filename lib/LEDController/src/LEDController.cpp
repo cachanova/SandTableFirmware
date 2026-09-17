@@ -43,6 +43,12 @@ void LEDController::begin() {
 bool LEDController::setBrightness(uint8_t brightness, uint32_t nowMs) {
     if (!m_diagnostics.ready) return false;
     m_targetBrightness.store(brightness);
+    // Already at the requested level: no fade window that would needlessly
+    // suppress presence automation, and any in-flight fade is done.
+    if (brightness == m_brightness.load()) {
+        m_fading = false;
+        return true;
+    }
     m_fadeStart = m_brightness.load();
     m_fadeStartedAtMs = nowMs;
     m_fading = true;

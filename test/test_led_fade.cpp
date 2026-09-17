@@ -54,6 +54,23 @@ int main() {
     led.update(20000 + LEDController::kFadeDurationMs);
     assert(led.getBrightness() == 100 && testPwmDuty == 100 && !led.isFading());
 
+    // Re-selecting the level the output already shows never opens a fade
+    // window (which would needlessly suppress presence automation).
+    assert(led.setBrightness(100, 30000));
+    assert(!led.isFading() && led.getBrightness() == 100);
+    assert(led.setBrightness(0, 31000));
+    led.update(31000 + LEDController::kFadeDurationMs / 2);
+    assert(led.getBrightness() == 50);
+    assert(led.setBrightness(50, 31500)); // Re-target to the current output.
+    assert(!led.isFading() && led.getTargetBrightness() == 50);
+
+    // A fade that spans the millis() wrap still lands on time.
+    assert(led.setBrightness(150, 0xFFFFFF00u));
+    led.update(0xFFFFFF00u + LEDController::kFadeDurationMs / 2);
+    assert(led.getBrightness() == 100);
+    led.update(0xFFFFFF00u + LEDController::kFadeDurationMs);
+    assert(led.getBrightness() == 150 && !led.isFading());
+
     std::cout << "PASS: manual brightness changes fade over "
               << LEDController::kFadeDurationMs << "ms without redundant PWM writes\n";
 }

@@ -2381,11 +2381,11 @@ void SisyphusWebServer::handleLEDBrightnessSet(AsyncWebServerRequest *request) {
     xSemaphoreGive(m_ledMutex);
     if (!applied) {
         request->send(503, "application/json",
-            "{\"success\":false,\"message\":\"LED PWM update failed\"}");
+            "{\"success\":false,\"message\":\"LED controller not ready\"}");
         return;
     }
 
-    LOG("LED brightness set to: %d%% (%u/255), handler %luus, lock %luus\r\n", brightness,
+    LOG("LED brightness target set to: %d%% (%u/255), handler %luus, lock %luus\r\n", brightness,
         static_cast<unsigned>(ledValue), static_cast<unsigned long>(requestUs),
         static_cast<unsigned long>(lockWaitUs));
 
