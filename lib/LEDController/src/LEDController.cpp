@@ -40,10 +40,29 @@ void LEDController::begin() {
     LOG("LED Controller initialized on GPIO %d with brightness %d, internal pull-down enabled\r\n", m_pin, m_brightness.load());
 }
 
-bool LEDController::setBrightness(uint8_t brightness) {
-    if (!setOutputBrightness(brightness)) return false;
+bool LEDController::setBrightness(uint8_t brightness, uint32_t nowMs) {
+    if (!m_diagnostics.ready) return false;
     m_targetBrightness.store(brightness);
+    m_fadeStart = m_brightness.load();
+    m_fadeStartedAtMs = nowMs;
+    m_fading = true;
     return true;
+}
+
+void LEDController::update(uint32_t nowMs) {
+    if (!m_fading) return;
+    const uint8_t target = m_targetBrightness.load();
+    const uint32_t elapsed = nowMs - m_fadeStartedAtMs;
+    if (elapsed >= kFadeDurationMs) {
+        // Keep retrying a failed final write; the fade only ends on the target.
+        if (m_brightness.load() == target || setOutputBrightness(target))
+            m_fading = false;
+        return;
+    }
+    const int32_t range = static_cast<int32_t>(target) - static_cast<int32_t>(m_fadeStart);
+    const uint8_t next = static_cast<uint8_t>(static_cast<int32_t>(m_fadeStart) +
+        (range * static_cast<int32_t>(elapsed)) / static_cast<int32_t>(kFadeDurationMs));
+    if (next != m_brightness.load()) setOutputBrightness(next);
 }
 
 bool LEDController::setOutputBrightness(uint8_t brightness) {

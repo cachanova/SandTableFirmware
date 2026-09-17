@@ -957,12 +957,23 @@ static void formatPositionEvent(char* buffer, size_t capacity,
 }
 
 void SisyphusWebServer::updatePresenceAutomation() {
-    if (m_presenceSensor == nullptr || m_ledController == nullptr) return;
+    if (m_ledController == nullptr) return;
 
-    const PresenceStatus status = m_presenceSensor->getStatus();
+    // getStatus can block on the detector mutex; never call it while holding
+    // the LED lock or a manual brightness request could wait behind it.
+    const bool havePresence = m_presenceSensor != nullptr;
+    PresenceStatus status;
+    if (havePresence) status = m_presenceSensor->getStatus();
     // Presence sampling and motion must never hold up manual light commands.
     // A busy LED just skips this fade tick; the next tick uses elapsed time.
     if (xSemaphoreTake(m_ledMutex, 0) != pdTRUE) return;
+    m_ledController->update(millis());
+    // A user-requested fade owns the output until it lands; presence resumes
+    // on the next tick after it finishes.
+    if (!havePresence || m_ledController->isFading()) {
+        xSemaphoreGive(m_ledMutex);
+        return;
+    }
     const bool valid = status.available && status.receiving &&
         status.calibrated && !status.suppressed;
     if (!valid) {
@@ -2361,7 +2372,7 @@ void SisyphusWebServer::handleLEDBrightnessSet(AsyncWebServerRequest *request) {
     }
     const uint32_t lockWaitUs = micros() - lockStartedUs;
     m_presenceAutomation.cancelFade();
-    const bool applied = m_ledController->setBrightness(ledValue);
+    const bool applied = m_ledController->setBrightness(ledValue, millis());
     const uint32_t requestUs = micros() - startedUs;
     m_ledLastRequestUs = requestUs;
     m_ledMaxRequestUs = std::max(m_ledMaxRequestUs, requestUs);
