@@ -35,6 +35,9 @@ python scripts/refresh_previews.py render --output /tmp/table-preview-backup \
 python scripts/refresh_previews.py upload --output /tmp/table-preview-backup
 ```
 
+If a download is interrupted, repeat its command with `--resume`. Completed files
+are hash-checked and skipped only if the original library metadata still matches.
+
 The backup contains per-pattern `before.png`, `before.thumb.png`, and the original
 THR, plus three stage manifests. Retain it until deployment validation is complete.
 

@@ -81,15 +81,18 @@ def main():
     parser.add_argument('--base', default='http://100.76.149.200')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--renderer', type=Path)
+    parser.add_argument('--resume', action='store_true', help='Resume a download after verifying completed backup files')
     parser.add_argument('--only', action='append', help='Pattern filename; repeat to select several')
     args = parser.parse_args()
     out = args.output
     out.mkdir(parents=True, exist_ok=True)
     table = Table(args.base)
     snapshot = out / 'snapshot.json'
-    if args.stage == 'download':
+    if args.resume and args.stage != 'download':
+        raise ValueError('--resume is only supported for download')
+    if args.stage == 'download' and not args.resume:
         if snapshot.exists():
-            raise RuntimeError('Backup already exists; use a new output directory')
+            raise RuntimeError('Backup already exists; use a new output directory or --resume')
         inventory = table.json('files')
         if inventory.get('loading'):
             raise RuntimeError('Wait for the file index to finish')
@@ -101,8 +104,19 @@ def main():
         entries = [entry for entry in entries if entry['name'] in args.only]
         if len(entries) != len(set(args.only)):
             raise RuntimeError('Selected pattern is absent from the snapshot')
-    results = []
     manifest = out / (args.stage + '-results.json')
+    results = json.loads(manifest.read_text()) if args.resume and manifest.exists() else []
+    completed = {record['name']: record for record in results}
+    if args.resume:
+        current = table.json('files')
+        if current.get('loading'):
+            raise RuntimeError('Wait for the file index to finish')
+        indexed = {entry['name']: entry for entry in current['files']}
+        for entry in entries:
+            now = indexed.get(entry['name'])
+            if now is None or any(now.get(key) != entry.get(key) for key in
+                                  ('size', 'time', 'hasImage', 'imageTime', 'hasThumbnail', 'thumbnailTime')):
+                raise RuntimeError('Library changed since backup: ' + entry['name'])
     try:
         for entry in entries:
             name = entry['name']
@@ -111,6 +125,15 @@ def main():
             folder.mkdir(exist_ok=True)
             source = folder / name
             result = {'name': name}
+            if args.resume and name in completed:
+                record = completed[name]
+                for key, expected in record.items():
+                    if not key.endswith('_sha256'):
+                        continue
+                    file = source if key == 'thr_sha256' else folder / key[:-7]
+                    if digest(file.read_bytes()) != expected:
+                        raise RuntimeError('Backup changed: ' + str(file))
+                continue
             if args.stage == 'download':
                 data = table.get('pattern/download?' + urllib.parse.urlencode({'file': name}))
                 if len(data) != entry['size']:
