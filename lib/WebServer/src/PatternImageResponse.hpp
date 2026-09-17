@@ -36,7 +36,10 @@ public:
             heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < 8192) return;
         m_state = new (std::nothrow) State(path, size);
         if (!m_state) return;
-        m_state->stream = xStreamBufferCreate(4096, 1);
+        // Transport and SD reads both use 1 KiB chunks. Keep one prefetched
+        // chunk rather than four: this returns 3 KiB to TCP/control headroom
+        // without reducing the measured 4 KiB worker stack.
+        m_state->stream = xStreamBufferCreate(1024, 1);
         if (!m_state->stream) { State::release(m_state); m_state = nullptr; return; }
         m_state->references.fetch_add(1);
         if (xTaskCreatePinnedToCore(readImage, "ImageRead", 4096, m_state, 1,

@@ -13,6 +13,8 @@ class WebHeapCapabilities(unittest.TestCase):
         self.assertNotIn('ESP.getFreeHeap()', constructor)
         self.assertIn('heap_caps_get_free_size(MALLOC_CAP_8BIT) < 24576', constructor)
         self.assertIn('heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < 8192', constructor)
+        self.assertIn('xStreamBufferCreate(1024, 1)', constructor)
+        self.assertIn('"ImageRead", 4096', constructor)
 
     def test_index_admission_uses_byte_addressable_pool(self):
         source = (ROOT / 'lib/WebServer/src/SisyphusWebServer.cpp').read_text()
