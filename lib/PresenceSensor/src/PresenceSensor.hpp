@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <PresenceAutomation.hpp>
 #include <PresenceDetector.hpp>
 #include <atomic>
 #include <freertos/FreeRTOS.h>
@@ -34,6 +35,8 @@ public:
     bool begin(const IPAddress& pingTarget);
     void loop(bool mechanismMoving);
     bool startCalibration();
+    PresenceAction getAction() const;
+    bool setAction(PresenceAction action);
     PresenceStatus getStatus() const;
 
 private:
@@ -52,6 +55,7 @@ private:
 
     static void csiCallback(void* context, wifi_csi_info_t* info);
     bool startPing(const IPAddress& target);
+    void loadAction();
     void updateAccessPoint();
     bool processSample(const CsiSample& sample);
 
@@ -60,6 +64,8 @@ private:
     PresenceDetector m_detector;
     void* m_pingHandle = nullptr;
     std::atomic<bool> m_available{false};
+    std::atomic<uint8_t> m_action{
+        static_cast<uint8_t>(PresenceAction::FADE_LIGHT_ON)};
     std::atomic<uint32_t> m_packets{0};
     std::atomic<uint32_t> m_dropped{0};
     std::atomic<uint32_t> m_lastSampleMs{0};

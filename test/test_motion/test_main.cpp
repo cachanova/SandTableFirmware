@@ -18,6 +18,7 @@
 #include "RhoContactConsensus.hpp"
 #include "RhoStartupEntry.hpp"
 #include "RhoRollingSearch.hpp"
+#include "PresenceAutomation.hpp"
 #include "PresenceDetector.hpp"
 
 // Directly include implementations for native build to resolve linker errors
@@ -1585,6 +1586,39 @@ bool testPresenceDetectionCalibrationAndHold() {
     return passed;
 }
 
+bool testPresenceLightAutomation() {
+    std::cout << "\n=== Test: Presence Light Automation ===" << std::endl;
+    PresenceAutomation automation;
+    uint8_t brightness = 0;
+    bool passed = true;
+
+    passed &= !automation.update(true, brightness, 100, brightness);
+    passed &= !automation.isFading();
+    automation.update(false, brightness, 200, brightness);
+
+    automation.setAction(PresenceAction::FADE_LIGHT_ON);
+    passed &= !automation.update(true, brightness, 1000, brightness);
+    passed &= automation.isFading();
+    passed &= automation.update(true, brightness, 2000, brightness);
+    passed &= brightness >= 127 && brightness <= 128;
+    passed &= automation.update(true, brightness, 3000, brightness);
+    passed &= brightness == PresenceAutomation::kFadeTarget;
+    passed &= !automation.isFading();
+
+    passed &= !automation.update(true, 20, 3100, brightness);
+    automation.update(false, 20, 3200, brightness);
+    automation.update(true, 20, 3300, brightness);
+    passed &= automation.isFading();
+    automation.cancelFade();
+    passed &= !automation.update(true, 20, 3400, brightness);
+    passed &= !automation.isFading();
+
+    std::cout << (passed ? "PASS" : "FAIL")
+              << ": final brightness=" << static_cast<int>(brightness)
+              << std::endl;
+    return passed;
+}
+
 int main(int argc, char* argv[]) {
     std::cout << "========================================" << std::endl;
     std::cout << "MotionPlanner Desktop Test Harness" << std::endl;
@@ -1601,6 +1635,7 @@ int main(int argc, char* argv[]) {
     allPassed &= testRhoContactConsensus();
     allPassed &= testRhoAcousticProfiles();
     allPassed &= testPresenceDetectionCalibrationAndHold();
+    allPassed &= testPresenceLightAutomation();
     allPassed &= testSpeedMultiplierScalesSpatialVelocity();
     allPassed &= testControlledSpeedTransition();
     allPassed &= testSynchronizedBoundaryVelocity();

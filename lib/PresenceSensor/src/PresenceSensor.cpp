@@ -1,6 +1,7 @@
 #include "PresenceSensor.hpp"
 
 #include <Logger.hpp>
+#include <Preferences.h>
 #include <WiFi.h>
 #include <algorithm>
 #include <cstring>
@@ -12,6 +13,7 @@
 PresenceSensor::PresenceSensor() = default;
 
 bool PresenceSensor::begin(const IPAddress& pingTarget) {
+    loadAction();
     if (WiFi.status() != WL_CONNECTED) {
         LOG("Presence sensing unavailable: Wi-Fi is not connected\r\n");
         return false;
@@ -56,6 +58,23 @@ bool PresenceSensor::begin(const IPAddress& pingTarget) {
     }
     LOG("Presence CSI enabled; calibrate with the room empty after settling\r\n");
     return true;
+}
+
+void PresenceSensor::loadAction() {
+    Preferences preferences;
+    if (!preferences.begin("presence", false)) {
+        LOG("No saved presence action; defaulting to fade_light_on\r\n");
+        return;
+    }
+    const uint8_t stored = preferences.getUChar(
+        "action", static_cast<uint8_t>(PresenceAction::FADE_LIGHT_ON));
+    preferences.end();
+    if (stored <= static_cast<uint8_t>(PresenceAction::FADE_LIGHT_ON)) {
+        m_action.store(stored);
+    } else {
+        LOG("Ignoring invalid saved presence action %u\r\n",
+            static_cast<unsigned>(stored));
+    }
 }
 
 bool PresenceSensor::startPing(const IPAddress& target) {
@@ -175,6 +194,32 @@ bool PresenceSensor::startCalibration() {
     const bool started = m_detector.startCalibration();
     xSemaphoreGive(m_detectorMutex);
     return started;
+}
+
+PresenceAction PresenceSensor::getAction() const {
+    return static_cast<PresenceAction>(m_action.load());
+}
+
+bool PresenceSensor::setAction(PresenceAction action) {
+    const uint8_t value = static_cast<uint8_t>(action);
+    if (value > static_cast<uint8_t>(PresenceAction::FADE_LIGHT_ON)) {
+        return false;
+    }
+    Preferences preferences;
+    if (!preferences.begin("presence", false)) {
+        LOG("Failed to open presence settings storage\r\n");
+        return false;
+    }
+    const size_t written = preferences.putUChar("action", value);
+    preferences.end();
+    if (written != sizeof(uint8_t)) {
+        LOG("Failed to save presence action\r\n");
+        return false;
+    }
+    m_action.store(value);
+    LOG("Presence action saved: %s\r\n",
+        action == PresenceAction::FADE_LIGHT_ON ? "fade_light_on" : "none");
+    return true;
 }
 
 PresenceStatus PresenceSensor::getStatus() const {

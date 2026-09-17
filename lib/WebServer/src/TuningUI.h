@@ -1,12 +1,12 @@
 #pragma once
 
-const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
+const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sisyphus Tuning</title>
+    <title>Sisyphus Settings</title>
     <style>
         :root {
             --paper: #fafaf7;
@@ -165,6 +165,21 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
             font-style: italic;
         }
 
+        .setting-readout {
+            min-height: 37px;
+            padding: 9px 10px;
+            border: 1px solid var(--hair);
+            font-family: var(--mono);
+            color: var(--ink);
+        }
+
+        .presence-feedback {
+            min-height: 1.4em;
+            margin-top: 8px;
+            color: var(--ink-soft);
+            font-size: 12px;
+        }
+
         .dump-output {
             border: 1px solid var(--hair);
             background: var(--wash);
@@ -199,16 +214,43 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
 </head>
 <body>
     <header class="topbar">
-        <div class="brand"><i>Sisyphus</i><span>Tuning</span></div>
+        <div class="brand"><i>Sisyphus</i><span>Settings</span></div>
         <nav class="topnav">
             <a href="/">Patterns</a>
             <a href="/manual">Manual</a>
             <a href="/files">Files</a>
-            <a href="/tuning" class="active">Tuning</a>
+            <a href="/settings" class="active">Settings</a>
         </nav>
     </header>
 
     <div class="container">
+        <section class="block">
+            <h2 class="rule-head">Presence Sensing</h2>
+            <p class="test-description">The ESP32 watches Wi-Fi reflections for movement while the mechanism is still. Calibrate with the room empty, then choose what a new movement detection should do.</p>
+            <div class="grid">
+                <div class="form-group">
+                    <label>Movement Response</label>
+                    <select id="presence-action">
+                        <option value="none">Do nothing</option>
+                        <option value="fade_light_on">Fade light on</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Sensor State</label>
+                    <div class="setting-readout" id="presence-state">Loading…</div>
+                </div>
+                <div class="form-group">
+                    <label>CSI Activity</label>
+                    <div class="setting-readout" id="presence-score">—</div>
+                </div>
+            </div>
+            <div class="test-buttons">
+                <button class="btn-primary" id="btn-save-presence">Save Response</button>
+                <button class="btn-secondary" id="btn-presence-calibrate">Calibrate Empty Room</button>
+            </div>
+            <p class="presence-feedback" id="presence-feedback">Presence actions are disabled until empty-room calibration completes.</p>
+        </section>
+
         <section class="block commissioning">
             <h2 class="rule-head">Commissioning Settings</h2>
             <p class="test-description">These values are intended for one-time setup. Motion must be stopped before saving. Changing either microstep setting invalidates the logical position, so the dashboard will require homing again.</p>
@@ -526,6 +568,99 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
             }
         }
 
+        async function loadPresenceSettings() {
+            const response = await fetch(apiBase + '/settings/presence');
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.message || 'HTTP ' + response.status);
+            document.getElementById('presence-action').value = data.action || 'fade_light_on';
+        }
+
+        async function refreshPresenceStatus() {
+            const state = document.getElementById('presence-state');
+            const score = document.getElementById('presence-score');
+            const calibrate = document.getElementById('btn-presence-calibrate');
+            const feedback = document.getElementById('presence-feedback');
+            try {
+                const response = await fetch(apiBase + '/presence');
+                const presence = await response.json();
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+
+                if (!presence.available) {
+                    state.textContent = 'Unavailable';
+                } else if (presence.suppressed) {
+                    state.textContent = 'Suspended while table moves';
+                } else if (presence.calibrating) {
+                    state.textContent = `Calibrating ${presence.calibrationProgress || 0}%`;
+                } else if (!presence.receiving) {
+                    state.textContent = 'No CSI samples';
+                } else if (!presence.calibrated) {
+                    state.textContent = 'Needs calibration';
+                } else if (presence.motion) {
+                    state.textContent = 'Movement detected';
+                } else if (presence.occupied) {
+                    state.textContent = 'Recently occupied';
+                } else {
+                    state.textContent = 'Ready — room clear';
+                }
+
+                score.textContent = presence.calibrated && Number.isFinite(presence.score)
+                    ? `${presence.score.toFixed(2)}× threshold` : '—';
+                calibrate.disabled = !presence.available || !presence.receiving ||
+                    presence.suppressed || presence.calibrating;
+
+                if (presence.calibrating) {
+                    feedback.textContent = 'Keep the room empty and the table completely still.';
+                } else if (presence.calibrated) {
+                    feedback.textContent = 'Calibration is active for this boot. Moving the table or access point requires recalibration.';
+                } else {
+                    feedback.textContent = 'Presence actions are disabled until empty-room calibration completes.';
+                }
+            } catch (err) {
+                state.textContent = 'Unavailable';
+                score.textContent = '—';
+                calibrate.disabled = true;
+                feedback.textContent = 'Could not read presence status: ' + err.message;
+            }
+        }
+
+        async function savePresenceSettings() {
+            const button = document.getElementById('btn-save-presence');
+            const feedback = document.getElementById('presence-feedback');
+            const formData = new FormData();
+            formData.append('action', document.getElementById('presence-action').value);
+            button.disabled = true;
+            try {
+                const response = await fetch(apiBase + '/settings/presence', {
+                    method: 'POST', body: formData
+                });
+                const result = await response.json().catch(() => ({}));
+                if (!response.ok || !result.success) {
+                    throw new Error(result.message || 'HTTP ' + response.status);
+                }
+                feedback.textContent = 'Movement response saved.';
+            } catch (err) {
+                feedback.textContent = 'Could not save movement response: ' + err.message;
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        async function calibratePresence() {
+            if (!confirm('Keep the room empty and the table completely still for about 20 seconds. Start calibration?')) return;
+            const feedback = document.getElementById('presence-feedback');
+            try {
+                const response = await fetch(apiBase + '/presence/calibrate', { method: 'POST' });
+                const result = await response.json().catch(() => ({}));
+                if (!response.ok || !result.success) {
+                    throw new Error(result.message || 'HTTP ' + response.status);
+                }
+                feedback.textContent = 'Calibration started. Keep the room empty and still.';
+                await refreshPresenceStatus();
+            } catch (err) {
+                feedback.textContent = 'Calibration could not start: ' + err.message;
+            }
+        }
+
         async function loadSettings() {
             try {
                 const response = await fetch(apiBase + '/tuning');
@@ -629,6 +764,8 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
         }
 
         document.getElementById('btn-save-motion').addEventListener('click', saveMotion);
+        document.getElementById('btn-save-presence').addEventListener('click', savePresenceSettings);
+        document.getElementById('btn-presence-calibrate').addEventListener('click', calibratePresence);
         document.getElementById('btn-save-theta').addEventListener('click', () => saveDriver('theta'));
         document.getElementById('btn-save-rho').addEventListener('click', () => saveDriver('rho'));
         document.getElementById('btn-save-homing').addEventListener('click', saveHoming);
@@ -651,7 +788,11 @@ const char TUNING_UI_HTML[] PROGMEM = R"rawliteral(
         document.getElementById('btn-dump-rho').addEventListener('click', () => dumpDriver('rho'));
         document.getElementById('btn-dump-rho-companion').addEventListener('click', () => dumpDriver('rho-companion'));
 
-        window.onload = loadSettings;
+        window.onload = async () => {
+            await Promise.allSettled([loadSettings(), loadPresenceSettings()]);
+            await refreshPresenceStatus();
+            setInterval(refreshPresenceStatus, 1000);
+        };
     </script>
 </body>
 </html>

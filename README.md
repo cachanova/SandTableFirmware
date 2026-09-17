@@ -8,7 +8,8 @@ ESP32 firmware for a Sisyphus-style polar-coordinate sand table. It drives Theta
 - Web UI with live position visualization, playlist control, and tuning controls.
 - SD card pattern storage, uploads, and optional PNG previews.
 - OTA firmware updates and runtime telemetry.
-- Experimental Wi-Fi CSI motion/occupancy telemetry with empty-room calibration.
+- Experimental Wi-Fi CSI motion/occupancy sensing with empty-room calibration
+  and an optional presence-triggered light fade.
 
 ## Architecture
 At a high level the firmware is organized around three FreeRTOS tasks pinned across the two ESP32 cores. `src/main.cpp` creates a MotorTask on Core 1 for deterministic step generation, and a WebTask on Core 0 for the Web UI/API, WiFi, and OTA handling. `lib/PolarControl` owns the motion planner, driver configuration, and the inter-task queues. It also spins up a FileReadTask on Core 0 to stream `.thr` pattern points from SD/LittleFS into a coordinate queue. The MotorTask drains that queue and drives the stepper outputs, while the WebTask sends commands (start/stop/speed/tuning) and exposes telemetry back to the UI via SSE and JSON APIs.
@@ -62,6 +63,7 @@ Pin defaults live in `lib/Config/src/Config.h`:
 
 Core endpoints (see `lib/WebServer/src/SisyphusWebServer.cpp`):
 - `GET /` UI
+- `GET /settings` presence behavior and machine commissioning settings
 - `GET /api/status` current state and telemetry
 - `GET /api/stream` SSE position stream
 - `POST /api/pattern/start` start a pattern
@@ -74,6 +76,7 @@ Core endpoints (see `lib/WebServer/src/SisyphusWebServer.cpp`):
 - `GET /api/tuning/*` driver and motion tuning
 - `GET /api/presence` CSI presence telemetry
 - `POST /api/presence/calibrate` start empty-room calibration
+- `GET|POST /api/settings/presence` configure the movement response
 - `POST /api/home` start sensorless homing
 - `POST /api/home/confirm` accept or reject the observed home position
 

@@ -134,7 +134,7 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
             <a href="/">Patterns</a>
             <a href="/manual">Manual</a>
             <a href="/files" class="active">Files</a>
-            <a href="/tuning">Tuning</a>
+            <a href="/settings">Settings</a>
         </nav>
     </header>
 

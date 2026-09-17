@@ -5,8 +5,9 @@ experimental motion and occupancy sensor. It requires no additional GPIO or
 sensor module. The ESP32 sends a low-rate ping to its configured gateway and
 measures how the received Wi-Fi multipath shape changes.
 
-This feature is deliberately **telemetry-only**. It never starts, pauses, or
-stops the motors and is not a safety system.
+This feature never starts, pauses, or stops the motors and is not a safety
+system. Its only optional automation is fading the table light to full
+brightness after newly detected movement.
 
 ## First use
 
@@ -15,7 +16,7 @@ stops the motors and is not a safety system.
 2. Stop all table motion. Wait until the dashboard no longer says presence
    sensing is suspended.
 3. Clear people and moving objects from the room.
-4. Select **Calibrate empty room** on the dashboard.
+4. Open **Settings** and select **Calibrate empty room**.
 5. Keep the room and table still until progress reaches 100%, normally about
    16-20 seconds at the built-in 10 Hz sample rate.
 6. Walk through the radio path between the table and access point and watch the
@@ -32,12 +33,21 @@ table or access point changes the radio path and requires another calibration.
 - `POST /api/presence/calibrate` starts a new empty-room calibration. It returns
   `409` while the mechanism is moving, during the five-second settling time,
   or when fresh gateway CSI samples are unavailable.
+- `GET|POST /api/settings/presence` reads or changes the movement response.
+  The `action` field accepts `none` or `fade_light_on` and is retained in NVS.
 - `GET /api/status` includes the same data in its `presence` object.
 
 The normalized `score` is relative to the learned threshold. A sustained score
 at or above `1.0` enters motion after three accepted samples. Motion clears with
 hysteresis, while `occupied` remains true for 60 seconds after the last strong
 motion sample.
+
+When **Fade light on** is selected, a new calibrated motion event fades the
+light from its current level to 100% over two seconds. Sustained motion does not
+continually retrigger the fade, and a manual brightness change cancels a fade
+already in progress. The saved response survives reboot, but calibration does
+not. **Fade light on** is the default response; select **Do nothing** to disable
+the automation while keeping presence telemetry active.
 
 ## Motion isolation and limitations
 

@@ -124,7 +124,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
 <header class="topbar">
     <div class="brand"><i>Sisyphus</i><span>Manual</span></div>
     <nav class="topnav">
-        <a href="/">Patterns</a><a href="/manual" class="active">Manual</a><a href="/files">Files</a><a href="/tuning">Tuning</a>
+        <a href="/">Patterns</a><a href="/manual" class="active">Manual</a><a href="/files">Files</a><a href="/settings">Settings</a>
     </nav>
 </header>
 <div class="container">

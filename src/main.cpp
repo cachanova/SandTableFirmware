@@ -220,8 +220,8 @@ void setup() {
     LOG("IP Address: %s\r\n", WiFi.localIP().toString().c_str());
     LOG("SSID: %s\r\n", WiFi.SSID().c_str());
 
-    // CSI uses the existing Wi-Fi link as an ambient motion sensor. It is
-    // telemetry-only: no presence result is allowed to start or stop motion.
+    // CSI uses the existing Wi-Fi link as an ambient motion sensor. Presence
+    // may affect lighting, but is never allowed to start or stop motion.
     presenceSensor.begin(WiFi.gatewayIP());
 
     // Setup OTA updates

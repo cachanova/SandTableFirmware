@@ -9,6 +9,7 @@
 #include <SDCard.hpp>
 #include <PolarControl.hpp>
 #include <LEDController.hpp>
+#include <PresenceAutomation.hpp>
 #include <PresenceSensor.hpp>
 #include <PlaylistManager.hpp>
 #include "Logger.hpp"
@@ -27,6 +28,7 @@ private:
     PolarControl *m_polarControl;
     LEDController *m_ledController;
     PresenceSensor *m_presenceSensor;
+    PresenceAutomation m_presenceAutomation;
 
     enum class MotionOwner : uint8_t { NONE, PATTERN, MANUAL, TUNING };
     enum class PendingMotion : uint8_t {
@@ -106,6 +108,8 @@ private:
     void handleSystemInfo(AsyncWebServerRequest *request);
     void handlePresenceGet(AsyncWebServerRequest *request);
     void handlePresenceCalibrate(AsyncWebServerRequest *request);
+    void handlePresenceSettingsGet(AsyncWebServerRequest *request);
+    void handlePresenceSettingsSet(AsyncWebServerRequest *request);
     void handleRoot(AsyncWebServerRequest *request);
 
     // Playlist handlers
@@ -147,6 +151,7 @@ private:
     bool prepareReplacementLocked();
     bool prepareManualJogLocked();
     bool queueTuningTestLocked(PendingMotion motion);
+    void updatePresenceAutomation();
     void broadcastPosition(); // New streaming method
     void broadcastSinglePosition(AsyncEventSourceClient *client = nullptr);
     void writeStatusJSON(Print& out);

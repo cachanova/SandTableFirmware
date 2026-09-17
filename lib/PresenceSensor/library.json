@@ -2,6 +2,7 @@
   "name": "PresenceSensor",
   "version": "1.0.0",
   "dependencies": {
+    "PresenceAutomation": "*",
     "PresenceDetection": "*"
   },
   "build": {

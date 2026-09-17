@@ -253,11 +253,16 @@ void SisyphusWebServer::begin(PolarControl *polarControl,
         handleRoot(request);
     });
 
-    m_server.on("/tuning", HTTP_GET, [this](AsyncWebServerRequest *request) {
+    m_server.on("/settings", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         request->send(new StaticContentResponse("text/html",
-                      reinterpret_cast<const uint8_t *>(TUNING_UI_HTML),
-                      sizeof(TUNING_UI_HTML) - 1));
+                      reinterpret_cast<const uint8_t *>(SETTINGS_UI_HTML),
+                      sizeof(SETTINGS_UI_HTML) - 1));
+    });
+
+    m_server.on("/tuning", HTTP_GET, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        request->redirect("/settings");
     });
 
     m_server.on("/manual", HTTP_GET, [this](AsyncWebServerRequest *request) {
@@ -287,6 +292,16 @@ void SisyphusWebServer::begin(PolarControl *polarControl,
     m_server.on("/api/presence/calibrate", HTTP_POST, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handlePresenceCalibrate(request);
+    });
+
+    m_server.on("/api/settings/presence", HTTP_GET, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handlePresenceSettingsGet(request);
+    });
+
+    m_server.on("/api/settings/presence", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handlePresenceSettingsSet(request);
     });
 
     m_server.on("/api/errors", HTTP_GET, [this](AsyncWebServerRequest *request) {
@@ -894,6 +909,7 @@ const SisyphusWebServer::FileEntry* SisyphusWebServer::findFileEntryByBase(const
 }
 
 void SisyphusWebServer::loop() {
+    updatePresenceAutomation();
     try {
         processPatternQueue();
     } catch (const std::bad_alloc&) {
@@ -917,6 +933,22 @@ static void formatPositionEvent(char* buffer, size_t capacity,
              "{\"x\":%.4f,\"y\":%.4f,\"r\":%.1f,\"t\":%.2f,\"vr\":%.2f,\"vt\":%.3f,\"vc\":%.2f%s}",
              norm.x, norm.y, position.rho, position.theta, velocity.rho,
              velocity.theta, speed, clear ? ",\"clear\":1" : "");
+}
+
+void SisyphusWebServer::updatePresenceAutomation() {
+    if (m_presenceSensor == nullptr || m_ledController == nullptr) return;
+
+    const PresenceStatus status = m_presenceSensor->getStatus();
+    const bool movementDetected = status.available && status.receiving &&
+        status.calibrated && !status.suppressed && status.motion;
+
+    SemaphoreGuard stateLock(m_stateMutex);
+    m_presenceAutomation.setAction(m_presenceSensor->getAction());
+    uint8_t nextBrightness = m_ledController->getBrightness();
+    if (m_presenceAutomation.update(movementDetected, nextBrightness,
+                                    millis(), nextBrightness)) {
+        m_ledController->setBrightness(nextBrightness);
+    }
 }
 
 void SisyphusWebServer::broadcastSinglePosition(AsyncEventSourceClient *client) {
@@ -1304,6 +1336,58 @@ void SisyphusWebServer::handlePresenceCalibrate(AsyncWebServerRequest *request) 
 
     request->send(202, "application/json",
         "{\"success\":true,\"message\":\"Keep the room empty and the table still until calibration reaches 100%\"}");
+}
+
+void SisyphusWebServer::handlePresenceSettingsGet(
+    AsyncWebServerRequest *request) {
+    if (m_presenceSensor == nullptr) {
+        request->send(503, "application/json",
+            "{\"success\":false,\"message\":\"Presence sensing is unavailable\"}");
+        return;
+    }
+
+    const char* action = m_presenceSensor->getAction() ==
+        PresenceAction::FADE_LIGHT_ON ? "fade_light_on" : "none";
+    AsyncResponseStream *response = request->beginResponseStream(
+        "application/json", kResponseBufferSize);
+    response->printf(
+        "{\"action\":\"%s\",\"fadeDurationMs\":%lu,\"targetBrightness\":100}",
+        action,
+        static_cast<unsigned long>(PresenceAutomation::kFadeDurationMs));
+    request->send(response);
+}
+
+void SisyphusWebServer::handlePresenceSettingsSet(
+    AsyncWebServerRequest *request) {
+    if (m_presenceSensor == nullptr) {
+        request->send(503, "application/json",
+            "{\"success\":false,\"message\":\"Presence sensing is unavailable\"}");
+        return;
+    }
+    if (!request->hasParam("action", true)) {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Missing action parameter\"}");
+        return;
+    }
+
+    const String value = request->getParam("action", true)->value();
+    PresenceAction action;
+    if (value == "none") {
+        action = PresenceAction::NONE;
+    } else if (value == "fade_light_on") {
+        action = PresenceAction::FADE_LIGHT_ON;
+    } else {
+        request->send(400, "application/json",
+            "{\"success\":false,\"message\":\"Action must be none or fade_light_on\"}");
+        return;
+    }
+
+    if (!m_presenceSensor->setAction(action)) {
+        request->send(500, "application/json",
+            "{\"success\":false,\"message\":\"Presence action could not be saved\"}");
+        return;
+    }
+    request->send(200, "application/json", "{\"success\":true}");
 }
 
 void SisyphusWebServer::handleErrors(AsyncWebServerRequest *request) {
@@ -2208,7 +2292,11 @@ void SisyphusWebServer::handleLEDBrightnessSet(AsyncWebServerRequest *request) {
     }
 
     uint8_t ledValue = map(brightness, 0, 100, 0, 255);
-    m_ledController->setBrightness(ledValue);
+    {
+        SemaphoreGuard stateLock(m_stateMutex);
+        m_presenceAutomation.cancelFade();
+        m_ledController->setBrightness(ledValue);
+    }
 
     LOG("LED brightness set to: %d%% (%u/255)\r\n", brightness,
         static_cast<unsigned>(ledValue));
