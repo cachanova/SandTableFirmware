@@ -305,12 +305,10 @@ void MotionPlanner::recalculate() {
             if (PolarPath::norm(tangent, m_maxRho) > 1e-12) {
                 if (a.path.exit.theta != tangent.theta || a.path.exit.rho != tangent.rho) {
                     a.path.exit = tangent;
-                    a.path.rebuild();
                     a.limitsCalculated = false;
                 }
                 if (b.path.entry.theta != tangent.theta || b.path.entry.rho != tangent.rho) {
                     b.path.entry = tangent;
-                    b.path.rebuild();
                     b.limitsCalculated = false;
                 }
             }
@@ -318,7 +316,6 @@ void MotionPlanner::recalculate() {
         } else if (a.geometryLocked && !b.geometryLocked) {
             if (b.path.entry.theta != a.path.exit.theta || b.path.entry.rho != a.path.exit.rho) {
                 b.path.entry = a.path.exit;
-                b.path.rebuild();
                 b.limitsCalculated = false;
             }
         }
@@ -371,6 +368,7 @@ void MotionPlanner::recalculate() {
 const SCurve::Profile& MotionPlanner::evaluationProfile(const Segment& seg) const {
     if (m_evaluationSegment != &seg) {
         m_evaluationProfile = seg.profile.expand();
+        m_evaluationCoefficients = seg.path.coefficients();
         m_evaluationSegment = &seg;
     }
     return m_evaluationProfile;
@@ -918,8 +916,11 @@ FillStopReason MotionPlanner::fillStepQueue(uint32_t horizonUs) {
                 targetT = s.theta.targetSteps;
                 targetR = s.rho.targetSteps;
             } else {
-                const PathPoint point =
-                    s.path.position(segmentDistance(s, s.nextSampleUs / 1000000.0));
+                // Cache derived geometry with the expanded scalar profile;
+                // neither is duplicated across the 32 buffered segments.
+                evaluationProfile(s);
+                const PathPoint point = s.path.position(
+                    segmentDistance(s, s.nextSampleUs / 1000000.0), m_evaluationCoefficients);
                 targetT = thetaToSteps(point.theta);
                 targetR = rhoToSteps(point.rho);
             }

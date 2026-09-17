@@ -112,7 +112,7 @@ void compactProfiles() {
             }
         }
     }
-    require(sizeof(Segment) <= 416, "buffered planner memory budget exceeded");
+    require(sizeof(Segment) <= 320, "buffered planner memory budget exceeded");
     std::cout << "PASS lossless compact profiles and planner memory budget\n";
 }
 void conversion() {
@@ -166,8 +166,8 @@ PathPoint derivative(const PolarPath &p, double u, int order) {
         double factor = 1;
         for (int j = 0; j < order; ++j)
             factor *= i - j;
-        sum =
-            sum + p.coefficients[i] * (factor * std::pow(u, i - order) / std::pow(p.length, order));
+        sum = sum +
+              p.coefficients()[i] * (factor * std::pow(u, i - order) / std::pow(p.length, order));
     }
     return sum;
 }

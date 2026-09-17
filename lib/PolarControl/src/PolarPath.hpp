@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 // Geometry is independent of its time law. Theta remains unwrapped and double
@@ -15,7 +16,7 @@ struct PathPoint {
 struct PolarPath {
     PathPoint start, end, entry, exit;
     double length = 0;
-    PathPoint coefficients[6]{};
+    using Coefficients = std::array<PathPoint, 6>;
 
     static void boundControls(const PathPoint *controls, int count, int depth, PathPoint &maximum) {
         if (depth == 0) {
@@ -46,18 +47,18 @@ struct PolarPath {
         end = b;
         length = norm(b - a, radius);
         entry = exit = length > 0 ? (b - a) * (1 / length) : PathPoint{};
-        rebuild();
     }
-    void rebuild() {
+    Coefficients coefficients() const {
         const PathPoint d = end - start, a = entry * length, b = exit * length;
-        coefficients[0] = start;
-        coefficients[1] = a;
-        coefficients[2] = {};
-        coefficients[3] = d * 10 - a * 6 - b * 4;
-        coefficients[4] = d * (-15) + a * 8 + b * 7;
-        coefficients[5] = d * 6 - a * 3 - b * 3;
+        return {start,
+                a,
+                PathPoint{},
+                d * 10 - a * 6 - b * 4,
+                d * (-15) + a * 8 + b * 7,
+                d * 6 - a * 3 - b * 3};
     }
-    PathPoint position(double s) const {
+    PathPoint position(double s) const { return position(s, coefficients()); }
+    PathPoint position(double s, const Coefficients &coefficients) const {
         if (s <= 0)
             return start;
         if (s >= length)
@@ -76,9 +77,10 @@ struct PolarPath {
         if (s >= length)
             return exit;
         const double u = s / length;
-        PathPoint value = coefficients[5] * 5;
+        const auto c = coefficients();
+        PathPoint value = c[5] * 5;
         for (int i = 4; i >= 1; --i)
-            value = value * u + coefficients[i] * i;
+            value = value * u + c[i] * i;
         return value * (1 / length);
     }
     // Convex-hull bounds on derivatives with respect to scalar distance.

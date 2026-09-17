@@ -80,6 +80,7 @@ def main():
     try:
         import matplotlib
         matplotlib.use("Agg")
+        matplotlib.rcParams["svg.hashsalt"] = "sisyphus-motion-accuracy"
         import matplotlib.pyplot as plt
     except ImportError:
         print("matplotlib unavailable; JSON/CSV are complete")
@@ -92,7 +93,7 @@ def main():
     ax.invert_yaxis()
     ax.set(xlabel="Sampled maximum distance to intended polar segment (mm)", title="THR path accuracy · 425 mm radius · production defaults")
     ax.legend(loc="lower right")
-    fig.savefig(args.output / "corpus-error.svg")
+    fig.savefig(args.output / "corpus-error.svg", metadata={"Date": None})
     plt.close(fig)
     fig, axes = plt.subplots(1, 3, figsize=(13, 4.5), layout="constrained")
     selected = ranked[:2] + [next((d for d in results if d["file"].endswith("example_patterns/spiral.thr")), ranked[-1])]
@@ -104,8 +105,11 @@ def main():
         ax.set(title=f'{Path(d["file"]).name}\n{d["profile_shape_mm"]["max"]:.3f} mm max deviation', xlabel="x (mm)", ylabel="y (mm)")
         ax.grid(alpha=.2)
     axes[0].legend(fontsize=8)
-    fig.savefig(args.output / "path-comparison.svg")
+    fig.savefig(args.output / "path-comparison.svg", metadata={"Date": None})
     plt.close(fig)
+
+    for path in args.output.glob("*.svg"):
+        path.write_text("\n".join(line.rstrip() for line in path.read_text().splitlines()) + "\n")
 
 
 if __name__ == "__main__":

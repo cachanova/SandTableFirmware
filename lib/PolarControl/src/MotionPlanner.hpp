@@ -292,6 +292,7 @@ private:
     double m_cornerTolerance = 0;
     SCurve::Profile m_brakeProfile{};
     mutable SCurve::Profile m_evaluationProfile{};
+    mutable PolarPath::Coefficients m_evaluationCoefficients{};
     mutable const Segment* m_evaluationSegment = nullptr;
     double m_brakeStartTime = 0, m_brakeStartDistance = 0;
     PolarPath m_resumePath;
