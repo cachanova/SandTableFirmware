@@ -1302,8 +1302,7 @@ void SisyphusWebServer::handleStatus(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handlePresenceGet(AsyncWebServerRequest *request) {
-    AsyncResponseStream *response = request->beginResponseStream(
-        "application/json", kResponseBufferSize);
+    auto* response = new BufferedResponse("application/json");
     JsonHelpers::writePresenceJSON(*response, m_presenceSensor);
     request->send(response);
 }
@@ -1323,7 +1322,9 @@ void SisyphusWebServer::handlePresenceCalibrate(AsyncWebServerRequest *request) 
     }
     if (status.suppressed) {
         request->send(409, "application/json",
-            "{\"success\":false,\"message\":\"Wait for table motion and the five-second settling period to finish\"}");
+            status.memoryLimited
+                ? "{\"success\":false,\"message\":\"Presence paused to preserve controller memory; retry after other activity finishes\"}"
+                : "{\"success\":false,\"message\":\"Wait for table motion and the five-second settling period to finish\"}");
         return;
     }
     if (!status.receiving) {
@@ -1351,8 +1352,7 @@ void SisyphusWebServer::handlePresenceSettingsGet(
 
     const char* action = m_presenceSensor->getAction() ==
         PresenceAction::FADE_LIGHT_ON ? "fade_light_on" : "none";
-    AsyncResponseStream *response = request->beginResponseStream(
-        "application/json", kResponseBufferSize);
+    auto* response = new BufferedResponse("application/json");
     response->printf(
         "{\"action\":\"%s\",\"fadeDurationMs\":%lu,\"targetBrightness\":100}",
         action,

@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <PresenceAutomation.hpp>
 #include <PresenceDetector.hpp>
+#include <PresenceBudget.hpp>
 #include <atomic>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -15,6 +16,7 @@ struct PresenceStatus {
     bool calibrated = false;
     bool calibrating = false;
     bool suppressed = false;
+    bool memoryLimited = false;
     bool motion = false;
     bool occupied = false;
     uint8_t calibrationProgress = 0;
@@ -26,6 +28,7 @@ struct PresenceStatus {
     uint32_t acceptedSamples = 0;
     int32_t sampleAgeMs = -1;
     uint32_t lastMotionMs = 0;
+    uint32_t maxProcessingUs = 0;
 };
 
 class PresenceSensor {
@@ -53,9 +56,11 @@ private:
         uint8_t source[6];
         int8_t bytes[kCsiBytes];
     };
+    static_assert(sizeof(CsiSample) <= 144, "Keep the capture queue budget explicit");
 
     static void csiCallback(void* context, wifi_csi_info_t* info);
     bool startPing(const IPAddress& target);
+    void updatePing(uint32_t nowMs);
     void loadAction();
     void updateAccessPoint();
     void stopPing();
@@ -63,8 +68,16 @@ private:
 
     QueueHandle_t m_queue = nullptr;
     SemaphoreHandle_t m_detectorMutex = nullptr;
+    StaticQueue_t m_queueControl{};
+    uint8_t m_queueStorage[PresenceBudget::kQueueDepth * sizeof(CsiSample)]{};
+    StaticSemaphore_t m_mutexStorage{};
     PresenceDetector m_detector;
-    void* m_pingHandle = nullptr;
+    void* m_pingHandle = nullptr; // setup/web-loop owned
+    std::atomic<void*> m_activePing{nullptr}; // completion callback handshake
+    uint32_t m_pingLastChangeMs = 0;
+    PresenceBudget::CaptureRateLimit m_captureRate;
+    PresenceBudget::PingRateLimit m_pingRate;
+    std::atomic<bool> m_captureEnabled{false};
     std::atomic<bool> m_available{false};
     std::atomic<uint8_t> m_action{
         static_cast<uint8_t>(PresenceAction::FADE_LIGHT_ON)};
@@ -81,6 +94,8 @@ private:
     bool m_haveBssid = false;
     bool m_mechanismMoving = false;
     bool m_settling = true;
+    bool m_memoryLimited = false;
+    uint32_t m_maxProcessingUs = 0;
     uint32_t m_suppressedUntilMs = 0;
     uint32_t m_lastAcceptedAtMs = 0;
     uint32_t m_lastApRefreshMs = 0;

@@ -8,10 +8,12 @@
 #include <cstring>
 #include <esp_err.h>
 #include <esp_wifi.h>
+#include <esp_heap_caps.h>
 #include <lwip/ip_addr.h>
 #include <ping/ping_sock.h>
 
 PresenceSensor::PresenceSensor() = default;
+static_assert(sizeof(PresenceSensor) <= 1536, "Presence static RAM budget exceeded");
 
 bool PresenceSensor::begin() {
     if (m_available.load()) return true;
@@ -21,8 +23,9 @@ bool PresenceSensor::begin() {
         return false;
     }
 
-    m_queue = xQueueCreate(16, sizeof(CsiSample));
-    m_detectorMutex = xSemaphoreCreateMutex();
+    m_queue = xQueueCreateStatic(PresenceBudget::kQueueDepth, sizeof(CsiSample),
+                                m_queueStorage, &m_queueControl);
+    m_detectorMutex = xSemaphoreCreateMutexStatic(&m_mutexStorage);
     if (m_queue == nullptr || m_detectorMutex == nullptr) {
         if (m_queue) vQueueDelete(m_queue);
         if (m_detectorMutex) vSemaphoreDelete(m_detectorMutex);
@@ -91,7 +94,9 @@ bool PresenceSensor::startPing(const IPAddress& target) {
     if (target == IPAddress()) return false;
     esp_ping_config_t config = ESP_PING_DEFAULT_CONFIG();
     IP_ADDR4(&config.target_addr, target[0], target[1], target[2], target[3]);
-    config.count = ESP_PING_COUNT_INFINITE;
+    // A repeating SDK batch uses vTaskDelayUntil and can catch up in a burst
+    // after long replies/timeouts. Schedule individual batches from our loop.
+    config.count = 1;
     config.interval_ms = 100;
     config.timeout_ms = 500;
     config.data_size = 32;
@@ -99,21 +104,56 @@ bool PresenceSensor::startPing(const IPAddress& target) {
 
     esp_ping_callbacks_t callbacks{};
     callbacks.cb_args = this;
+    callbacks.on_ping_end = [](esp_ping_handle_t handle, void* context) {
+        auto* sensor = static_cast<PresenceSensor*>(context);
+        // A late callback from a retired session cannot finish a newer one.
+        void* expected = handle;
+        sensor->m_activePing.compare_exchange_strong(expected, nullptr);
+    };
     esp_ping_handle_t handle = nullptr;
     if (esp_ping_new_session(&config, &callbacks, &handle) != ESP_OK) return false;
+    m_pingHandle = handle;
+    m_activePing.store(handle);
     if (esp_ping_start(handle) != ESP_OK) {
-        esp_ping_delete_session(handle);
+        stopPing();
         return false;
     }
-    m_pingHandle = handle;
     return true;
 }
 
 void PresenceSensor::stopPing() {
-    if (!m_pingHandle) return;
-    esp_ping_stop(m_pingHandle);
-    esp_ping_delete_session(m_pingHandle);
+    const auto handle = m_pingHandle;
+    if (!handle) return;
     m_pingHandle = nullptr;
+    m_activePing.store(nullptr);
+    esp_ping_stop(handle);
+    esp_ping_delete_session(handle);
+    // SDK deletion is asynchronous. Give the old task/socket time to retire;
+    // rapid AP changes must not allocate a new ping stack every web iteration.
+    m_pingLastChangeMs = millis();
+}
+
+void PresenceSensor::updatePing(uint32_t nowMs) {
+    if (m_memoryLimited || m_mechanismMoving || m_settling || !m_haveBssid) {
+        // At most one already-issued probe can finish; don't create or restart
+        // any batches while suspended. Keep the session for allocation-free reuse.
+        return;
+    }
+    if (m_activePing.load() != nullptr) return;
+    const auto handle = m_pingHandle;
+    if (handle) {
+        if (!m_pingRate.accept(nowMs)) return;
+        m_activePing.store(handle);
+        if (esp_ping_start(handle) != ESP_OK) stopPing();
+    } else {
+        if (nowMs - m_pingLastChangeMs < 5000U) return;
+        m_pingLastChangeMs = nowMs; // rate-limit failed admission/allocation too
+        // Read the heap again immediately before this optional allocation.
+        if (PresenceBudget::memoryLimited(true,
+                heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                heap_caps_get_largest_free_block(MALLOC_CAP_8BIT))) return;
+        if (startPing(m_pingTarget)) m_pingRate.accept(nowMs);
+    }
 }
 
 void PresenceSensor::updateAccessPoint() {
@@ -137,9 +177,6 @@ void PresenceSensor::updateAccessPoint() {
     std::memcpy(m_bssid, accessPoint.bssid, sizeof(m_bssid));
     m_channel = accessPoint.primary;
     m_pingTarget = gateway;
-    if (!startPing(m_pingTarget)) {
-        LOG("Presence CSI enabled without ping keepalive; sampling may be sparse\r\n");
-    }
 }
 
 void PresenceSensor::csiCallback(void* context, wifi_csi_info_t* info) {
@@ -148,20 +185,23 @@ void PresenceSensor::csiCallback(void* context, wifi_csi_info_t* info) {
         !sensor->m_available.load() || sensor->m_queue == nullptr) {
         return;
     }
-    sensor->m_packets.fetch_add(1);
+    sensor->m_packets.fetch_add(1, std::memory_order_relaxed);
+    if (!sensor->m_captureEnabled.load(std::memory_order_relaxed)) return;
     if (info->len != kCsiBytes || info->rx_ctrl.rx_state != 0 ||
         info->rx_ctrl.cwb != 0 || info->rx_ctrl.secondary_channel != 0 ||
         info->rx_ctrl.sig_mode > 1) return;
 
+    const uint32_t now = millis();
+    if (!sensor->m_captureRate.accept(now)) return;
     CsiSample sample{};
-    sample.atMs = millis();
+    sample.atMs = now;
     sample.rssi = info->rx_ctrl.rssi;
     sample.channel = info->rx_ctrl.channel;
     sample.len = static_cast<uint16_t>(std::min<size_t>(info->len, kCsiBytes));
     std::memcpy(sample.source, info->mac, sizeof(sample.source));
     std::memcpy(sample.bytes, info->buf, sample.len);
     if (xQueueSend(sensor->m_queue, &sample, 0) != pdTRUE) {
-        sensor->m_dropped.fetch_add(1);
+        sensor->m_dropped.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
@@ -196,16 +236,19 @@ void PresenceSensor::loop(bool mechanismMoving) {
     if (!m_available.load()) return;
     const uint32_t now = millis();
     xSemaphoreTake(m_detectorMutex, portMAX_DELAY);
+    const uint32_t processingStart = micros();
 
     if ((m_haveBssid && WiFi.status() != WL_CONNECTED) ||
         static_cast<uint32_t>(now - m_lastApRefreshMs) >= 1000U) {
         updateAccessPoint();
+        m_memoryLimited = PresenceBudget::memoryLimited(m_memoryLimited,
+            heap_caps_get_free_size(MALLOC_CAP_8BIT),
+            heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
         m_lastApRefreshMs = now;
     }
 
     if (mechanismMoving != m_mechanismMoving) {
         m_mechanismMoving = mechanismMoving;
-        m_detector.setSuppressed(true);
         m_sampleBoundaryMs = now;
         if (m_queue != nullptr) xQueueReset(m_queue);
         if (!mechanismMoving) {
@@ -216,18 +259,27 @@ void PresenceSensor::loop(bool mechanismMoving) {
 
     if (!m_mechanismMoving && m_settling &&
         static_cast<int32_t>(now - m_suppressedUntilMs) >= 0) {
-        m_detector.setSuppressed(false);
         m_settling = false;
         m_sampleBoundaryMs = now;
         xQueueReset(m_queue);
     }
 
+    const bool suppressed = m_mechanismMoving || m_settling || m_memoryLimited;
+    if (m_detector.status(now).suppressed != suppressed) {
+        m_detector.setSuppressed(suppressed);
+        m_sampleBoundaryMs = now;
+        xQueueReset(m_queue);
+    }
+    m_captureEnabled.store(!suppressed && m_haveBssid, std::memory_order_relaxed);
+    updatePing(now);
+
     CsiSample sample{};
-    for (uint8_t processed = 0; processed < 8 &&
+    for (uint8_t processed = 0; processed < PresenceBudget::kQueueDepth &&
          xQueueReceive(m_queue, &sample, 0) == pdTRUE; ++processed) {
         processSample(sample);
     }
     m_detector.tick(millis());
+    m_maxProcessingUs = std::max<uint32_t>(m_maxProcessingUs, micros() - processingStart);
     xSemaphoreGive(m_detectorMutex);
 }
 
@@ -255,6 +307,7 @@ bool PresenceSensor::setAction(PresenceAction action) {
     if (value > static_cast<uint8_t>(PresenceAction::FADE_LIGHT_ON)) {
         return false;
     }
+    if (value == m_action.load()) return true; // no redundant flash commits
     Preferences preferences;
     if (!preferences.begin("presence", false)) {
         LOG("Failed to open presence settings storage\r\n");
@@ -280,6 +333,8 @@ PresenceStatus PresenceSensor::getStatus() const {
     if (m_detectorMutex == nullptr) return result;
     xSemaphoreTake(m_detectorMutex, portMAX_DELAY);
     const uint32_t now = millis();
+    result.memoryLimited = m_memoryLimited;
+    result.maxProcessingUs = m_maxProcessingUs;
     result.rssi = m_lastRssi;
     result.sampleAgeMs = !m_haveSample
         ? -1 : static_cast<int32_t>(std::min<uint32_t>(now - m_lastSampleMs, INT32_MAX));

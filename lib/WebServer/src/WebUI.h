@@ -1541,6 +1541,8 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 const presenceScore = document.getElementById('presence-score');
                 if (!presence.available) {
                     presenceState.textContent = 'Unavailable';
+                } else if (presence.memoryLimited) {
+                    presenceState.textContent = 'Paused — memory low';
                 } else if (presence.suppressed) {
                     presenceState.textContent = 'Suspended';
                 } else if (!presence.receiving) {

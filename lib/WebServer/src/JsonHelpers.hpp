@@ -136,6 +136,10 @@ public:
         out.print(status.calibrating ? "true" : "false");
         out.print(",\"suppressed\":");
         out.print(status.suppressed ? "true" : "false");
+        out.print(",\"memoryLimited\":");
+        out.print(status.memoryLimited ? "true" : "false");
+        out.print(",\"maxProcessingUs\":");
+        out.print(status.maxProcessingUs);
         out.print(",\"motion\":");
         out.print(status.motion ? "true" : "false");
         out.print(",\"occupied\":");

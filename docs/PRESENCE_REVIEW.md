@@ -1,5 +1,9 @@
 # Presence sensing review — 2026-09-16
 
+Current post-rebase memory/performance measurements and safeguards are in
+[PRESENCE_PERFORMANCE.md](PRESENCE_PERFORMANCE.md). Sizes and six-environment
+results below describe the pre-rebase review.
+
 Scope: commits `a8c20fd` and `8763cf4` on `feat/presence-sensing`, including
 CSI capture, calibration/classification, light automation, HTTP/settings UI,
 tests, and the ESP-IDF 5.4 migration assessment. Main was synced before reading

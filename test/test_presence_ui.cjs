@@ -92,6 +92,9 @@ test('stale or suppressed samples never display a live score or room-clear claim
     status = { ...ready, suppressed: true };
     await context.refreshPresenceStatus();
     assert.equal(nodes.get('presence-score').textContent, '—');
+    status = { ...ready, suppressed: true, memoryLimited: true };
+    await context.refreshPresenceStatus();
+    assert.match(nodes.get('presence-state').textContent, /memory low/);
 });
 
 test('hung requests time out, and polls schedule only after completion', async () => {

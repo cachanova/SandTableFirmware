@@ -33,7 +33,8 @@ unfinished calibration; start it again with the room empty.
 
 - `GET /api/presence` returns CSI availability, sample freshness, calibration,
   suppression, motion/occupied state, activity score, threshold, RSSI, and
-  packet counters.
+  packet counters, plus `memoryLimited` and the lifetime maximum sensing-loop
+  wall time `maxProcessingUs` (excluding mutex-acquisition wait).
 - `POST /api/presence/calibrate` starts a new empty-room calibration. It returns
   `409` while the mechanism is moving, during the five-second settling time,
   when calibration is already running, or when fresh AP CSI samples are unavailable.
@@ -94,6 +95,13 @@ the next step should be a second fixed ESP32 placed across the desired sensing
 zone or a dedicated mmWave sensor. Do not tune it into a motor safety interlock.
 
 ## Validation
+
+Capture uses a four-frame static queue, with a 20 Hz rate limit before copying
+in the Wi-Fi callback. Low heap or severe fragmentation suspends sensing and
+ping traffic; Settings reports this explicitly. Memory must recover before
+calibration or light automation can resume. See the
+[memory/performance checks](PRESENCE_PERFORMANCE.md) for measured budgets,
+thresholds, and remaining hardware tests.
 
 Host regression tests cover detector calibration, interrupted calibration,
 sampling gaps, invalid inputs, clock wrap, static-channel recovery, occupancy

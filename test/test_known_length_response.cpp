@@ -5,7 +5,7 @@
 #define PROGMEM
 #include "WebUI.h"
 #include "ManualUI.h"
-#include "TuningUI.h"
+#include "SettingsUI.h"
 #include "FileUI.h"
 #undef PROGMEM
 #include <cassert>
@@ -204,7 +204,7 @@ int main() {
         const std::pair<const char*, size_t> pages[] = {
             {WEB_UI_HTML, sizeof(WEB_UI_HTML) - 1},
             {MANUAL_UI_HTML, sizeof(MANUAL_UI_HTML) - 1},
-            {TUNING_UI_HTML, sizeof(TUNING_UI_HTML) - 1},
+            {SETTINGS_UI_HTML, sizeof(SETTINGS_UI_HTML) - 1},
             {FILE_UI_HTML, sizeof(FILE_UI_HTML) - 1}
         };
         for (const auto& page : pages) {

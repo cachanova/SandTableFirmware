@@ -611,6 +611,8 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
 
                 if (!presence.available) {
                     state.textContent = 'Unavailable';
+                } else if (presence.memoryLimited) {
+                    state.textContent = 'Paused — controller memory low';
                 } else if (presence.suppressed) {
                     state.textContent = 'Suspended while table moves';
                 } else if (!presence.receiving) {
