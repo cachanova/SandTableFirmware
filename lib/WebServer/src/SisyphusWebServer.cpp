@@ -194,7 +194,8 @@ void SisyphusWebServer::noteRequest(AsyncWebServerRequest *request) {
     if (m_requestTotal.fetch_add(1) == 0) {
         LOG("HTTP callbacks running on Core %d\r\n", xPortGetCoreID());
     }
-    const bool imageRequest = request->url() == "/api/pattern/image";
+    const bool imageRequest = request->url() == "/api/pattern/image" ||
+        request->url() == "/api/pattern/download";
     const bool bulkRequest = request->method() == HTTP_GET &&
         BulkResponseBudget::isBulkPath(request->url().c_str());
     // Keep each capture within std::function's small-object buffer. Capturing
@@ -447,6 +448,52 @@ void SisyphusWebServer::begin(PolarControl *polarControl,
     m_server.on("/api/files", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handleFileList(request);
+    });
+
+    // Export the exact installed THR through the same bounded SD worker as PNGs.
+    // The metadata index resolves both legacy flat and directory-based patterns.
+    m_server.on("/api/pattern/download", HTTP_GET, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        if (!requirePatternStorage(request)) return;
+        if (m_imageInflight > 1 || m_fileScanActive.load()) {
+            auto response = std_patch::make_unique<BufferedResponse>("text/plain", 64);
+            response->setCode(503);
+            response->addHeader("Retry-After", "1");
+            request->send(response.release());
+            return;
+        }
+        if (!request->hasParam("file") ||
+            !validSimpleFilename(request->getParam("file")->value(), ".thr")) {
+            request->send(400);
+            return;
+        }
+        const String filename = request->getParam("file")->value();
+        String path;
+        size_t size = 0;
+        {
+            SemaphoreGuard lock(m_cacheMutex);
+            const auto* entry = findFileEntryByBase(filename.substring(0, filename.length() - 4));
+            if (entry) {
+                path = entry->isDirectory ? "/patterns/" + entry->baseName + "/" + filename
+                                          : "/patterns/" + filename;
+                size = entry->size;
+            }
+        }
+        if (path.isEmpty()) {
+            request->send(m_fileListDirty ? 503 : 404);
+            return;
+        }
+        if (!size) {
+            auto response = request->beginResponse(200, "text/plain", "");
+            response->addHeader("Cache-Control", "no-store");
+            request->send(response);
+            return;
+        }
+        auto response = std_patch::make_unique<PatternImageResponse>(path, size, "text/plain");
+        if (!response->_sourceValid()) { request->send(503); return; }
+        response->addHeader("Cache-Control", "no-store");
+        response->addHeader("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+        request->send(response.release());
     });
 
     if (kEnablePatternImages) {

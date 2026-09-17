@@ -24,9 +24,9 @@ class PatternImageResponse : public KnownLengthResponse {
         }
     };
 public:
-    PatternImageResponse(const String& path, size_t size) {
+    PatternImageResponse(const String& path, size_t size, const char* contentType = "image/png") {
         _code = 200;
-        _contentType = "image/png";
+        _contentType = contentType;
         _contentLength = size;
         _sendContentLength = true;
         _chunked = false;
@@ -95,14 +95,14 @@ private:
             if (total != state->expected && !state->cancelled.load()) {
                 state->failed.store(true);
             }
-            LOG("Image read: %u bytes, SD %luus, wall %lums, SPI %luHz, stack %u\r\n",
+            LOG("Pattern file read: %u bytes, SD %luus, wall %lums, SPI %luHz, stack %u\r\n",
                 static_cast<unsigned>(total), static_cast<unsigned long>(readUs),
                 static_cast<unsigned long>(millis() - started),
                 static_cast<unsigned long>(spiClockDivToFrequency(SPI.getClockDivider())),
                 static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
         } catch (const std::bad_alloc&) {
             state->failed.store(true);
-            LOG("Image read deferred: allocation unavailable\r\n");
+            LOG("Pattern file read deferred: allocation unavailable\r\n");
         }
         State::release(state);
         vTaskDelete(nullptr);
