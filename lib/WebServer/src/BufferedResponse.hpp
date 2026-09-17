@@ -2,6 +2,7 @@
 #include <ESPAsyncWebServer.h>
 #include <esp_heap_caps.h>
 #include "ResponseBuffer.hpp"
+#include "KnownLengthResponse.hpp"
 
 static constexpr char kResponseUnavailable[] =
     "{\"success\":false,\"message\":\"Controller busy; retry shortly\"}";
@@ -9,7 +10,7 @@ static constexpr char kResponseUnavailable[] =
 // Arduino cbuf grows by as little as one byte, and its throwing new[] can
 // terminate the firmware under concurrent image/API traffic. Never use it for
 // assembled responses. Return a complete 503 document if allocation is refused.
-class BufferedResponse : public AsyncAbstractResponse, public Print {
+class BufferedResponse : public KnownLengthResponse, public Print {
 public:
     explicit BufferedResponse(const char* contentType, size_t = 0, bool control = false)
         : m_buffer(65536, control ? allocateControlBlock : allocateBlock) {

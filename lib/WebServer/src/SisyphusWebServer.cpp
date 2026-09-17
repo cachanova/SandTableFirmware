@@ -7,6 +7,7 @@
 #include "JsonHelpers.hpp"
 #include "BufferedResponse.hpp"
 #include "PatternImageResponse.hpp"
+#include "StaticContentResponse.hpp"
 #include "PolarUtils.hpp"
 #include "MakeUnique.hpp"
 #include <SDCard.hpp>
@@ -207,6 +208,21 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
     m_polarControl = polarControl;
     m_ledController = ledController;
 
+    // Fragmentation can refuse even a small response object while total heap
+    // is healthy. Keep a failed HTTP allocation from rebooting running motion.
+    m_server.addMiddleware([](AsyncWebServerRequest* request, ArMiddlewareNext next) {
+        try {
+            next();
+        } catch (const std::bad_alloc&) {
+            try {
+                request->send(503, "application/json", kResponseUnavailable);
+            } catch (const std::bad_alloc&) {
+                // There may not even be room for the SDK's small error reply.
+                request->abort();
+            }
+        }
+    });
+
     // Enable CORS
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
@@ -229,23 +245,23 @@ void SisyphusWebServer::begin(PolarControl *polarControl, LEDController *ledCont
 
     m_server.on("/tuning", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
-        request->send(200, "text/html",
+        request->send(new StaticContentResponse("text/html",
                       reinterpret_cast<const uint8_t *>(TUNING_UI_HTML),
-                      sizeof(TUNING_UI_HTML) - 1);
+                      sizeof(TUNING_UI_HTML) - 1));
     });
 
     m_server.on("/manual", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
-        request->send(200, "text/html",
+        request->send(new StaticContentResponse("text/html",
                       reinterpret_cast<const uint8_t *>(MANUAL_UI_HTML),
-                      sizeof(MANUAL_UI_HTML) - 1);
+                      sizeof(MANUAL_UI_HTML) - 1));
     });
 
     m_server.on("/files", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
-        request->send(200, "text/html",
+        request->send(new StaticContentResponse("text/html",
                       reinterpret_cast<const uint8_t *>(FILE_UI_HTML),
-                      sizeof(FILE_UI_HTML) - 1);
+                      sizeof(FILE_UI_HTML) - 1));
     });
 
     m_server.on("/api/status", HTTP_GET, [this](AsyncWebServerRequest *request) {
@@ -1201,9 +1217,9 @@ void SisyphusWebServer::writeSystemInfoJSON(Print& out) {
 }
 
 void SisyphusWebServer::handleRoot(AsyncWebServerRequest *request) {
-    request->send(200, "text/html",
+    request->send(new StaticContentResponse("text/html",
                   reinterpret_cast<const uint8_t *>(WEB_UI_HTML),
-                  sizeof(WEB_UI_HTML) - 1);
+                  sizeof(WEB_UI_HTML) - 1));
 }
 
 void SisyphusWebServer::handleStatus(AsyncWebServerRequest *request) {
@@ -2071,7 +2087,7 @@ void SisyphusWebServer::handleFileDelete(AsyncWebServerRequest *request) {
 void SisyphusWebServer::handleLEDBrightnessGet(AsyncWebServerRequest *request) {
     JsonDocument doc;
     uint8_t brightness = m_ledController->getBrightness();
-    doc["brightness"] = map(brightness, 0, 255, 0, 100);
+    doc["brightness"] = JsonHelpers::brightnessPercent(brightness);
 
     BufferedResponse *response = new BufferedResponse("application/json", kResponseBufferSize);
     serializeJson(doc, *response);

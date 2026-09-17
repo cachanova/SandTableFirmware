@@ -1398,13 +1398,29 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 return null;
             }
 
-            async loadSystemInfo() {
-                const data = await this.requestJSON('/system/info');
-                document.getElementById('heap').textContent = Math.round(data.heap / 1024) + ' KB';
-                document.getElementById('wifi-ssid').textContent = data.wifi.ssid;
-                document.getElementById('wifi-ip').textContent = data.wifi.ip;
-                document.getElementById('wifi-rssi').textContent = data.wifi.rssi + ' dBm';
-                return data;
+            loadSystemInfo() {
+                if (this.systemInfoRequest) return this.systemInfoRequest;
+                clearTimeout(this.systemInfoRetry);
+                // Startup images can briefly make the chip busy. Retry with backoff,
+                // sharing one request and the same bounded JSON deadline as status.
+                this.systemInfoRequest = this.requestJSON('/system/info').then(data => {
+                    document.getElementById('heap').textContent = Math.round(data.heap / 1024) + ' KB';
+                    document.getElementById('wifi-ssid').textContent = data.wifi.ssid;
+                    document.getElementById('wifi-ip').textContent = data.wifi.ip;
+                    document.getElementById('wifi-rssi').textContent = data.wifi.rssi + ' dBm';
+                    this.systemInfoRetryAttempt = 0;
+                    return data;
+                }).catch(error => {
+                    const attempt = this.systemInfoRetryAttempt || 0;
+                    if (attempt < 4) {
+                        this.systemInfoRetryAttempt = attempt + 1;
+                        this.systemInfoRetry = setTimeout(() => {
+                            this.loadSystemInfo().catch(() => {});
+                        }, 1000 * (2 ** attempt));
+                    }
+                    throw error;
+                }).finally(() => { this.systemInfoRequest = null; });
+                return this.systemInfoRequest;
             }
 
             updateUI(status) {

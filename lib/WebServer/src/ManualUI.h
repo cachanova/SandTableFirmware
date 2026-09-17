@@ -192,10 +192,21 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
     let queued = null, sending = false, sendTimer = 0, lastSentAt = 0, sendController = null;
     let commandGeneration = 0, stopInProgress = false;
     let rhoServiceMode = null;
+    let rhoServiceSupported = true, rhoServiceInFlight = false, rhoServiceInterval;
 
     async function refreshRhoServiceMode() {
+        if (!rhoServiceSupported || rhoServiceInFlight) return;
+        rhoServiceInFlight = true;
+        const request = new AbortController();
+        const timeout = setTimeout(() => request.abort(), 4000);
         try {
-            const response=await fetch('/api/rho-service/mode');
+            const response=await fetch('/api/rho-service/mode', {signal:request.signal});
+            if (response.status===404) {
+                rhoServiceSupported=false;
+                clearInterval(rhoServiceInterval);
+                document.getElementById('rhoServiceCard').hidden=true;
+                return;
+            }
             if (!response.ok) return;
             const data=await response.json();
             rhoServiceMode=data.mode;
@@ -205,6 +216,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
             document.getElementById('modeManual').classList.toggle('mode-active',data.mode==='manual');
             document.getElementById('modeCommissioning').classList.toggle('mode-active',data.mode==='commissioning');
         } catch (_) {}
+        finally { clearTimeout(timeout); rhoServiceInFlight=false; }
     }
 
     async function setRhoServiceMode(mode) {
@@ -369,7 +381,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
         } catch (_) { geometryReady=false; enabled=false; jogEnabled=false; updateControls(); }
     }
     const events=new EventSource('/api/stream'); events.addEventListener('pos',ev=>{ try { updatePosition(JSON.parse(ev.data)); } catch (_) {} });
-    window.addEventListener('resize',resize); resize(); initialPosition(); refreshStatus(); refreshRhoServiceMode(); setInterval(refreshStatus,1000); setInterval(refreshRhoServiceMode,1000); setInterval(()=>{ if(!geometryReady) initialPosition(); },2000);
+    window.addEventListener('resize',resize); resize(); initialPosition(); refreshStatus(); refreshRhoServiceMode(); setInterval(refreshStatus,1000); rhoServiceInterval=setInterval(refreshRhoServiceMode,1000); setInterval(()=>{ if(!geometryReady) initialPosition(); },2000);
 })();
 </script>
 </body>

@@ -4,10 +4,11 @@
 #include <freertos/stream_buffer.h>
 #include <atomic>
 #include <new>
+#include "KnownLengthResponse.hpp"
 
 // SD reads can take hundreds of milliseconds on older cards. AsyncTCP's
 // callbacks must never wait for them: they also service every control request.
-class PatternImageResponse : public AsyncAbstractResponse {
+class PatternImageResponse : public KnownLengthResponse {
     struct State {
         State(const String& filename, size_t size) : path(filename), expected(size) {}
         ~State() { if (stream) vStreamBufferDelete(stream); }

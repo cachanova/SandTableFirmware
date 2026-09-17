@@ -68,9 +68,10 @@ and homing procedure are unchanged. The final branch is rebased onto
   wait for prefetched bytes avoids repeated TCP poll delays when the stream
   is briefly empty, without doing SD I/O in the network callback. Final full
   image transfers took 0.84–2.11 seconds for 60–179 KB and matched the originals
-  byte for byte. ESPAsyncWebServer 3.9.5 consumes in-flight
-  credits even on `RESPONSE_TRY_AGAIN`, which can permanently stall background
-  streams. Its optional credit gate is disabled; TCP still provides backpressure.
+  byte for byte in the earlier isolated run. ESPAsyncWebServer 3.9.5 consumes
+  in-flight credits even on `RESPONSE_TRY_AGAIN`, which can stall background
+  streams. Project-owned known-length responses now handle this directly; the
+  SDK retains its default configuration for other response types.
 - USB serial captured a second allocation panic in the pattern-index vector
   during uploads and rescans: 47 KB total free memory but only a 1.7 KB largest
   block. The cache and sorted index now use segmented deques, preserve the
@@ -128,9 +129,14 @@ node test/test_pattern_previews_ui.cjs
 node test/test_canvas_trace_ui.cjs
 node test/test_homing_abort_ui.cjs
 node test/test_thumbnail_upload_ui.cjs
+node test/test_ui_recovery.cjs
 g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
   -I lib/WebServer/src test/test_response_buffer.cpp -o /tmp/test_response_buffer
 /tmp/test_response_buffer
+g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -Itest/support/known_length_response -Ilib/WebServer/src \
+  test/test_known_length_response.cpp -o /tmp/test_known_length_response
+/tmp/test_known_length_response
 ```
 
 The motion suite includes synthetic cases and all 24 repository pattern files.
@@ -162,8 +168,99 @@ median 27 ms / maximum 115 ms. Scrolling fetched additional previews, thumbnail
 backgrounds matched the canvas (rgb 238,234,222), and size labels were absent.
 Stationary SSE positions and the center ball rendered correctly, with maximum
 render time 0.2 ms. The successful run had no JavaScript or API errors. An
-initial navigation failed to initialize within 20 seconds; a fresh retry passed.
-This transient first navigation is not yet explained.
+initial navigation failed to initialize within 20 seconds. The later expanded
+suite traced this to attaching Chromium to its Cast extension background target
+instead of the page; choosing the page target fixes the harness.
+
+## Expanded no-motor operation tests
+
+At the operator's request, tests were extended with motors disconnected. The
+normal firmware passed 125 API checks over 190 requests (41.3 ms median,
+769 ms maximum). These covered all four pages, diagnostics, rejected unhomed
+motion, input validation, speed and lighting, tuning preservation, playlist
+editing/save/load, uploads, 80-character filenames, original/thumbnail image
+replacement, cache validation, empty files, and recursive fixture deletion.
+The first attempt was interrupted by a POWERON_RESET when serial capture was
+reopened; no panic was recorded. The repeat with serial left open had no reset.
+The unavailable RHO-service endpoint correctly returns 404 in production, and
+homing with the missing driver returns a failure instead of pretending success.
+
+A temporary, isolated bench worktree then assumed a logical origin and enabled
+both planner axes while retaining truthful driver-availability reporting. It
+applied rho 20 mm/s, 100 mm/s², 1,000 mm/s³ and theta 3 rad/s, 10 rad/s²,
+100 rad/s³ in RAM only, with speed 10. No settings were saved at these limits.
+This exercises actual SD loading, planner execution, timer counters and SSE on
+the ESP32, but does not verify physical motor motion or sensorless homing.
+The bench changes are excluded from the production source.
+
+The bench passed 45 checks over 874 requests, including completed-segment and
+position assertions, pause/stationary/resume, replacement while paused/running,
+live speed changes, all six clearing choices, twenty rapid replacements, an
+immediate stop after start, manual movement, distinct-file automatic playlist
+handoff, loop/next/previous/skip, playlist pause/stop, and clearing before the
+second playlist entry. Full clearing completion was not awaited. Six diagnostic
+503 responses recovered within bounded read-only retries. Start acknowledgements
+were median 35.11 ms and maximum 75.46 ms; there was no unplanned reset.
+
+The live bench browser captured 383 actual chip position events in 28 seconds.
+The 800-pixel guide was visible, the path contained 2,025 drawn pixels, and
+rendering took at most 0.3 ms per frame. SSE coordinates were a median 1.17 and
+95th-percentile 2.63 canvas pixels from the guide strokes. The screenshot's
+ball center matched its expected displayed position within 0.8 pixel. This
+checks actual chip-to-browser behavior with no synthetic browser coordinates.
+
+Expanded checks exposed three additional fixes: rounded brightness readback
+(now all 101 percentages round-trip), bounded retries for Machine information
+when startup returns 503, and stopping unsupported RHO-service polling after
+404 while keeping normal manual-page status updates. Six local UI suites pass,
+including focused regressions for the latter two failures.
+
+Mixed uploads, twelve images, diagnostics and running planner traffic then
+exposed an incomplete status body and a status timeout. There was no reboot or
+planner queue underrun. Local inspection identified ESPAsyncWebServer 3.9.5
+marking the response finished before its final buffered bytes are accepted by
+TCP; a partial/zero TCP write can therefore close the response prematurely.
+`KnownLengthResponse` now retains outgoing bytes through partial/zero writes,
+and completes only after TCP accepts them. JSON, images, and all four HTML pages
+use it. A repeated run passed 490 requests, 372 status polls, and 2,268 SSE events
+without transport failures; status median was 27.61 ms and maximum 706.87 ms.
+Sixty-two explicit busy responses recovered within bounded read-only retries.
+Planner queue underruns remained zero. Twelve full images under this concurrent
+load took 3.78–11.04 seconds.
+
+A subsequent pacing experiment exposed another allocation panic: the response
+object's inline 1 KB staging array required too large a contiguous allocation.
+The retained backtrace resolved to `operator new` in `handleStatus`. The response
+now has a 256-byte inline fallback and attempts an optional, nonthrowing 1 KB
+allocation once. HTTP handlers catch allocation exceptions and return 503, or
+abort the request if even that allocation is unavailable. Header assembly also
+handles allocation failure. Native tests cover partial headers/bodies, final
+zero writes, transient send failure, cancellation, TRY_AGAIN, allocation refusal,
+and byte-identical delivery of all four actual HTML pages, with ASAN/UBSAN.
+Final on-chip retesting passed: 354 requests, 245 successful status polls,
+1,524 position events across two SSE clients, and twelve byte-identical images
+with uploads and index refreshes. There were no transport failures, resets,
+new motion errors, or planner underruns. Forty-two explicit busy responses
+recovered within bounded read-only retries. Status latency was median 32.75 ms
+and maximum 1,525.87 ms; images took 1.65–12.04 seconds under this load.
+The two recorded driver errors are expected with the RHO drivers disconnected.
+The final planner queue minimum was 510, and step timing reported no outliers.
+
+Normal production firmware was restored and verified with `benchMotionTest=false`.
+Saved tuning matched the pre-test snapshot exactly, speed returned to 5 and
+brightness to 50, both playlist collections were empty, and all 29 original
+patterns plus 27 thumbnails remained. Test fixtures were removed. Diagnostics
+were archived before testing the error/log clear controls.
+
+The final production Chromium suite passed all 31 checks across four pages.
+Home became ready in 1,059 ms, manual in 313 ms, tuning in 542 ms, and files in
+313 ms. Machine information populated; previews loaded on scroll, matched the
+canvas sand color, and displayed no size labels. Selection took 0.5 ms. Idle
+SSE and the center ball worked. The manual page requested the unsupported
+RHO-service capability exactly once while continuing normal status polling.
+There were no JavaScript exceptions, transport failures, or unexpected API
+errors. Browser upload/abort failure checks were locally mocked; actual uploads
+and emergency stop were covered by the chip suites above. Serial is released.
 
 ## Motor-connected verification still required
 
@@ -175,22 +272,25 @@ success. It observed no motion errors or reset; diagnostic requests retried
 11 explicit busy responses. Later thumbnail-upload/rescan stress exposed the
 index allocation crash and the separate network loss described above.
 
-USB testing is complete and serial has been released for motor reconnection.
-With the rho driver absent, firmware correctly refused homing. Remaining checks:
+The no-motor suite verifies the live SSE overlay and ball trace, uploads/rescans,
+80-character filenames, empty-file rejection, all pattern replacement/clearing
+choices, and automatic playlist handoff. An active emergency stop also passed:
+playback canceled, the assumed origin was invalidated, restart returned 409,
+and a second stop was idempotent.
 
-1. Restore motor connections, allow normal homing, then verify replacing a
-   running pattern with and without clearing and automatic playlist handoff.
-2. Verify actual live SSE, guide overlay, and ball trace in Chromium. The local
-   render above does not substitute for this check.
-3. Validate upload/rescan, an 80-character filename, and empty-file rejection.
-   Remove `codex_response_probe.thr` and any further test-only files. Restore
-   the original empty playlist with loop disabled and clearing enabled.
+Physical motor movement and sensorless homing still require connected motors.
+The accelerated bench firmware was temporary and is excluded from production.
+Full clearing completion was not awaited.
 
 Session measurements, serial captures, and host scripts are under
 `/tmp/sisyphus-responsiveness/`. `deployed-sleep-default.elf` matches the index
 allocation panic; `panic.elf` matches the earlier cbuf allocation panic. Retain
 the matching ELF for each firmware image when decoding additional failures.
 
-`deployed-final.elf` matches the final USB-tested build;
-`final-usb-image-stress.json`, `core0-bulk-stress.json`, and
-`ui-readonly-report.json` contain the corresponding measurements.
+`deployed-final.elf` matches the earlier core-isolation build; its measurements
+are in `final-usb-image-stress.json`, `core0-bulk-stress.json`, and
+`ui-readonly-report.json`. The expanded suite artifacts are in `no-motor/`:
+`api-suite.json`, `bench-suite.json`, `bench-live-browser-report.json`,
+`load-final.json`, and `emergency-stop.json`. `bench-four-chunks.elf` matches the
+response-object allocation panic; `bench-final.elf` and `production-final.elf`
+match the corrected bench and production builds.

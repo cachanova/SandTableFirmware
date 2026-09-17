@@ -8,11 +8,16 @@
 
 class JsonHelpers {
 public:
+    static int brightnessPercent(uint8_t brightness) {
+        // Round the PWM value back to percent so setting 50 reports 50, not 49.
+        return (static_cast<unsigned>(brightness) * 100U + 127U) / 255U;
+    }
+
     static void writeStatusJSON(Print& out, PolarControl* polarControl, LEDController* ledController, const String& currentPattern, const String& clearingPattern, const String& queuedPattern, uint32_t fileListRevision) {
         String state = getStateString(polarControl->getState());
         int progress = polarControl->getProgressPercent();
         uint8_t brightness = ledController->getBrightness();
-        int brightnessPercent = map(brightness, 0, 255, 0, 100);
+        int brightnessPercent = JsonHelpers::brightnessPercent(brightness);
         uint8_t speed = polarControl->getSpeed();
         uint32_t heap = ESP.getFreeHeap();
         uint32_t uptime = millis() / 1000;
