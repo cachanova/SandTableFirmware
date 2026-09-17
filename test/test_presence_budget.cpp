@@ -69,7 +69,7 @@ int main() {
             assert(CsiFeatures::extract(bytes, sizeof(bytes), powers));
             assert(detector.addPowers(powers, CsiFeatures::kBins, now));
             const auto status = detector.status(now);
-            automation.update(status.motion, brightness, now, brightness);
+            automation.update(status.motion, brightness, 128, now, brightness);
         }
         detector.setSuppressed(true);
         detector.setSuppressed(false);

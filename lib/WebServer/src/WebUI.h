@@ -1047,6 +1047,16 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 await this.pollStatusOnce();
             }
 
+            syncBrightnessControl(status) {
+                const slider = document.getElementById('brightness-slider');
+                const target = Number.isFinite(status.ledTargetBrightness)
+                    ? status.ledTargetBrightness : status.ledBrightness;
+                if (document.activeElement !== slider) {
+                    slider.value = target;
+                    document.getElementById('brightness-value').textContent = target + '%';
+                }
+            }
+
             async setBrightness(value) {
                 const formData = new FormData();
                 formData.append('brightness', value);
@@ -1561,11 +1571,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 presenceScore.textContent = presence.calibrated && presence.receiving &&
                     !presence.suppressed && Number.isFinite(presence.score)
                     ? `${presence.score.toFixed(2)}× threshold` : '—';
-                const slider = document.getElementById('brightness-slider');
-                if (document.activeElement !== slider) {
-                    slider.value = status.ledBrightness;
-                    document.getElementById('brightness-value').textContent = status.ledBrightness + '%';
-                }
+                this.syncBrightnessControl(status);
 
                 const speedSlider = document.getElementById('speed-slider');
                 if (document.activeElement !== speedSlider && status.speed !== undefined) {

@@ -6,6 +6,7 @@
 #include "FileUI.h"
 #include "JsonHelpers.hpp"
 #include "BufferedResponse.hpp"
+#include "BulkResponseBudget.hpp"
 #include "PatternImageResponse.hpp"
 #include "StaticContentResponse.hpp"
 #include "PolarUtils.hpp"
@@ -193,6 +194,8 @@ void SisyphusWebServer::noteRequest(AsyncWebServerRequest *request) {
         LOG("HTTP callbacks running on Core %d\r\n", xPortGetCoreID());
     }
     const bool imageRequest = request->url() == "/api/pattern/image";
+    const bool bulkRequest = request->method() == HTTP_GET &&
+        BulkResponseBudget::isBulkPath(request->url().c_str());
     // Keep each capture within std::function's small-object buffer. Capturing
     // this + request + imageRequest would allocate on every ordinary request.
     if (request->url() == "/api/files/upload") {
@@ -201,14 +204,16 @@ void SisyphusWebServer::noteRequest(AsyncWebServerRequest *request) {
             m_requestInflight.fetch_sub(1);
         });
     } else {
-        request->onDisconnect([this, imageRequest]() {
+        request->onDisconnect([this, imageRequest, bulkRequest]() {
             if (imageRequest) m_imageInflight.fetch_sub(1);
+            if (bulkRequest) m_bulkInflight.fetch_sub(1);
             m_requestInflight.fetch_sub(1);
         });
     }
     // Install the potentially allocating callback before publishing admission.
     m_requestInflight.fetch_add(1);
     if (imageRequest) m_imageInflight.fetch_add(1);
+    if (bulkRequest) m_bulkInflight.fetch_add(1);
 }
 
 void SisyphusWebServer::begin(PolarControl *polarControl,
@@ -220,8 +225,23 @@ void SisyphusWebServer::begin(PolarControl *polarControl,
 
     // Fragmentation can refuse even a small response object while total heap
     // is healthy. Keep a failed HTTP allocation from rebooting running motion.
-    m_server.addMiddleware([](AsyncWebServerRequest* request, ArMiddlewareNext next) {
+    m_server.addMiddleware([this](AsyncWebServerRequest* request, ArMiddlewareNext next) {
         try {
+            // AsyncTCP serializes these handlers. noteRequest publishes the
+            // slot before this callback returns; disconnect releases it even
+            // on cancellation or serialization failure. Keep large TCP bodies
+            // from overlapping an image's SD worker/stream allocation.
+            if (request->method() == HTTP_GET &&
+                BulkResponseBudget::isBulkPath(request->url().c_str()) &&
+                !BulkResponseBudget::canStart(m_bulkInflight.load(),
+                    heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                    heap_caps_get_largest_free_block(MALLOC_CAP_8BIT))) {
+                std::unique_ptr<AsyncWebServerResponse> response(
+                    request->beginResponse(503, "application/json", kResponseUnavailable));
+                response->addHeader("Retry-After", "1");
+                request->send(response.release());
+                return;
+            }
             next();
         } catch (const std::bad_alloc&) {
             try {
@@ -949,8 +969,9 @@ void SisyphusWebServer::updatePresenceAutomation() {
     m_presenceAutomation.setAction(m_presenceSensor->getAction());
     uint8_t nextBrightness = m_ledController->getBrightness();
     if (m_presenceAutomation.update(status.motion, nextBrightness,
+                                    m_ledController->getTargetBrightness(),
                                     millis(), nextBrightness)) {
-        m_ledController->setBrightness(nextBrightness);
+        m_ledController->setOutputBrightness(nextBrightness);
     }
 }
 
@@ -1354,9 +1375,11 @@ void SisyphusWebServer::handlePresenceSettingsGet(
         PresenceAction::FADE_LIGHT_ON ? "fade_light_on" : "none";
     auto response = std_patch::make_unique<BufferedResponse>("application/json");
     response->printf(
-        "{\"action\":\"%s\",\"fadeDurationMs\":%lu,\"targetBrightness\":100}",
+        "{\"action\":\"%s\",\"fadeDurationMs\":%lu,\"targetBrightness\":%u}",
         action,
-        static_cast<unsigned long>(PresenceAutomation::kFadeDurationMs));
+        static_cast<unsigned long>(PresenceAutomation::kFadeDurationMs),
+        static_cast<unsigned>(JsonHelpers::brightnessPercent(
+            m_ledController->getTargetBrightness())));
     request->send(response.release());
 }
 
@@ -2271,9 +2294,11 @@ void SisyphusWebServer::handleFileDelete(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handleLEDBrightnessGet(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
     JsonDocument doc;
     uint8_t brightness = m_ledController->getBrightness();
     doc["brightness"] = JsonHelpers::brightnessPercent(brightness);
+    doc["targetBrightness"] = JsonHelpers::brightnessPercent(m_ledController->getTargetBrightness());
 
     auto response = std_patch::make_unique<BufferedResponse>("application/json", kResponseBufferSize);
     if (doc.overflowed()) throw std::bad_alloc();

@@ -22,6 +22,17 @@ function setup(fetch) {
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
 (async () => {
     {
+        const h = setup();
+        h.controller.syncBrightnessControl({ledBrightness: 10, ledTargetBrightness: 40});
+        assert.equal(h.elements['brightness-slider'].value, 40);
+        assert.equal(h.elements['brightness-value'].textContent, '40%');
+        h.controller.syncBrightnessControl({ledBrightness: 40, ledTargetBrightness: 0});
+        assert.equal(h.elements['brightness-slider'].value, 0);
+        h.controller.syncBrightnessControl({ledBrightness: 50});
+        assert.equal(h.elements['brightness-slider'].value, 50);
+        console.log('PASS: slider tracks the selected target, preserves zero, and supports older status responses');
+    }
+    {
         let signal;
         const h = setup(async (url, opts) => {
             signal = opts.signal;

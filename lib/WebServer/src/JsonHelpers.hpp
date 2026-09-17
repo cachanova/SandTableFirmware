@@ -47,6 +47,8 @@ public:
         out.print(clearingProgress);
         out.print(",\"ledBrightness\":");
         out.print(brightnessPercent);
+        out.print(",\"ledTargetBrightness\":");
+        out.print(JsonHelpers::brightnessPercent(ledController->getTargetBrightness()));
         out.print(",\"speed\":");
         out.print(speed);
         out.print(",\"heap\":");

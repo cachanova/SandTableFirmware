@@ -28,6 +28,11 @@ void LEDController::begin() {
 }
 
 void LEDController::setBrightness(uint8_t brightness) {
+    m_targetBrightness.store(brightness);
+    setOutputBrightness(brightness);
+}
+
+void LEDController::setOutputBrightness(uint8_t brightness) {
     m_brightness = brightness;
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
     ledcWrite(m_pin, m_brightness);

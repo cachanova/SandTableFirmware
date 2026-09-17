@@ -55,7 +55,11 @@ learned noise threshold is retained. That frame cannot detect a walk-up by
 itself. These are experimental heuristics, not Espressif's packaged algorithm.
 
 When **Fade light on** is selected, a new calibrated motion event fades the
-light from its current level to 100% over two seconds. Sustained motion does not
+light from its current level to the brightness selected on the main page over
+two seconds. A 0% selection keeps it off. The slider shows the selected target,
+while status reports the live output separately; fade updates never overwrite
+the target. Like the existing brightness control, the selection is RAM-only
+and resets to the normal 50% default after reboot. Sustained motion does not
 continually retrigger the fade, and a manual brightness change cancels a fade
 already in progress and consumes the current motion event. Selecting **Do
 nothing**, losing valid samples, or starting calibration also cancels a fade.

@@ -250,7 +250,7 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
             </div>
             <p class="presence-feedback" id="presence-status-note">Presence actions are disabled until empty-room calibration completes.</p>
             <p class="presence-feedback" id="presence-feedback" role="status" aria-live="polite"></p>
-            <p class="test-description">Fade light on raises brightness to 100% over two seconds. Manual brightness changes cancel the fade. There is no automatic turn-off. This experimental sensor detects movement, not reliable stationary occupancy.</p>
+            <p class="test-description">Fade light on raises brightness to the level selected on the main page over two seconds. A setting of 0% keeps the light off. Manual brightness changes cancel the fade. There is no automatic turn-off. This experimental sensor detects movement, not reliable stationary occupancy.</p>
         </section>
 
         <section class="block commissioning">

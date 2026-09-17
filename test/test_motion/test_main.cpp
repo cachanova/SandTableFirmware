@@ -1593,25 +1593,47 @@ bool testPresenceLightAutomation() {
     uint8_t brightness = 0;
     bool passed = true;
 
-    passed &= !automation.update(true, brightness, 100, brightness);
+    passed &= !automation.update(true, brightness, 255, 100, brightness);
     passed &= !automation.isFading();
-    automation.update(false, brightness, 200, brightness);
+    automation.update(false, brightness, 255, 200, brightness);
 
     automation.setAction(PresenceAction::FADE_LIGHT_ON);
-    passed &= !automation.update(true, brightness, 1000, brightness);
+    passed &= !automation.update(true, brightness, 255, 1000, brightness);
     passed &= automation.isFading();
-    passed &= automation.update(true, brightness, 2000, brightness);
+    passed &= automation.update(true, brightness, 255, 2000, brightness);
     passed &= brightness >= 127 && brightness <= 128;
-    passed &= automation.update(true, brightness, 3000, brightness);
-    passed &= brightness == PresenceAutomation::kFadeTarget;
+    passed &= automation.update(true, brightness, 255, 3000, brightness);
+    passed &= brightness == 255;
     passed &= !automation.isFading();
 
-    passed &= !automation.update(true, 20, 3100, brightness);
-    automation.update(false, 20, 3200, brightness);
-    automation.update(true, 20, 3300, brightness);
+    passed &= !automation.update(true, 20, 255, 3100, brightness);
+    automation.update(false, 20, 255, 3200, brightness);
+    automation.update(true, 20, 255, 3300, brightness);
     passed &= automation.isFading();
     automation.cancelFade();
-    passed &= !automation.update(true, 20, 3400, brightness);
+    passed &= !automation.update(true, 20, 255, 3400, brightness);
+    passed &= !automation.isFading();
+
+    // A selected 40% target caps the fade instead of going to full PWM.
+    brightness = 0;
+    automation.update(false, brightness, 102, 4000, brightness);
+    automation.update(true, brightness, 102, 4100, brightness);
+    passed &= automation.update(true, brightness, 102, 5100, brightness);
+    passed &= brightness == 51;
+    passed &= automation.update(true, brightness, 102, 6100, brightness);
+    passed &= brightness == 102 && !automation.isFading();
+    // A zero target stays off; at or above the target must not start a fade.
+    automation.update(false, 0, 0, 6200, brightness);
+    passed &= !automation.update(true, 0, 0, 6300, brightness);
+    passed &= !automation.isFading();
+    automation.update(false, 150, 102, 6400, brightness);
+    passed &= !automation.update(true, 150, 102, 6500, brightness);
+    passed &= !automation.isFading();
+    // Target changes cancel a running fade without writing the obsolete target.
+    automation.update(false, 0, 102, 6600, brightness);
+    automation.update(true, 0, 102, 6700, brightness);
+    passed &= automation.isFading();
+    passed &= !automation.update(true, 20, 20, 7000, brightness);
     passed &= !automation.isFading();
 
     std::cout << (passed ? "PASS" : "FAIL")
@@ -1699,20 +1721,20 @@ bool testPresenceRecovery() {
     automation.setAction(PresenceAction::FADE_LIGHT_ON);
     uint8_t brightness = 0;
     const uint32_t start = UINT32_MAX - 1000;
-    automation.update(true, brightness, start, brightness);
-    automation.update(false, brightness, start + 500, brightness);
-    automation.update(true, brightness, start + 1000, brightness);
-    automation.update(true, brightness, start + 2000, brightness);
+    automation.update(true, brightness, 255, start, brightness);
+    automation.update(false, brightness, 255, start + 500, brightness);
+    automation.update(true, brightness, 255, start + 1000, brightness);
+    automation.update(true, brightness, 255, start + 2000, brightness);
     passed &= brightness == 255 && !automation.isFading();
-    automation.update(false, 0, 3000, brightness);
-    automation.update(true, 0, 3100, brightness);
+    automation.update(false, 0, 255, 3000, brightness);
+    automation.update(true, 0, 255, 3100, brightness);
     automation.setAction(PresenceAction::NONE);
     passed &= !automation.isFading();
     automation.setAction(PresenceAction::FADE_LIGHT_ON);
-    passed &= !automation.update(true, 0, 3200, brightness);
-    automation.update(false, 0, 3300, brightness);
+    passed &= !automation.update(true, 0, 255, 3200, brightness);
+    automation.update(false, 0, 255, 3300, brightness);
     automation.cancelFade(); // manual override before a pending active event
-    passed &= !automation.update(true, 0, 3400, brightness);
+    passed &= !automation.update(true, 0, 255, 3400, brightness);
     std::cout << (passed ? "PASS" : "FAIL") << ": presence recovery" << std::endl;
     return passed;
 }

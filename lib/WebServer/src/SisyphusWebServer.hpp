@@ -175,6 +175,7 @@ private:
     std::atomic<uint32_t> m_requestTotal{0};
     std::atomic<uint32_t> m_requestInflight{0};
     std::atomic<uint32_t> m_imageInflight{0};
+    std::atomic<uint32_t> m_bulkInflight{0};
     std::atomic<uint32_t> m_lastUploadActivity{0};
 
     std::atomic<bool> m_fileListDirty; // Flag to trigger regeneration of cache
