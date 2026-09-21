@@ -370,6 +370,10 @@ private:
   std::atomic<bool> m_thetaDriverConnected{false};
   std::atomic<bool> m_rhoDriverConnected{false};
   std::atomic<bool> m_rhoCompanionDriverConnected{false};
+  // Startup topology remains fixed until reboot. A driver that disappears
+  // during motion must fail verification, not silently become optional.
+  std::atomic<bool> m_rhoDriverPresent{false};
+  std::atomic<bool> m_rhoCompanionDriverPresent{false};
 #if defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
   std::atomic<bool> m_commissioningStartPermit{false};
 #endif

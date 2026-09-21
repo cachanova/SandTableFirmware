@@ -58,18 +58,18 @@ static constexpr uint8_t kUartTxPin = 26;
 // companion uses address 1. Both receive the shared RHO STEP/DIR signals.
 static constexpr uint8_t kRhoDriverAddress = 0;
 static constexpr uint8_t kRhoCDriverAddress = 1;
-// The fitted CW socket presents the opposite DIR level to the main socket.
-// Compensate with SHAFT so their effective STEP directions match (2026-09-20).
+// Operator-requested CW reversal (2026-09-20). Opposite idle DIR readings
+// prompted this setting; they do not prove correct dynamic DIR wiring.
 static constexpr bool kRhoCompanionDirectionInverted = true;
 static constexpr uint8_t kThetaDriverAddress = 2;
-// The reinstalled address-1 motor is enabled in paired service/full manual images.
-// Main-only images keep its bridge off until paired tuning is qualified.
+// Full images probe address 1 and enable CW when fitted. An empty socket does
+// not block main RHO. Main-only images keep a fitted companion bridge off.
 #ifdef SISYPHUS_RHO_PAIRED_SERVICE
 #ifndef SISYPHUS_RHO_COMMISSIONING
 #error "Paired rho service requires commissioning mode (no automatic homing)"
 #endif
 #endif
-#if defined(SISYPHUS_RHO_PAIRED_SERVICE) || defined(SISYPHUS_FULL_MANUAL)
+#if defined(SISYPHUS_RHO_PAIRED_SERVICE) || defined(SISYPHUS_FULL_MANUAL) || defined(SISYPHUS_FULL_AUTO)
 static constexpr bool kRhoCompanionMotorEnabled = true;
 #else
 static constexpr bool kRhoCompanionMotorEnabled = false;

@@ -174,7 +174,7 @@ const char MANUAL_UI_BODY[] PROGMEM = R"rawliteral(
                 </div>
             </section>
             <section class="jog-card">
-                <h2>Rho · Both motors</h2>
+                <h2>Rho · Connected motors</h2>
                 <p>Jog main and counterweight together.</p>
                 <div class="jog-grid">
                     <button class="jog" data-axis="rho" data-delta="-1">In 1 mm</button>

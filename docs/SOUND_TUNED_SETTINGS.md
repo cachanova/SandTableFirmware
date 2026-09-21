@@ -1,5 +1,24 @@
 # Selected sound-tuned settings
 
+## Full automatic image with optional CW (2026-09-20)
+
+The current requested image is `esp32dev_full_auto` (USB) or
+`esp32dev_full_auto_ota` (Wi-Fi). It includes theta, main RHO, and automatic
+detection of the optional CW driver. Automatic boot homing is enabled again.
+With the CW socket empty, boot and manual Home home main RHO only; theta,
+main RHO jogging, and normal motion after homing remain available. CW controls
+and its position cursor remain unavailable until its driver is detected.
+
+After installing CW with power off, the next startup detects and configures it
+with the shared RHO tuning and includes it in homing, CW first then main.
+Driver participation is fixed for that boot: losing communication with a
+previously detected driver during homing remains a failure. Missing CW does
+not require disable verification, phase holding, or profile writes to its empty
+socket. A detected driver whose configuration fails is not treated as absent.
+
+The manual build below remains available for debugging without boot homing.
+All these full builds use the same sound and dedicated homing profiles.
+
 ## Full manual image (2026-09-20)
 
 The operator requested the full application on the replacement ESP32. Use
@@ -11,7 +30,7 @@ axes. RHO's fallback hold request is 200 mA, matching the accepted saved value.
 
 Press Home from any stationary starting position to run sensorless homing;
 no manual positioning, Set Home, or pre-confirmed zero is required. The
-counterweight homes first, then main RHO, using the same dedicated profile
+counterweight, when detected, homes first, then main RHO, using the same dedicated profile
 and unknown-position entry (1 mm inward probe, 6 mm outward runway). Each
 motor must obtain three agreeing contacts; travel limits, UART checks, the
 90-second cycle deadline, and Abort homing remain active. Successful homing
@@ -21,11 +40,27 @@ paired qualification is still pending. Boot itself never starts homing.
 
 ### Independent jogging and CW direction
 
-The installed CW socket reports the opposite DIR input from main RHO.
-`kRhoCompanionDirectionInverted = true` compensates with the CW driver's
-SHAFT bit, so effective STEP directions match. This correction is applied
-and checked during boot, profile changes, homing, and recovery. Main RHO's
-direction is unchanged. Physical direction still needs operator observation.
+The operator requested reversing CW after idle snapshots showed main DIR low
+and CW DIR high. `kRhoCompanionDirectionInverted = true` applies that reversal
+through the CW driver's SHAFT bit during boot, profile changes, homing, and
+recovery; main RHO is unchanged. Those snapshots verified the configured
+inversion only: they do not prove that either DIR input follows In/Out commands
+or that the board intentionally inverts CW DIR. The subsequent report that
+In/Out does not reverse motion requires a dynamic GPIO25-to-driver-input check.
+A fixed SHAFT setting cannot repair a stuck DIR signal.
+
+Read-only driver dumps now include `controller.dirPin`, `dirOutputLatch`,
+`dirOutputEnabled`, `dirMatrixSignal`, and `dirMatrixInverted`, alongside
+TMC `inputs.direction`. The controller latch is not an electrical pad-voltage
+measurement. Compare In versus Out at rest after bounded jogs; a toggling latch
+with a fixed driver input narrows the fault to the output pad/interconnect/driver
+input and needs an electrical measurement to distinguish them.
+
+Driver dumps also attempt a live read when startup detection failed. Full dumps
+include `availableAtBoot` and a `uartProbe` with request-echo, reply-length,
+framing, and CRC evidence from the last IOIN read attempt. If the local echo
+is missing or mismatched, the reply stage was not reached. These reads do not
+configure drivers or change motion availability.
 
 The Manual page offers paired RHO, main-only, and CW-only ±1/10/100 mm jogs.
 An independent jog isolates the other driver from shared STEP pulses while

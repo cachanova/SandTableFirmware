@@ -24,7 +24,11 @@ vm.runInContext(`let enabled=false,jogEnabled=false,geometryReady=true,stopInPro
  await vm.runInContext('refreshStatus()',context);
  assert(buttons.filter(b=>b.dataset.axis==='rho-cw').every(b=>b.disabled));
  assert(buttons.filter(b=>b.dataset.axis==='rho-main').every(b=>!b.disabled));
+ assert(buttons.filter(b=>['theta','rho'].includes(b.dataset.axis)).every(b=>!b.disabled));
  const count=requests.length;await vm.runInContext("jog('rho-cw',1)",context);assert.equal(requests.length,count);
+ status.drivers.rhoCompanion=true;
+ await vm.runInContext('refreshStatus()',context);
+ assert(buttons.filter(b=>b.dataset.axis==='rho-cw').every(b=>!b.disabled));
  status={...status,state:'RUNNING',independentRhoJog:true};
  await vm.runInContext('refreshStatus()',context);
  assert.equal(vm.runInContext('canvasEnabled',context),false);

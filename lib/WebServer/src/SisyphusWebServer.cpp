@@ -3086,9 +3086,11 @@ void SisyphusWebServer::handleTuningGet(AsyncWebServerRequest *request) {
     homingObj["rollingSearch"] = true;
     homingObj["retryArmingTracksBackoff"] = true;
     homingObj["pulseSource"] = "hardware-timer";
-    homingObj["companionMotorEnabled"] = Config::kRhoCompanionMotorEnabled;
-    homingObj["inactiveHoldStrategy"] = Config::kRhoCompanionMotorEnabled
-        ? "vactual-u256" : "disabled-bridge";
+    const bool companionEnabled = m_polarControl->getDriverAvailability().rhoCompanion;
+    homingObj["companionAutoDetect"] = Config::kRhoCompanionMotorEnabled;
+    homingObj["companionMotorEnabled"] = companionEnabled;
+    homingObj["inactiveHoldStrategy"] = companionEnabled
+        ? "vactual-u256" : "none";
 
     JsonObject limitsObj = doc["limits"].to<JsonObject>();
     limitsObj["thetaMaxRunCurrentMa"] = Config::kThetaMaxRunCurrentMa;
