@@ -9,7 +9,7 @@ const deferred = () => { let resolve; const promise = new Promise(r => resolve =
 function setup(fetch) {
     const elements = {}, timers = new Map(); let id = 0;
     const context = vm.createContext({
-        document: {hidden: false, getElementById: key => elements[key] ||= {}},
+        document: {hidden: false, getElementById: key => elements[key] ||= {setAttribute(name, value) { this[name] = value; }}},
         fetch, AbortController, FormData, console, alert: () => {},
         setTimeout: (fn, delay) => { timers.set(++id, {fn, delay}); return id; },
         clearTimeout: id => timers.delete(id)
@@ -23,14 +23,14 @@ const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve()
 (async () => {
     {
         const h = setup();
-        h.controller.syncBrightnessControl({ledBrightness: 10, ledTargetBrightness: 40});
-        assert.equal(h.elements['brightness-slider'].value, 40);
-        assert.equal(h.elements['brightness-value'].textContent, '40%');
-        h.controller.syncBrightnessControl({ledBrightness: 40, ledTargetBrightness: 0});
-        assert.equal(h.elements['brightness-slider'].value, 0);
-        h.controller.syncBrightnessControl({ledBrightness: 50});
-        assert.equal(h.elements['brightness-slider'].value, 50);
-        console.log('PASS: slider tracks the selected target, preserves zero, and supports older status responses');
+        h.controller.syncBrightnessControl({ledBrightness: 0, ledTargetBrightness: 100});
+        assert.equal(h.elements['light-toggle'].checked, true);
+        assert.equal(h.elements['brightness-value'].textContent, 'On');
+        h.controller.syncBrightnessControl({ledBrightness: 100, ledTargetBrightness: 0});
+        assert.equal(h.elements['light-toggle'].checked, false);
+        h.controller.syncBrightnessControl({ledBrightness: 100});
+        assert.equal(h.elements['light-toggle'].checked, true);
+        console.log('PASS: toggle follows the selected state and preserves Off');
     }
     {
         let signal;

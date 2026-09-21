@@ -3,10 +3,7 @@
 #include "KnownLengthResponse.hpp"
 #include "StaticContentResponse.hpp"
 #define PROGMEM
-#include "WebUI.h"
-#include "ManualUI.h"
-#include "SettingsUI.h"
-#include "FileUI.h"
+#include "UIPages.hpp"
 #undef PROGMEM
 #include <cassert>
 #include <iostream>
@@ -234,25 +231,61 @@ int main() {
         std::cout << "PASS: multiple partial buffers and temporary output failure preserve exact binary framing\n";
     }
     {
-        const std::pair<const char*, size_t> pages[] = {
-            {WEB_UI_HTML, sizeof(WEB_UI_HTML) - 1},
-            {MANUAL_UI_HTML, sizeof(MANUAL_UI_HTML) - 1},
-            {SETTINGS_UI_HTML, sizeof(SETTINGS_UI_HTML) - 1},
-            {FILE_UI_HTML, sizeof(FILE_UI_HTML) - 1}
+        // Every page is a run of flash spans; the joined document must come
+        // out byte-for-byte whatever the TCP writes chop it into.
+        const std::vector<std::pair<const StaticContentResponse::Segment*, size_t>> pages = {
+            {WEB_UI_PAGE, std::size(WEB_UI_PAGE)},
+            {MANUAL_UI_PAGE, std::size(MANUAL_UI_PAGE)},
+            {SETTINGS_UI_PAGE, std::size(SETTINGS_UI_PAGE)},
+            {FILE_UI_PAGE, std::size(FILE_UI_PAGE)}
         };
         for (const auto& page : pages) {
+            std::string expected;
+            for (size_t i = 0; i < page.second; ++i) {
+                expected.append(reinterpret_cast<const char*>(page.first[i].data), page.first[i].length);
+            }
             AsyncClient client;
             client.accept = {5, 0, 7, all, 101, 17, 0, 83, 3, all, 0, 251, 11, all};
             AsyncWebServerRequest request(client);
-            StaticContentResponse response("text/html",
-                reinterpret_cast<const uint8_t*>(page.first), page.second);
+            StaticContentResponse response("text/html", page.first, page.second);
             response._respond(&request);
             assert(!response._finished());
             drain(response, request);
-            assert(body(client) == std::string(page.first, page.second));
-            assert(client.bytes.find("Content-Length: " + std::to_string(page.second) + "\r\n") != std::string::npos);
+            assert(body(client) == expected);
+            assert(client.bytes.find("Content-Length: " + std::to_string(expected.size()) + "\r\n") != std::string::npos);
+            // The shared dialog spans are spliced in, not duplicated per page.
+            assert(expected.find(UI_DIALOG_CSS) != std::string::npos);
+            assert(expected.find(UI_DIALOG_JS) != std::string::npos);
+            assert(expected.find(UI_DIALOG_JS) > expected.find(UI_DIALOG_CSS));
         }
         std::cout << "PASS: all four actual static HTML pages survive partial headers/body byte-for-byte\n";
+    }
+    {
+        // A segment run must not lose or repeat bytes at its seams, including
+        // empty spans and reads that end mid-segment.
+        const char first[] = "alpha", second[] = "", third[] = "gamma-delta";
+        const StaticContentResponse::Segment spans[] = {
+            {reinterpret_cast<const uint8_t*>(first), sizeof(first) - 1},
+            {reinterpret_cast<const uint8_t*>(second), 0},
+            {reinterpret_cast<const uint8_t*>(third), sizeof(third) - 1}
+        };
+        AsyncClient client;
+        client.accept = {all, 1, 0, 2, 3, all};
+        AsyncWebServerRequest request(client);
+        StaticContentResponse response("text/plain", spans, std::size(spans));
+        assert(response._sourceValid());
+        response._respond(&request);
+        drain(response, request);
+        assert(body(client) == "alphagamma-delta");
+        assert(client.bytes.find("Content-Length: 16\r\n") != std::string::npos);
+
+        const StaticContentResponse::Segment missing[] = {
+            {reinterpret_cast<const uint8_t*>(first), sizeof(first) - 1},
+            {nullptr, 4}
+        };
+        StaticContentResponse absent("text/plain", missing, std::size(missing));
+        assert(!absent._sourceValid());
+        std::cout << "PASS: multi-span bodies join exactly across empty spans and split reads\n";
     }
     {
         // The body staging buffer must not inflate every response allocation

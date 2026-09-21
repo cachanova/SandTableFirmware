@@ -162,12 +162,13 @@ void webTask(void *parameter) {
 
 void setup() {
     // ... (rest of setup unchanged until task creation)
-#ifdef SISYPHUS_SKIP_MOTOR_HARDWARE
+#if defined(SISYPHUS_SKIP_MOTOR_HARDWARE) && !defined(SISYPHUS_LIGHTS_ONLY)
     // Reduce peak current during electronics-only bring-up. This is especially
     // useful when the ESP32 and attached driver logic share a USB supply.
     setCpuFrequencyMhz(80);
 #endif
     Serial.begin(115200);
+    ledController.begin(); // Hold the light off until the end of setup().
     delay(500);
 
     LOG("\n\n=== Sisyphus Table Starting ===\r\n");
@@ -195,7 +196,7 @@ void setup() {
         }
     });
     WiFi.mode(WIFI_STA);
-#ifdef SISYPHUS_SKIP_MOTOR_HARDWARE
+#if defined(SISYPHUS_SKIP_MOTOR_HARDWARE) && !defined(SISYPHUS_LIGHTS_ONLY)
     WiFi.setTxPower(WIFI_POWER_MINUS_1dBm);
 #endif
     WiFiManager wm;
@@ -306,7 +307,6 @@ void setup() {
 
     // Initialize LED controller
     LOG("Initializing LED controller...\r\n");
-    ledController.begin();
 
     // Start web server
     LOG("Starting web server...\r\n");
@@ -355,8 +355,11 @@ void setup() {
                                  "Could not create web processing task");
     }
 
-    // Initial speed
-    polarControl.setSpeed(5);
+    // Boot defaults, applied once the current-hungry startup work is behind us.
+    polarControl.setSpeed(10);
+    if (!ledController.setOn(true)) {
+        LOG("WARNING: Could not switch the light on at boot\r\n");
+    }
 
     LOG("Main setup done on Core %d\r\n", xPortGetCoreID());
 }

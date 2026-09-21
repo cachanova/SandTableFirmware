@@ -46,8 +46,8 @@ the first coordinate is excluded because it is not a segment in the file.
 Configuration matches the checked-in production defaults: 425 mm radius,
 theta 16 microsteps / 1909 integer steps per radian, rho 8 microsteps /
 400 steps per mm, theta limits 0.225 rad/s, 2 rad/s², 10 rad/s³, rho limits
-5.5 mm/s, 20 mm/s², 100 mm/s³. Both **5/10** (the default speed setting) and
-**10/10** were replayed. Persisted settings on the device were not read.
+5.5 mm/s, 20 mm/s², 100 mm/s³. Both **5/10** and **10/10** (the default speed
+setting) were replayed. Persisted settings on the device were not read.
 
 | Pattern | Profile shape error, 5/10 | Profile shape error, 10/10 | Common progress + exact scale reference |
 |---|---:|---:|---:|

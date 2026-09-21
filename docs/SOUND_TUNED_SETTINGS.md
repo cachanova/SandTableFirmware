@@ -1,5 +1,73 @@
 # Selected sound-tuned settings
 
+## Full manual image (2026-09-20)
+
+The operator requested the full application on the replacement ESP32. Use
+`esp32dev_full_manual` (USB) or `esp32dev_full_manual_ota` (Wi-Fi). These builds
+enable theta, main RHO, counterweight RHO, SD/pattern storage, lights, and
+presence sensing, with the adopted profiles below. Automatic homing is off;
+boot leaves the position unconfirmed and permits relative jogs on connected
+axes. RHO's fallback hold request is 200 mA, matching the accepted saved value.
+
+Press Home from any stationary starting position to run sensorless homing;
+no manual positioning, Set Home, or pre-confirmed zero is required. The
+counterweight homes first, then main RHO, using the same dedicated profile
+and unknown-position entry (1 mm inward probe, 6 mm outward runway). Each
+motor must obtain three agreeing contacts; travel limits, UART checks, the
+90-second cycle deadline, and Abort homing remain active. Successful homing
+establishes zero and enables normal pattern/absolute motion. This reuses the
+main-RHO settings for the counterweight at the operator's request; physical
+paired qualification is still pending. Boot itself never starts homing.
+
+### Independent jogging and CW direction
+
+The installed CW socket reports the opposite DIR input from main RHO.
+`kRhoCompanionDirectionInverted = true` compensates with the CW driver's
+SHAFT bit, so effective STEP directions match. This correction is applied
+and checked during boot, profile changes, homing, and recovery. Main RHO's
+direction is unchanged. Physical direction still needs operator observation.
+
+The Manual page offers paired RHO, main-only, and CW-only ±1/10/100 mm jogs.
+An independent jog isolates the other driver from shared STEP pulses while
+holding its phase at u256 with a serviced low-speed internal generator.
+Completion, Stop, and Abort restore its normal interface; communication or
+phase-restoration failures disable RHO and require profile recovery. Independent
+jogs invalidate paired homing, but further relative jogs and Home remain usable.
+
+A faded grey cursor tracks CW at theta + 180 degrees, independently of the
+main cursor. Both estimates follow executed planner movement rather than queued
+targets and ignore logical recentering between unhomed jogs. Before a reference
+exists, both start at a display midpoint (212.5 mm), explicitly labelled as a
+relative estimate. Successful Home or Set Home establishes zero. Homing clears
+untrusted estimates until success or another relative jog. These are commanded
+step estimates, not encoders: skipped steps and external movement are not sensed.
+
+The second reported homing attempt (inward travel succeeded, outward return
+struggled) could not be recovered: the device had power-cycled before retrieval,
+leaving homing cycle 0 and an empty trace. No homing detector/current/speed changes
+were justified by that missing log; tuning remains unchanged.
+
+## Counterweight reinstalled: manual service build (2026-09-20)
+
+Use `esp32dev_rho_paired_service_ota` for the reinstalled counterweight. Both
+RHO drivers receive the saved main-RHO motion/driver settings below and the
+same dedicated homing profile. Unlike the older commissioning image, this
+build retains saved tuning on reboot; without saved tuning it uses the adopted
+profile with 350 mA run / 200 mA hold. It boots unhomed in manual relative-jog
+mode, with automatic homing disabled. Theta, patterns, and SD access remain
+disabled in this RHO service image.
+
+Manual jogs are available immediately. Confirm both RHO mechanisms physically
+at home before selecting Commissioning and starting a bounded Home test;
+known-position homing also accepts separate measured starting distances.
+The service sequence retains its 8 mm outward entry, followed by the shared
+500 mA / 12 mm/s homing profile and saved detector/backoff settings. It homes
+the counterweight first, then main RHO, and requires physical review afterward.
+The main-only production startup entry is not enabled for paired operation.
+Counterweight sound and homing qualification are deferred to later tuning.
+
+## Main-only accepted profile
+
 Accepted settings as of 2026-09-16 for the assembled table with theta and
 main RHO connected. The counterweight motor is absent and its driver stays
 disabled. These are the selected settings from the tuning work; the evidence

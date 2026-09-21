@@ -1,6 +1,7 @@
 #pragma once
 
-const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
+// Sent as one response; see UIPages.hpp for how the parts join.
+const char FILE_UI_HEAD[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -30,7 +31,12 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
             color: var(--ink);
             min-height: 100vh;
             font-size: 14px;
+            /* Nothing on this page is editable prose; the I-beam pointer only
+               suggests otherwise. Controls opt back in below. */
+            cursor: default;
         }
+        input[type="text"], input[type="number"] { cursor: text; }
+        input[type="checkbox"], input[type="range"], input[type="file"], select { cursor: pointer; }
 
         .topbar {
             display: flex; align-items: baseline; justify-content: space-between;
@@ -125,6 +131,9 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
             .topnav { gap: 16px; }
             .container { padding: 24px 16px 60px; }
         }
+)rawliteral";
+
+const char FILE_UI_BODY[] PROGMEM = R"rawliteral(
     </style>
 </head>
 <body>
@@ -156,7 +165,9 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
             </div>
         </section>
     </div>
+)rawliteral";
 
+const char FILE_UI_SCRIPT[] PROGMEM = R"rawliteral(
     <script>
         async function uploadPatternThumbnail(apiBase, imageFile, imageName) {
             // Keep full-size uploads for the canvas; list previews need only 128px.
@@ -256,7 +267,10 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
         }
 
         async function deleteFile(filename) {
-            if (!confirm('Delete ' + filename.replace('.thr', '') + '?')) return;
+            const proceed = await uiConfirm(
+                'The pattern and its preview image are removed from the card. This cannot be undone.',
+                { title: 'Delete ' + filename.replace('.thr', '') + '?', confirmLabel: 'Delete', danger: true });
+            if (!proceed) return;
             const formData = new FormData();
             formData.append('file', filename);
             await fetch(apiBase + '/files/delete', { method: 'POST', body: formData });
@@ -265,16 +279,19 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
 
         async function uploadFile(file) {
             if (!storageAvailable) {
-                alert('Insert an SD card before uploading patterns.');
+                uiNotify('Insert an SD card before uploading patterns.', { tone: 'error' });
                 return;
             }
             if (!file) return;
             if (!file.name.endsWith('.thr')) {
-                alert('Only .thr files are allowed');
+                uiNotify('Only .thr files are allowed.', { tone: 'error' });
                 return;
             }
 
-            if (confirm('Do you want to add a preview image for this pattern?')) {
+            const withImage = await uiConfirm(
+                'A preview image is shown on the pattern list and behind the live path.',
+                { title: 'Add a preview image?', confirmLabel: 'Choose image', cancelLabel: 'Skip' });
+            if (withImage) {
                 const imageInput = document.getElementById('image-input');
                 imageInput.value = '';
                 // Runs on selection or on picker cancel (uploads without image)
@@ -318,7 +335,7 @@ const char FILE_UI_HTML[] PROGMEM = R"rawliteral(
 
                 await loadFileList();
             } catch (err) {
-                alert('Upload failed: ' + err.message);
+                uiNotify('Upload failed: ' + err.message, { tone: 'error' });
             } finally {
                 uploadArea.classList.remove('loading');
                 uploadArea.querySelector('.upload-text').innerHTML = 'Click or drag <strong>.thr</strong> file to upload';

@@ -323,6 +323,11 @@ static bool tmcDriverPresent(uint8_t driverAddress) {
 // ============================================================================
 
 bool PolarControl::begin() {
+#if defined(SISYPHUS_RHO_PAIRED_SERVICE) || defined(SISYPHUS_FULL_MANUAL)
+    // Match the later operator-accepted hold setting if no saved tuning exists.
+    // Valid saved tuning below remains authoritative for both rho motors.
+    m_rDriverSettings.holdCurrent = 200;
+#endif
     if (m_mutex == NULL) {
         m_mutex = xSemaphoreCreateMutex();
     }
@@ -363,7 +368,7 @@ bool PolarControl::begin() {
     m_motionSettings.tMaxJerk = 0.50f;
     LOG("THETA COMMISSIONING: forced safe boot envelope (250mA, 0.05rad/s)\r\n");
 #endif
-#ifdef SISYPHUS_RHO_COMMISSIONING
+#if defined(SISYPHUS_RHO_COMMISSIONING) && !defined(SISYPHUS_RHO_PAIRED_SERVICE)
     // Do not inherit an aggressive saved value before the paired rho motors
     // and mechanism have been observed. A trial can apply a higher value only
     // after the operator supplies the motor rating to the host-side tool.
@@ -679,8 +684,8 @@ bool PolarControl::setupDrivers() {
 }
 
 bool PolarControl::home(bool confirmedOriginBounded, bool automaticBoot) {
-    if (Config::kRhoStartupEntry && Config::kRhoCompanionMotorEnabled) {
-        LOG("Startup homing supports main RHO only\r\n");
+    if (automaticBoot && !Config::kAutoHomeOnBoot) {
+        LOG("Automatic boot homing is disabled\r\n");
         return false;
     }
 #if defined(SISYPHUS_THETA_COMMISSIONING)
@@ -722,6 +727,7 @@ bool PolarControl::home(bool confirmedOriginBounded, bool automaticBoot) {
         return false;
     }
 
+    m_rhoPosition.invalidate();
     // Separate homing motion invalidates the old logical position. Production
     // restores zero only on success; service trials also require physical review.
     m_planner.stop();
@@ -818,6 +824,7 @@ void PolarControl::homingTask(void* arg) {
         expected, success ? successState : HOMING_FAILED);
     if (completedNormally && success && successState == IDLE) {
         self->m_planner.resetPosition(0.0f, 0.0f);
+        self->m_rhoPosition.home();
         self->m_homingFailure.store(0);
     }
     xSemaphoreGive(self->m_mutex);
@@ -845,6 +852,7 @@ bool PolarControl::confirmHome(bool successful) {
         // Sensorless homing establishes rho=0. Theta has no absolute reference,
         // and at the center its angular origin is arbitrary, so reset both axes.
         m_planner.resetPosition(0.0f, 0.0f);
+        m_rhoPosition.home();
         m_homingFailure.store(0);
         m_state.store(IDLE);
         LOG("Homing visually confirmed; logical position reset\r\n");
@@ -876,6 +884,7 @@ bool PolarControl::setCurrentPositionAsHome() {
     }
     m_planner.stop();
     m_planner.resetPosition(0.0f, 0.0f);
+    m_rhoPosition.home();
     m_homingFailure.store(0);
     m_state.store(IDLE);
     xSemaphoreGive(m_mutex);
@@ -907,6 +916,8 @@ void PolarControl::enterRhoManualServiceMode() {
     // authoritative indication that this is not a trusted absolute position;
     // jogRelative() re-centers rho before every unhomed relative command.
     m_planner.resetPosition(0.0f, R_MAX * 0.5f);
+    m_rhoPosition.invalidate();
+    m_rhoPosition.beginRelative(R_MAX * 0.5f);
     m_homingFailure.store(0);
     m_knownPositionHomingActive.store(false);
     m_knownRhoStartSteps.store(0);
@@ -1096,7 +1107,8 @@ static bool verifyDriverSettings(uint8_t driverAddress,
         settings.highSensitivityCurrentScale;
     const bool modeOk = ((gconf & (1U << 2)) == 0) == settings.stealthChopEnabled;
     const bool directionOk = ((gconf & (1U << 3)) != 0) ==
-        settings.inverseMotorDirection;
+        (settings.inverseMotorDirection ^
+         (driverAddress == RC_ADDR && Config::kRhoCompanionDirectionInverted));
     const bool uartCurrentScaleOk = (gconf & (1U << 0)) == 0;
     const bool senseOk = (gconf & (1U << 1)) == 0;
     constexpr uint32_t kPwmSettingsMask = 0xFF3FFFFFU;
@@ -1196,7 +1208,8 @@ bool PolarControl::applyDriverSettings(TMC2209 &driver,
 
     // Reapply GCONF.SHAFT on every profile transition. Direction must remain
     // deterministic across reboot, homing, acoustic tuning, and recovery.
-    if (settings.inverseMotorDirection) {
+    if (settings.inverseMotorDirection ^
+        (driverAddress == RC_ADDR && Config::kRhoCompanionDirectionInverted)) {
         driver.enableInverseMotorDirection();
     } else {
         driver.disableInverseMotorDirection();
@@ -1282,7 +1295,7 @@ bool PolarControl::prepareRhoDriversForManualJogLocked() {
 
     uint32_t primaryChopconf = 0;
     uint32_t companionChopconf = 0;
-    const bool alreadyReady =
+    const bool alreadyReady = !m_rhoManualProfileDirty &&
         readTmcRegisterChecked(R_ADDR, 0x6C, primaryChopconf) &&
         readTmcRegisterChecked(RC_ADDR, 0x6C, companionChopconf) &&
         (((primaryChopconf & 0x0FU) != 0) == primaryReady) &&
@@ -1293,7 +1306,10 @@ bool PolarControl::prepareRhoDriversForManualJogLocked() {
     // Restore the normal profile before another STEP pulse, while keeping an
     // intentionally unused channel inert.
     const bool initiallyDisabled = disableRhoDriversLocked();
-    const bool primaryApplied = initiallyDisabled &&
+    const bool stepDirReady = initiallyDisabled &&
+        (!primaryReady || writeTmcRegisterAcknowledged(R_ADDR, 0x22, 0U)) &&
+        (!companionReady || writeTmcRegisterAcknowledged(RC_ADDR, 0x22, 0U));
+    const bool primaryApplied = stepDirReady &&
         (!primaryReady || applyDriverSettings(
             m_rDriver, m_rDriverSettings, R_ADDR, "rho"));
     const bool companionApplied = primaryApplied &&
@@ -1326,6 +1342,7 @@ bool PolarControl::prepareRhoDriversForManualJogLocked() {
 
     // Give StealthChop its standstill calibration interval before motion.
     vTaskDelay(pdMS_TO_TICKS(200));
+    m_rhoManualProfileDirty = false;
     LOG("RHO drivers restored and verified for unhomed manual jogging\r\n");
     return true;
 }
@@ -1339,7 +1356,12 @@ bool PolarControl::startInactiveRhoHoldLocked(uint8_t driverAddress,
     // Service the saved MSCNT phase below so even that tiny commanded motion
     // cannot accumulate during a full-range homing pass.
     constexpr uint32_t kVactualPositiveOne = 1U;
-    if (!setDriverMicrostepsChecked(driverAddress, 256) ||
+    // Use a known internal-generator direction while holding, independent of
+    // the per-socket STEP/DIR correction. Restore GCONF before accepting STEP.
+    if (!readTmcRegisterChecked(driverAddress, 0x00, m_inactiveRhoHoldGconf) ||
+        !writeTmcRegisterAcknowledged(driverAddress, 0x00,
+                                     m_inactiveRhoHoldGconf & ~(1U << 3)) ||
+        !setDriverMicrostepsChecked(driverAddress, 256) ||
         !writeTmcRegisterAcknowledged(
             driverAddress, 0x22, kVactualPositiveOne)) {
         return false;
@@ -1352,7 +1374,8 @@ bool PolarControl::startInactiveRhoHoldLocked(uint8_t driverAddress,
 }
 
 bool PolarControl::serviceInactiveRhoHoldLocked() {
-    if (millis() - m_homingTraceStartedAtMs.load() >=
+    if (m_state.load() == HOMING &&
+        millis() - m_homingTraceStartedAtMs.load() >=
         Config::kRhoHomingCycleTimeoutMs) return false;
     constexpr uint32_t kCheckIntervalMs = 250;
     constexpr uint32_t kVactualPositiveOne = 1U;
@@ -1382,6 +1405,63 @@ bool PolarControl::serviceInactiveRhoHoldLocked() {
     m_inactiveRhoHoldDirection = desiredDirection;
     m_inactiveRhoHoldLastToggleMs = millis();
     return true;
+}
+
+bool PolarControl::restoreInactiveRhoInterfaceLocked(uint8_t address,
+                                                      uint16_t microsteps) {
+    // Caller has stopped both the shared STEP source and the internal source.
+    return setDriverMicrostepsChecked(address, microsteps) &&
+        writeTmcRegisterAcknowledged(address, 0x00, m_inactiveRhoHoldGconf);
+}
+
+void PolarControl::sampleRhoPositionLocked() {
+    double theta, rho;
+    m_planner.getCurrentPosition(theta, rho);
+    m_rhoPosition.sample(rho, m_jogMotor,
+                         m_rhoDriverConnected.load(), m_rhoCompanionDriverConnected.load());
+}
+
+RhoPositionTracker::Sample PolarControl::getRhoPositionEstimate() {
+    SemaphoreGuard motionLock(m_mutex);
+    sampleRhoPositionLocked();
+    auto sample = m_rhoPosition.get();
+    sample.available = sample.available && m_rhoCompanionDriverConnected.load();
+    return sample;
+}
+
+bool PolarControl::finishIndependentRhoJogLocked() {
+    if (!m_independentRhoJog.load()) return true;
+    m_planner.stop();
+    sampleRhoPositionLocked();
+    const uint8_t address = m_inactiveRhoHoldAddress;
+    bool restored = true;
+    if (address != UINT8_MAX) {
+        uint32_t phase = 0;
+        const bool stopped = writeTmcRegisterAcknowledged(address, 0x22, 0U);
+        const bool read = stopped && readTmcRegisterChecked(address, 0x6A, phase);
+        const uint16_t forward = (m_inactiveRhoHoldTargetPhase + 1024U - phase) & 1023U;
+        const uint16_t backward = (phase + 1024U - m_inactiveRhoHoldTargetPhase) & 1023U;
+        // Normal serviced hold stays within two u256 microsteps. Fail closed
+        // on excessive drift rather than moving the inactive carriage to recover.
+        const bool phaseOk = read && std::min(forward, backward) <= 2;
+        if (!phaseOk) disableRhoDriversLocked();
+        const bool interfaceOk = restoreInactiveRhoInterfaceLocked(
+            address, m_rDriverSettings.microsteps);
+        restored = phaseOk && interfaceOk;
+    }
+    m_rhoManualProfileDirty = !restored;
+    if (!restored) {
+        disableRhoDriversLocked();
+        ErrorLog::instance().log("ERROR", "MOTION", "RHO_JOG_RESTORE_FAILED",
+            "Independent rho jog stopped; could not verify inactive driver hold");
+    }
+    clearInactiveRhoHoldLocked();
+    m_planner.resetPosition(m_jogSavedTheta, m_jogSavedRho);
+    m_rhoPosition.rebase(m_jogSavedRho);
+    m_jogMotor = RhoJogMotor::BOTH;
+    m_independentRhoJog.store(false);
+    m_motionCompletionState.store(INITIALIZED);
+    return restored;
 }
 
 void PolarControl::clearInactiveRhoHoldLocked() {
@@ -1721,7 +1801,7 @@ bool PolarControl::restoreHeldDriverPhase(TMC2209& driver,
         const bool stopped = writeTmcRegisterAcknowledged(
             driverAddress, 0x22, 0U);
         const bool resolutionRestored = stopped &&
-            setDriverMicrostepsChecked(driverAddress, microsteps);
+            restoreInactiveRhoInterfaceLocked(driverAddress, microsteps);
         xSemaphoreGive(m_mutex);
         return resolutionRestored;
     }
@@ -1769,7 +1849,7 @@ bool PolarControl::restoreHeldDriverPhase(TMC2209& driver,
                 LOG("Restored disabled %s sequencer phase to %u (target %u)\r\n",
                     driverName, phase, targetPhase);
                 xSemaphoreTake(m_mutex, portMAX_DELAY);
-                const bool restored = setDriverMicrostepsChecked(
+                const bool restored = restoreInactiveRhoInterfaceLocked(
                     driverAddress, microsteps);
                 xSemaphoreGive(m_mutex);
                 return restored;
@@ -1802,7 +1882,7 @@ bool PolarControl::restoreHeldDriverPhase(TMC2209& driver,
                 LOG("Restored disabled %s sequencer phase to %u (target %u)\r\n",
                     driverName, phase, targetPhase);
                 xSemaphoreTake(m_mutex, portMAX_DELAY);
-                const bool restored = setDriverMicrostepsChecked(
+                const bool restored = restoreInactiveRhoInterfaceLocked(
                     driverAddress, microsteps);
                 xSemaphoreGive(m_mutex);
                 return restored;
@@ -2483,13 +2563,17 @@ bool PolarControl::moveTo(float theta, float rho) {
     return start(std_patch::make_unique<SingleTargetGen>(targetTheta, rho));
 }
 
-bool PolarControl::jogRelative(float thetaDelta, float rhoDelta) {
+bool PolarControl::jogRelative(float thetaDelta, float rhoDelta,
+                                RhoJogMotor motor) {
     constexpr float kMinimumDelta = 0.000001f;
     const bool jogTheta = std::isfinite(thetaDelta) &&
         fabsf(thetaDelta) > kMinimumDelta;
     const bool jogRho = std::isfinite(rhoDelta) &&
         fabsf(rhoDelta) > kMinimumDelta;
-    if (jogTheta == jogRho ||
+    const bool independent = motor != RhoJogMotor::BOTH;
+    if ((independent && !jogRho) ||
+        (motor != RhoJogMotor::BOTH && motor != RhoJogMotor::MAIN &&
+         motor != RhoJogMotor::COMPANION) || jogTheta == jogRho ||
         (jogTheta && fabsf(thetaDelta) > 100.0f * PI / 180.0f + kMinimumDelta) ||
         (jogRho && fabsf(rhoDelta) > 100.0f + kMinimumDelta)) {
         return false;
@@ -2506,7 +2590,11 @@ bool PolarControl::jogRelative(float thetaDelta, float rhoDelta) {
          !m_rhoCompanionDriverConnected.load())) {
         return false;
     }
-    if (jogRho && entryState != IDLE &&
+    if ((motor == RhoJogMotor::MAIN && !m_rhoDriverConnected.load()) ||
+        (motor == RhoJogMotor::COMPANION && !m_rhoCompanionDriverConnected.load())) {
+        return false;
+    }
+    if (jogRho && (entryState != IDLE || independent) &&
         !prepareRhoDriversForManualJogLocked()) {
         return false;
     }
@@ -2514,7 +2602,32 @@ bool PolarControl::jogRelative(float thetaDelta, float rhoDelta) {
     double currentTheta = 0.0;
     double currentRho = 0.0;
     m_planner.getCurrentPosition(currentTheta, currentRho);
-    if (entryState != IDLE && jogRho) {
+    sampleRhoPositionLocked();
+    m_rhoPosition.beginRelative(currentRho);
+    if (independent) {
+        m_rhoManualProfileDirty = true;
+        m_jogSavedTheta = currentTheta;
+        m_jogSavedRho = currentRho;
+        const uint8_t inactive = motor == RhoJogMotor::MAIN ? RC_ADDR : R_ADDR;
+        const bool inactiveConnected = motor == RhoJogMotor::MAIN
+            ? m_rhoCompanionDriverConnected.load() : m_rhoDriverConnected.load();
+        clearInactiveRhoHoldLocked();
+        if (inactiveConnected) {
+            uint32_t phase = 0;
+            if (!readTmcRegisterChecked(inactive, 0x6A, phase) ||
+                !startInactiveRhoHoldLocked(inactive, phase & 1023U)) {
+                // Initialization can fail after changing MRES or VACTUAL.
+                // Disable before restoring a complete profile on the next jog.
+                writeTmcRegisterAcknowledged(inactive, 0x22, 0U);
+                disableRhoDriversLocked();
+                clearInactiveRhoHoldLocked();
+                m_state.store(INITIALIZED);
+                return false;
+            }
+        }
+        m_independentRhoJog.store(true);
+    }
+    if ((entryState != IDLE || independent) && jogRho) {
         // Rho's absolute position is unknown before homing. Re-center only the
         // logical coordinate before every relative jog so +/-100 mm remains
         // representable without claiming a physical absolute position.
@@ -2535,7 +2648,9 @@ bool PolarControl::jogRelative(float thetaDelta, float rhoDelta) {
     m_planner.resetCompletedCount();
     feedPlanner();
     m_planner.start();
-    m_motionCompletionState.store(entryState);
+    m_rhoPosition.rebase(currentRho);
+    m_jogMotor = motor;
+    m_motionCompletionState.store(independent ? INITIALIZED : entryState);
     m_state.store(RUNNING);
     LOG("Manual %s jog started while %s\r\n",
         jogTheta ? "theta" : "rho",
@@ -2708,7 +2823,12 @@ bool PolarControl::stop() {
             }
         }
 
-        m_state = m_planner.isIdle() ? IDLE : STOPPING;
+        if (m_planner.isIdle()) {
+            finishIndependentRhoJogLocked();
+            m_state = m_motionCompletionState.exchange(IDLE);
+        } else {
+            m_state = STOPPING;
+        }
         LOG("Stop requested\r\n");
 
         xSemaphoreGive(m_mutex);
@@ -2910,6 +3030,7 @@ void PolarControl::emergencyStop(bool disableRho) {
     m_state.store(INITIALIZED);
     // Stop STEP generation before potentially slow UART transactions.
     m_planner.stop();
+    finishIndependentRhoJogLocked();
     if (m_driverBusInitialized.load()) {
         if (m_thetaDriverConnected.load()) m_tDriver.moveAtVelocity(0);
         if (m_rhoDriverConnected.load()) {
@@ -3087,8 +3208,25 @@ bool PolarControl::processNextMove() {
     }
     m_mutexWaitProfiler.addSample(micros() - waitStart);
 
+    if (m_independentRhoJog.load() && !serviceInactiveRhoHoldLocked()) {
+        m_planner.stop();
+        finishIndependentRhoJogLocked();
+        disableRhoDriversLocked();
+        m_posGen.reset();
+        m_resumePoints.clear();
+        m_resumePointIndex = 0;
+        m_pauseAfterStop = false;
+        m_restartAfterSpeedChange = false;
+        m_state.store(INITIALIZED);
+        ErrorLog::instance().log("ERROR", "MOTION", "RHO_JOG_HOLD_FAILED",
+            "Independent rho jog aborted after inactive driver communication failure");
+        xSemaphoreGive(m_mutex);
+        return false;
+    }
+
     // Let planner process (handles timer internally)
     m_planner.process();
+    sampleRhoPositionLocked();
 
     if (m_state == STOPPING) {
         if (m_planner.isIdle()) {
@@ -3105,6 +3243,7 @@ bool PolarControl::processNextMove() {
                     LOG("Motion resumed after speed change\r\n");
                 } else {
                     m_posGen.reset();
+                    finishIndependentRhoJogLocked();
                     m_state = m_motionCompletionState.exchange(IDLE);
                     LOG("Speed changed after motion completed\r\n");
                 }
@@ -3113,6 +3252,7 @@ bool PolarControl::processNextMove() {
                 m_state = PAUSED;
                 LOG("Paused after controlled deceleration\r\n");
             } else {
+                finishIndependentRhoJogLocked();
                 m_state = m_motionCompletionState.exchange(IDLE);
                 LOG("Stopped after controlled deceleration\r\n");
             }
@@ -3143,6 +3283,7 @@ bool PolarControl::processNextMove() {
                 updateSpeedSettings();
             }
             m_posGen.reset();
+            finishIndependentRhoJogLocked();
             m_state = m_motionCompletionState.exchange(IDLE);
             LOG("Pattern Complete (idle state detected in processNextMove)\r\n");
             xSemaphoreGive(m_mutex);
@@ -3405,6 +3546,7 @@ TuningUpdateResult PolarControl::saveThetaDriverSettings(const DriverSettings& s
         // present shaft angle becomes the fresh logical origin after a scale
         // change so another guarded theta test can run immediately.
         m_planner.resetPosition(0.0f, 0.0f);
+        m_rhoPosition.home();
         m_state.store(IDLE);
 #else
         m_state.store(INITIALIZED);
@@ -3518,6 +3660,7 @@ TuningUpdateResult PolarControl::saveRhoDriverSettings(const DriverSettings& set
         // other motion mode is available. Re-establish that logical origin so
         // microstep candidates can be compared without pretending to home.
         m_planner.resetPosition(0.0f, 0.0f);
+        m_rhoPosition.home();
         m_state.store(IDLE);
 #else
         m_state.store(INITIALIZED);
@@ -4141,6 +4284,27 @@ bool PolarControl::testRhoSegment(float targetRhoMm) {
 // Driver Diagnostics
 // ============================================================================
 
+// Read-only controller-side evidence. This is the output register, not a
+// voltage measurement at the pad; compare it with the TMC IOIN DIR input.
+static void fillControllerDirectionJson(uint8_t address, JsonDocument& doc) {
+#ifndef NATIVE_BUILD
+    const uint8_t pin = address == T_ADDR ? T_DIR_PIN : R_DIR_PIN;
+    JsonObject controller = doc["controller"].to<JsonObject>();
+    controller["dirPin"] = pin;
+    controller["dirOutputLatch"] = pin < 32
+        ? ((GPIO.out >> pin) & 1U) != 0
+        : ((GPIO.out1.val >> (pin - 32)) & 1U) != 0;
+    controller["dirOutputEnabled"] = pin < 32
+        ? ((GPIO.enable >> pin) & 1U) != 0
+        : ((GPIO.enable1.val >> (pin - 32)) & 1U) != 0;
+    controller["dirMatrixSignal"] = static_cast<uint32_t>(GPIO.func_out_sel_cfg[pin].func_sel);
+    controller["dirMatrixInverted"] = GPIO.func_out_sel_cfg[pin].inv_sel != 0;
+#else
+    (void)address;
+    (void)doc;
+#endif
+}
+
 // Helper to dump driver info to JSON
 static void fillMotionHealthJson(uint8_t address, const char* name,
                                  JsonDocument& doc) {
@@ -4181,6 +4345,10 @@ static void fillMotionHealthJson(uint8_t address, const char* name,
     settings["chopconfRaw"] = chopconf;
     JsonObject inputs = doc["inputs"].to<JsonObject>();
     inputs["enableN"] = (ioin & 1U) != 0;
+    inputs["direction"] = (ioin & (1U << 9)) != 0;
+    inputs["step"] = (ioin & (1U << 7)) != 0;
+    settings["inverseMotorDirection"] = (gconf & (1U << 3)) != 0;
+    fillControllerDirectionJson(address, doc);
     JsonObject global = doc["globalStatus"].to<JsonObject>();
     global["reset"] = (gstat & 1U) != 0;
     global["drvErr"] = (gstat & 2U) != 0;
@@ -4228,6 +4396,7 @@ static void fillDriverJson(TMC2209& driver, uint8_t driverAddress,
         inputsObj["spreadEnable"] = (ioInput & (1UL << 8)) != 0;
         inputsObj["direction"] = (ioInput & (1UL << 9)) != 0;
         inputsObj["raw"] = ioInput;
+        fillControllerDirectionJson(driverAddress, doc);
 
         // Get settings from driver
         TMC2209::Settings settings = driver.getSettings();

@@ -74,14 +74,14 @@ bool PresenceSensor::begin() {
 void PresenceSensor::loadAction() {
     Preferences preferences;
     if (!preferences.begin("presence", true)) {
-        LOG("No saved presence action; defaulting to fade_light_on\r\n");
+        LOG("No saved presence action; defaulting to restore_light\r\n");
         return;
     }
     const uint8_t stored = preferences.isKey("action")
         ? preferences.getUChar("action", static_cast<uint8_t>(PresenceAction::NONE))
-        : static_cast<uint8_t>(PresenceAction::FADE_LIGHT_ON);
+        : static_cast<uint8_t>(PresenceAction::RESTORE_LIGHT);
     preferences.end();
-    if (stored <= static_cast<uint8_t>(PresenceAction::FADE_LIGHT_ON)) {
+    if (stored <= static_cast<uint8_t>(PresenceAction::RESTORE_LIGHT)) {
         m_action.store(stored);
     } else {
         m_action.store(static_cast<uint8_t>(PresenceAction::NONE));
@@ -304,7 +304,7 @@ PresenceAction PresenceSensor::getAction() const {
 
 bool PresenceSensor::setAction(PresenceAction action) {
     const uint8_t value = static_cast<uint8_t>(action);
-    if (value > static_cast<uint8_t>(PresenceAction::FADE_LIGHT_ON)) {
+    if (value > static_cast<uint8_t>(PresenceAction::RESTORE_LIGHT)) {
         return false;
     }
     if (value == m_action.load()) return true; // no redundant flash commits
@@ -321,7 +321,7 @@ bool PresenceSensor::setAction(PresenceAction action) {
     }
     m_action.store(value);
     LOG("Presence action saved: %s\r\n",
-        action == PresenceAction::FADE_LIGHT_ON ? "fade_light_on" : "none");
+        action == PresenceAction::RESTORE_LIGHT ? "restore_light" : "none");
     return true;
 }
 

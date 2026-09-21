@@ -1,6 +1,7 @@
 #pragma once
 
-const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
+// Sent as one response; see UIPages.hpp for how the parts join.
+const char MANUAL_UI_HEAD[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -29,7 +30,12 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
             color: var(--ink);
             min-height: 100vh;
             font-size: 14px;
+            /* Nothing on this page is editable prose; the I-beam pointer only
+               suggests otherwise. Controls opt back in below. */
+            cursor: default;
         }
+        input[type="text"], input[type="number"] { cursor: text; }
+        input[type="checkbox"], input[type="range"], input[type="file"], select { cursor: pointer; }
 
         .topbar {
             display: flex; align-items: baseline; justify-content: space-between;
@@ -118,6 +124,9 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
             .jog-controls { grid-template-columns: 1fr; gap: 22px; }
             .readouts { grid-template-columns: 1fr; }
         }
+)rawliteral";
+
+const char MANUAL_UI_BODY[] PROGMEM = R"rawliteral(
     </style>
 </head>
 <body>
@@ -142,6 +151,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
         <div class="stage"><canvas id="table" aria-label="Manual table position control"></canvas></div>
         <p class="hint">The jog buttons work before homing; their moves are relative and the displayed absolute position is unconfirmed. The canvas unlocks after homing.</p>
         <div class="readouts">
+            <div class="readout"><div class="label">CW · Grey cursor</div><div class="value" id="cwPosition">—</div></div>
             <div class="readout"><div class="label">Current</div><div class="value" id="current">—</div></div>
             <div class="readout"><div class="label">Target</div><div class="value" id="target">—</div></div>
         </div>
@@ -164,8 +174,8 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
                 </div>
             </section>
             <section class="jog-card">
-                <h2>Rho · Radius</h2>
-                <p>Jog inward or outward from the latest target.</p>
+                <h2>Rho · Both motors</h2>
+                <p>Jog main and counterweight together.</p>
                 <div class="jog-grid">
                     <button class="jog" data-axis="rho" data-delta="-1">In 1 mm</button>
                     <button class="jog" data-axis="rho" data-delta="-10">In 10 mm</button>
@@ -175,10 +185,37 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
                     <button class="jog" data-axis="rho" data-delta="100">Out 100 mm</button>
                 </div>
             </section>
+            <section class="jog-card">
+                <h2>Rho main</h2>
+                <p>Jog independently while holding the counterweight. Home afterward to restore alignment.</p>
+                <div class="jog-grid">
+                    <button class="jog" data-axis="rho-main" data-delta="-1">In 1 mm</button>
+                    <button class="jog" data-axis="rho-main" data-delta="-10">In 10 mm</button>
+                    <button class="jog" data-axis="rho-main" data-delta="-100">In 100 mm</button>
+                    <button class="jog" data-axis="rho-main" data-delta="1">Out 1 mm</button>
+                    <button class="jog" data-axis="rho-main" data-delta="10">Out 10 mm</button>
+                    <button class="jog" data-axis="rho-main" data-delta="100">Out 100 mm</button>
+                </div>
+            </section>
+            <section class="jog-card">
+                <h2>Rho CW · Counterweight</h2>
+                <p>Jog independently while holding the main motor. Home afterward to restore alignment.</p>
+                <div class="jog-grid">
+                    <button class="jog" data-axis="rho-cw" data-delta="-1">In 1 mm</button>
+                    <button class="jog" data-axis="rho-cw" data-delta="-10">In 10 mm</button>
+                    <button class="jog" data-axis="rho-cw" data-delta="-100">In 100 mm</button>
+                    <button class="jog" data-axis="rho-cw" data-delta="1">Out 1 mm</button>
+                    <button class="jog" data-axis="rho-cw" data-delta="10">Out 10 mm</button>
+                    <button class="jog" data-axis="rho-cw" data-delta="100">Out 100 mm</button>
+                </div>
+            </section>
         </div>
         <button id="stop">Stop all motion / Abort homing</button><div id="error" class="error"></div>
     </section>
 </div>
+)rawliteral";
+
+const char MANUAL_UI_SCRIPT[] PROGMEM = R"rawliteral(
 <script>
 (() => {
     const canvas = document.getElementById('table');
@@ -189,6 +226,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
     const sendEl = document.getElementById('sendState');
     let current = null, target = null, maxRho = 0, geometryReady = false, enabled = false, jogEnabled = false, canvasEnabled = false, dragging = false;
     let axes = {theta:false,rho:false};
+    let counterweight = null;
     let queued = null, sending = false, sendTimer = 0, lastSentAt = 0, sendController = null;
     let commandGeneration = 0, stopInProgress = false;
     let rhoServiceMode = null;
@@ -221,8 +259,12 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
 
     async function setRhoServiceMode(mode) {
         if (mode===rhoServiceMode) return;
-        if (mode==='commissioning' && !confirm(
-            'Confirm the connected main RHO mechanism is physically at home. This assigns the current position as RHO 0 mm and marks the controller homed.')) return;
+        if (mode==='commissioning') {
+            const proceed = await uiConfirm(
+                'Confirm all connected RHO mechanisms are physically at home. This assigns the current position as RHO 0 mm and marks the controller homed.',
+                { title: 'Switch to commissioning?', confirmLabel: 'Confirm origin', danger: true });
+            if (!proceed || mode===rhoServiceMode) return;
+        }
         commandGeneration++; queued=null; clearTimeout(sendTimer); dragging=false;
         const body=new URLSearchParams({mode});
         if (mode==='commissioning') body.set('confirmOrigin','true');
@@ -236,8 +278,10 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
     }
 
     async function setCurrentAsHome() {
-        if (!confirm(
-            'Confirm theta and the connected main RHO mechanism are at their intended home positions. This sets both logical positions to zero.')) return;
+        const proceed = await uiConfirm(
+            'Confirm theta and all connected RHO mechanisms are at their intended home positions. This sets both logical positions to zero.',
+            { title: 'Set current position as home?', confirmLabel: 'Set home', danger: true });
+        if (!proceed) return;
         commandGeneration++; queued=null; clearTimeout(sendTimer); dragging=false;
         try {
             const response=await fetch('/api/manual/set-home',{method:'POST'});
@@ -268,6 +312,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
         ctx.strokeStyle='rgba(26,25,23,.08)'; ctx.lineWidth=1;
         [0.25,0.5,0.75].forEach(f => { ctx.beginPath(); ctx.arc(c,c,r*f,0,Math.PI*2); ctx.stroke(); });
         ctx.beginPath(); ctx.moveTo(pad,c); ctx.lineTo(s-pad,c); ctx.moveTo(c,pad); ctx.lineTo(c,s-pad); ctx.stroke();
+        if (counterweight) drawMarker(counterweight.x,counterweight.y,'rgba(110,110,110,.45)',10,false);
         if (target) drawMarker(target.x,target.y,'#1a1917',9,true);
         if (current) drawMarker(current.x,current.y,'#3d6b3d',7,false);
         if (!canvasEnabled) { ctx.fillStyle='rgba(250,250,247,.6)'; ctx.beginPath(); ctx.arc(c,c,r,0,Math.PI*2); ctx.fill(); }
@@ -299,7 +344,7 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
         if (!jogEnabled || !axes[axis]) return;
         sendEl.textContent='Queuing jog…'; errorEl.textContent=''; target=null; draw();
         const unit=axis==='theta'?'°':' mm';
-        document.getElementById('target').textContent=`${axis==='theta'?'θ':'ρ'} ${amount>0?'+':''}${amount}${unit} relative`;
+        document.getElementById('target').textContent=`${({'theta':'θ','rho':'ρ both','rho-main':'ρ main','rho-cw':'ρ CW'})[axis]} ${amount>0?'+':''}${amount}${unit} relative`;
         const body=new URLSearchParams({axis,amount:String(amount)});
         try {
             const response=await fetch('/api/manual/jog',{method:'POST',body});
@@ -356,9 +401,15 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
     });
     function updatePosition(p) {
         if (!p) return;
-        const rho=p.rho ?? p.r, theta=p.theta ?? p.t;
-        current={x:p.x,y:p.y,rho:Number(rho),theta:Number(theta)};
-        document.getElementById('current').textContent=`ρ ${Number(rho).toFixed(1)} mm · θ ${(Number(theta)*180/Math.PI).toFixed(1)}°`; draw();
+        const rho=Number(p.mainRho ?? p.rho ?? p.r), theta=Number(p.theta ?? p.t);
+        const normalized = radius => Math.max(0,Math.min(maxRho,radius))/(2*maxRho);
+        current={x:.5+Math.cos(theta)*normalized(rho),y:.5+Math.sin(theta)*normalized(rho),rho,theta};
+        const cwRho=Number(p.cwRho);
+        counterweight=p.cwAvailable && Number.isFinite(cwRho) && maxRho>0
+            ? {x:.5-Math.cos(theta)*normalized(cwRho),y:.5-Math.sin(theta)*normalized(cwRho)} : null;
+        const reference=p.rhoReferenced?'step estimate':'relative estimate · home to reference';
+        document.getElementById('cwPosition').textContent=counterweight?`${cwRho.toFixed(1)} mm · ${reference}`:'Position unknown';
+        document.getElementById('current').textContent=`ρ ${rho.toFixed(1)} mm · θ ${(theta*180/Math.PI).toFixed(1)}°`; draw();
     }
     let statusInFlight = false, positionInFlight = false;
     async function refreshStatus() {
@@ -368,10 +419,10 @@ const char MANUAL_UI_HTML[] PROGMEM = R"rawliteral(
         const timeout = setTimeout(() => request.abort(), 4000);
         try {
             const r=await fetch('/api/status', {signal:request.signal}); if(!r.ok) throw new Error(); const data=await r.json();
-            const allowed=['IDLE','RUNNING','PAUSED','STOPPING','CLEARING','PREPARING']; enabled=!stopInProgress && geometryReady && allowed.includes(data.state);
+            const allowed=['IDLE','RUNNING','PAUSED','STOPPING','CLEARING','PREPARING']; enabled=!stopInProgress && !data.independentRhoJog && geometryReady && allowed.includes(data.state);
             const jogAllowed=[...allowed,'INITIALIZED','HOMING_FAILED']; jogEnabled=!stopInProgress && jogAllowed.includes(data.state);
             const drivers=data.drivers || {};
-            axes={theta:drivers.thetaAxis===true,rho:drivers.rhoAxis===true};
+            axes={theta:drivers.thetaAxis===true,rho:drivers.rhoAxis===true,'rho-main':drivers.rho===true,'rho-cw':drivers.rhoCompanion===true};
             setDriverState('driverTheta','Theta',drivers.theta===true);
             setDriverState('driverRho','Rho',drivers.rho===true);
             setDriverState('driverRhoCompanion','Rho companion',drivers.rhoCompanion===true);

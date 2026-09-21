@@ -1,6 +1,7 @@
 #pragma once
 
-const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
+// Sent as one response; see UIPages.hpp for how the parts join.
+const char SETTINGS_UI_HEAD[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -31,7 +32,12 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
             color: var(--ink);
             min-height: 100vh;
             font-size: 14px;
+            /* Nothing on this page is editable prose; the I-beam pointer only
+               suggests otherwise. Controls opt back in below. */
+            cursor: default;
         }
+        input[type="text"], input[type="number"] { cursor: text; }
+        input[type="checkbox"], input[type="range"], input[type="file"], select { cursor: pointer; }
 
         .topbar {
             display: flex; align-items: baseline; justify-content: space-between;
@@ -210,6 +216,9 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
             .grid { grid-template-columns: 1fr 1fr; }
             .dump-buttons { grid-template-columns: 1fr; }
         }
+)rawliteral";
+
+const char SETTINGS_UI_BODY[] PROGMEM = R"rawliteral(
     </style>
 </head>
 <body>
@@ -232,7 +241,7 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
                     <label for="presence-action">Movement Response</label>
                     <select id="presence-action" disabled>
                         <option value="none">Do nothing</option>
-                        <option value="fade_light_on">Fade light on</option>
+                        <option value="restore_light">Restore light</option>
                     </select>
                 </div>
                 <div class="form-group">
@@ -250,7 +259,7 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
             </div>
             <p class="presence-feedback" id="presence-status-note">Presence actions are disabled until empty-room calibration completes.</p>
             <p class="presence-feedback" id="presence-feedback" role="status" aria-live="polite"></p>
-            <p class="test-description">Fade light on raises brightness to the level selected on the main page over two seconds. A setting of 0% keeps the light off. Manual brightness changes cancel the fade. There is no automatic turn-off. This experimental sensor detects movement, not reliable stationary occupancy.</p>
+            <p class="test-description">Restore light respects the On/Off setting selected on the main page. Off keeps the light off. There is no automatic turn-off. This experimental sensor detects movement, not reliable stationary occupancy.</p>
         </section>
 
         <section class="block commissioning">
@@ -534,7 +543,9 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
             <pre class="dump-output" id="dump-output">Click a dump button to view driver registers...</pre>
         </section>
     </div>
+)rawliteral";
 
+const char SETTINGS_UI_SCRIPT[] PROGMEM = R"rawliteral(
     <script>
         const apiBase = '/api';
 
@@ -601,7 +612,7 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
         async function loadPresenceSettings() {
             try {
                 const data = await presenceRequest('/settings/presence');
-                if (!['none', 'fade_light_on'].includes(data.action)) throw new Error('Invalid saved response');
+                if (!['none', 'restore_light'].includes(data.action)) throw new Error('Invalid saved response');
                 document.getElementById('presence-action').value = data.action;
                 document.getElementById('presence-action').disabled = false;
                 document.getElementById('btn-save-presence').disabled = false;
@@ -686,7 +697,10 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
 
         async function calibratePresence() {
             if (calibrationPending) return;
-            if (!confirm('Start this from outside the room. Keep the room empty and the table completely still for about 20 seconds. Start calibration now?')) return;
+            const proceed = await uiConfirm(
+                'Start this from outside the room. Keep the room empty and the table completely still for about 20 seconds.',
+                { title: 'Start presence calibration?', confirmLabel: 'Start calibration' });
+            if (!proceed || calibrationPending) return;
             calibrationPending = true;
             document.getElementById('btn-presence-calibrate').disabled = true;
             const feedback = document.getElementById('presence-feedback');
@@ -758,7 +772,8 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
             formData.append('tMaxJerk', document.getElementById('tune-tMaxJerk').value);
             const response = await fetch(apiBase + '/tuning/motion', { method: 'POST', body: formData });
             const result = await response.json();
-            alert(result.success ? 'Motion settings saved' : 'Not saved: ' + result.message);
+            if (result.success) uiNotify('Motion settings saved.');
+            else uiNotify('Not saved: ' + result.message, { tone: 'error' });
         }
 
         async function saveDriver(driver) {
@@ -768,9 +783,11 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
             });
             const response = await fetch(apiBase + '/tuning/' + driver, { method: 'POST', body: formData });
             const result = await response.json();
-            alert(result.success
-                ? driver.charAt(0).toUpperCase() + driver.slice(1) + ' driver saved and verified'
-                : 'Not saved: ' + result.message);
+            if (result.success) {
+                uiNotify(driver.charAt(0).toUpperCase() + driver.slice(1) + ' driver saved and verified.');
+            } else {
+                uiNotify('Not saved: ' + result.message, { tone: 'error' });
+            }
         }
 
         async function saveHoming() {
@@ -780,7 +797,8 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
             formData.append('minimumTravelMs', document.getElementById('tune-home-minimumTravelMs').value);
             const response = await fetch(apiBase + '/tuning/homing', { method: 'POST', body: formData });
             const result = await response.json();
-            alert(result.success ? 'Homing settings saved' : 'Not saved: ' + result.message);
+            if (result.success) uiNotify('Homing settings saved.');
+            else uiNotify('Not saved: ' + result.message, { tone: 'error' });
         }
 
         async function testMotor(motor, type) {
@@ -793,7 +811,7 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
                 const result = await response.json().catch(() => ({}));
                 if (!response.ok) throw new Error(result.message || 'Test could not be queued');
             } catch (err) {
-                alert('Test failed: ' + err.message);
+                uiNotify('Test failed: ' + err.message, { tone: 'error' });
             }
             btn.disabled = false;
             btn.textContent = originalText;
@@ -829,7 +847,9 @@ const char SETTINGS_UI_HTML[] PROGMEM = R"rawliteral(
                 const result = await response.json();
                 if (!response.ok || !result.success) throw new Error('Abort failed');
             } catch (error) {
-                alert('No abort acknowledgement. Switch off motor power if motion continues; retry Stop.');
+                // A safety instruction: keep it on screen until acknowledged.
+                uiAlert('Switch off motor power if motion continues, then retry Stop.',
+                    { title: 'No abort acknowledgement', dismissLabel: 'Understood' });
             } finally { clearTimeout(timeout); }
         });
         document.getElementById('btn-dump-theta').addEventListener('click', () => dumpDriver('theta'));

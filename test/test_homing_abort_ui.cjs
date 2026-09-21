@@ -15,7 +15,7 @@ assert.match(source, /id="btn-home-abort"[^>]*>Abort homing<\/button>/);
 assert.match(source, /'btn-home-abort'\).addEventListener\('click', \(\) => this.abortHoming\(\)\)/);
 assert.match(source.match(/<button[^>]*id="btn-home-abort"[^>]*>/)[0], /\bdisabled\b/);
 
-function setup(fetchImpl, {route = '/api/home/abort', confirm} = {}) {
+function setup(fetchImpl, {route = '/api/home/abort', uiConfirm} = {}) {
     const elements = {};
     let cleared = false;
     let requests = 0;
@@ -31,8 +31,8 @@ function setup(fetchImpl, {route = '/api/home/abort', confirm} = {}) {
             return fetchImpl(context, options);
         },
         // Any confirmation dialog is a regression: abort must send first.
-        confirm: confirm || (() => { throw new Error('Unexpected confirmation'); }),
-        alert: message => { context.alertMessage = message; }
+        uiConfirm: uiConfirm || (() => { throw new Error('Unexpected confirmation'); }),
+        uiNotify: message => { context.noticeMessage = message; }
     });
     vm.runInContext(script, context);
     context.Controller.prototype.init = () => {};
@@ -76,7 +76,7 @@ async function check(name, fetchImpl, expected, disabled) {
         console.log('PASS: re-home is available when idle and rejects busy states');
     }
     {
-        const h = setup(() => { throw new Error('Unexpected home request'); }, {confirm: () => false});
+        const h = setup(() => { throw new Error('Unexpected home request'); }, {uiConfirm: async () => false});
         h.controller.updateUI({state: 'IDLE'});
         h.controller.clearPath = () => { throw new Error('Cancelled homing must preserve the trace'); };
         await h.controller.homeDevice();
@@ -92,7 +92,7 @@ async function check(name, fetchImpl, expected, disabled) {
             assert.equal(context.elements['btn-home-retry'].disabled, true);
             await context.controller.homeDevice();
             return {ok: true, json: async () => ({success: true})};
-        }, {route: '/api/home', confirm: () => true});
+        }, {route: '/api/home', uiConfirm: async () => true});
         h.controller.updateUI({state: 'IDLE'});
         h.controller.clearPath = () => cleared++;
         await h.controller.homeDevice();
@@ -103,12 +103,25 @@ async function check(name, fetchImpl, expected, disabled) {
         assert.equal(h.elements['btn-home-abort'].disabled, false);
         console.log('PASS: re-home sends once and enables abort despite a failed status poll');
     }
+    for (const state of ['INITIALIZED', 'HOMING_FAILED']) {
+        const h = setup(async (_context, options) => {
+            // Home must send directly, without a Set Home call or a supplied
+            // origin. The firmware discovers zero from the physical stops.
+            assert.equal(options.body, undefined);
+            return {ok: true, json: async () => ({success: true})};
+        }, {route: '/api/home', uiConfirm: async () => true});
+        h.controller.updateUI({state});
+        await h.controller.homeDevice();
+        assert.equal(h.requestCount(), 1);
+        assert.equal(h.elements['btn-home-abort'].disabled, false);
+        console.log('PASS: Home starts directly without an origin from', state);
+    }
     {
         let cleared = 0;
         const h = setup(async context => {
             context.controller.updateUI({state: 'RUNNING'});
             return {ok: false, status: 409, json: async () => ({success: false, message: 'System must be idle to home'})};
-        }, {route: '/api/home', confirm: () => true});
+        }, {route: '/api/home', uiConfirm: async () => true});
         h.controller.updateUI({state: 'IDLE'});
         h.controller.clearPath = () => cleared++;
         await h.controller.homeDevice();

@@ -26,7 +26,7 @@ function page(fetch) {
             assert.ok(nodes.has(id), `Missing element ${id}`);
             return nodes.get(id);
         } }, window: {}, fetch, AbortController, FormData, console,
-        confirm: () => true, alert() {},
+        uiConfirm: async () => true, uiAlert: async () => {}, uiNotify() {},
         setTimeout: (fn, ms) => { timers.set(++timerId, { fn, ms }); return timerId; },
         clearTimeout: id => timers.delete(id)
     });

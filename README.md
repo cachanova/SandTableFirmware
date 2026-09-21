@@ -9,7 +9,7 @@ ESP32 firmware for a Sisyphus-style polar-coordinate sand table. It drives Theta
 - SD card pattern storage, uploads, and optional PNG previews.
 - OTA firmware updates and runtime telemetry.
 - Experimental Wi-Fi CSI motion/occupancy sensing with empty-room calibration
-  and an optional presence-triggered light fade.
+  and an optional presence-triggered light restore.
 
 ## Architecture
 At a high level the firmware is organized around three FreeRTOS tasks pinned across the two ESP32 cores. `src/main.cpp` creates a MotorTask on Core 1 for deterministic step generation, and a WebTask on Core 0 for the Web UI/API, WiFi, and OTA handling. `lib/PolarControl` owns the motion planner, driver configuration, and the inter-task queues. It also spins up a FileReadTask on Core 0 to stream `.thr` pattern points from SD/LittleFS into a coordinate queue. The MotorTask drains that queue and drives the stepper outputs, while the WebTask sends commands (start/stop/speed/tuning) and exposes telemetry back to the UI via SSE and JSON APIs.
@@ -48,7 +48,7 @@ Key settings in `lib/Config/src/Config.h`:
 - Task core affinity, stack sizes, and telemetry intervals
 
 Pin defaults live in `lib/Config/src/Config.h`:
-- LED PWM: 4 (D4 / GPIO4), internal pull-down enabled during LED initialization
+- Light switch: 4 (D4 / GPIO4), steady On/Off output with internal pull-down; starts Off, no PWM
 - Rho Step: 33
 - Rho Dir: 25
 - Theta Step: 32
@@ -70,7 +70,8 @@ Core endpoints (see `lib/WebServer/src/SisyphusWebServer.cpp`):
 - `GET /api/files` list files
 - `POST /api/files/upload` upload `.thr` and optional `.png`
 - `POST /api/files/delete` delete a pattern
-- `GET|POST /api/led/brightness` LED control
+- `GET|POST /api/led/brightness` on/off light control (POST accepts only 0 or 100)
+- The light uses a steady GPIO output, starts off, and has no PWM or fading; see [light control](docs/LIGHT_CONTROL.md).
 - `GET|POST /api/speed` speed control
 - `GET /api/tuning/*` driver and motion tuning
 - `GET /api/presence` CSI presence telemetry

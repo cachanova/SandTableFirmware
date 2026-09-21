@@ -14,7 +14,8 @@ function page() {
     const nodes = {}, timers = new Map(), requests = [];
     const context = vm.createContext({
         document: {getElementById: id => nodes[id] ||= {
-            value: 50, textContent: '', listeners: {},
+            value: 0, textContent: '', listeners: {},
+            setAttribute(name, value) { this[name] = value; },
             setPointerCapture() {},
             addEventListener(event, callback) { this.listeners[event] = callback; }
         }},
@@ -39,50 +40,43 @@ function page() {
     return {controller, nodes, requests, timers, fire, advance: ms => { now += ms; }};
 }
 
-test('rapid edits keep one request in flight and send only the final pending value', async () => {
+test('rapid toggles serialize writes and retain the final selection', async () => {
     const h = page();
-    h.controller.setBrightness(20);
-    for (let value = 21; value <= 80; ++value) h.controller.setBrightness(value);
+    h.controller.setBrightness(100);
+    h.controller.setBrightness(0);
+    h.controller.setBrightness(100);
+    h.controller.setBrightness(0);
     assert.equal(h.requests.length, 1);
-    h.controller.syncBrightnessControl({ledTargetBrightness: 50});
-    assert.equal(h.nodes['brightness-value'].textContent, '80%');
-    h.advance(500);
+    h.controller.syncBrightnessControl({ledTargetBrightness: 100});
+    assert.equal(h.nodes['light-toggle'].checked, false);
     h.requests[0].resolve(ok()); await flush();
     assert.equal(h.requests.length, 2);
-    assert.equal(h.requests[1].options.body.get('brightness'), '80');
-    assert.equal(h.nodes['brightness-message'].textContent, '');
+    assert.equal(h.requests[1].options.body.get('brightness'), '0');
     h.requests[1].resolve(ok()); await flush();
     assert.equal(h.controller.brightnessInFlight, false);
-    assert.equal(h.nodes['brightness-message'].textContent, '');
     assert.equal(h.timers.size, 0);
 });
 
-test('fast responses are rate limited and input/change duplicates are suppressed', async () => {
+test('only Off and On are accepted; duplicate selections do not write', async () => {
     const h = page();
-    h.controller.setBrightness(60);
+    for (let value = 1; value < 100; ++value) h.controller.setBrightness(value);
+    assert.equal(h.requests.length, 0);
+    h.controller.setBrightness(100);
     h.requests[0].resolve(ok()); await flush();
-    h.controller.setBrightness(60);
+    h.controller.setBrightness(100);
     assert.equal(h.requests.length, 1);
-    h.controller.setBrightness(70);
-    h.controller.setBrightness(90);
-    assert.equal(h.requests.length, 1);
-    h.fire(100);
-    assert.equal(h.requests.length, 2);
-    assert.equal(h.requests[1].options.body.get('brightness'), '90');
-    h.requests[1].resolve(ok()); await flush();
 });
 
-test('a lost acknowledgement expires, discards the backlog and permits explicit retry', async () => {
+test('a lost acknowledgement drops pending toggles and permits explicit retry', async () => {
     const h = page();
-    h.controller.setBrightness(60);
-    h.controller.setBrightness(80);
+    h.controller.setBrightness(100);
+    h.controller.setBrightness(0);
     h.fire(2500); await flush();
     assert.equal(h.controller.brightnessInFlight, false);
     assert.equal(h.controller.brightnessPending, undefined);
     assert.equal(h.requests.length, 1);
-    assert.equal(h.timers.size, 0);
     assert.match(h.nodes['brightness-message'].textContent, /unconfirmed/);
-    h.controller.setBrightness(80);
+    h.controller.setBrightness(0);
     assert.equal(h.requests.length, 2);
     h.requests[1].resolve(ok()); await flush();
 });
@@ -99,55 +93,44 @@ test('deadline also covers an incomplete acknowledgement body', async () => {
     assert.equal(h.controller.brightnessInFlight, false);
 });
 
-test('server rejection is visible and does not claim the light changed', async () => {
+test('server rejection is visible', async () => {
     const h = page();
-    h.controller.setBrightness(40);
+    h.controller.setBrightness(100);
     h.requests[0].resolve({ok: false, status: 503,
-        json: async () => ({success: false, message: 'LED controller not ready'})});
+        json: async () => ({success: false, message: 'Light output could not be changed'})});
     await flush();
-    assert.match(h.nodes['brightness-message'].textContent, /LED controller not ready/);
+    assert.match(h.nodes['brightness-message'].textContent, /could not be changed/);
     assert.equal(h.controller.brightnessFailed, true);
 });
 
-test('status replies begun before or during a write cannot restore old brightness', async () => {
+test('stale status replies cannot undo a toggle', async () => {
     const h = page();
     h.controller.updateUI = (status, revision) => h.controller.syncBrightnessControl(status, revision);
     const before = h.controller.pollStatusOnce();
-    h.controller.setBrightness(75);
-    h.requests[0].resolve({ok: true, json: async () => ({ledTargetBrightness: 50})});
+    h.controller.setBrightness(100);
+    h.requests[0].resolve({ok: true, json: async () => ({ledTargetBrightness: 0})});
     await before;
-    assert.equal(h.nodes['brightness-value'].textContent, '75%');
+    assert.equal(h.nodes['light-toggle'].checked, true);
     const during = h.controller.pollStatusOnce();
     h.requests[1].resolve(ok()); await flush();
-    h.requests[2].resolve({ok: true, json: async () => ({ledTargetBrightness: 50})});
+    h.requests[2].resolve({ok: true, json: async () => ({ledTargetBrightness: 0})});
     await during;
-    assert.equal(h.nodes['brightness-value'].textContent, '75%');
-    h.controller.syncBrightnessControl({ledTargetBrightness: 75});
-    assert.equal(h.nodes['brightness-slider'].value, 75);
+    assert.equal(h.nodes['light-toggle'].checked, true);
+    h.controller.syncBrightnessControl({ledTargetBrightness: 0});
+    assert.equal(h.nodes['light-toggle'].checked, false);
 });
 
-test('a later external change permits selecting the previously sent value again', async () => {
-    const h = page();
-    h.controller.setBrightness(100);
-    h.requests[0].resolve(ok()); await flush();
-    h.controller.syncBrightnessControl({ledTargetBrightness: 30});
-    h.advance(100);
-    h.controller.setBrightness(100);
-    assert.equal(h.requests.length, 2);
-    h.requests[1].resolve(ok()); await flush();
-});
-
-test('slider input sends live updates and polling never moves it during a drag', async () => {
+test('checkbox changes issue binary requests and intermediate status is ignored', async () => {
     const h = page();
     h.controller.setupEventListeners();
-    const slider = h.nodes['brightness-slider'];
-    slider.listeners.pointerdown({pointerId: 1});
-    h.controller.syncBrightnessControl({ledTargetBrightness: 10});
-    assert.equal(slider.value, 50);
-    slider.listeners.input({target: {value: '0'}});
-    assert.equal(h.requests[0].options.body.get('brightness'), '0');
-    slider.listeners.pointerup();
-    slider.listeners.change({target: {value: '0'}});
-    assert.equal(h.requests.length, 1);
+    const toggle = h.nodes['light-toggle'];
+    toggle.listeners.change({target: {checked: true}});
+    assert.equal(h.requests[0].options.body.get('brightness'), '100');
     h.requests[0].resolve(ok()); await flush();
+    h.controller.syncBrightnessControl({ledTargetBrightness: 45});
+    assert.equal(toggle.checked, true);
+    toggle.listeners.change({target: {checked: false}});
+    assert.equal(h.requests[1].options.body.get('brightness'), '0');
+    h.requests[1].resolve(ok()); await flush();
+    assert.equal(h.nodes['brightness-value'].textContent, 'Off');
 });

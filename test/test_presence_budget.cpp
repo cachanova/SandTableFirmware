@@ -57,7 +57,7 @@ int main() {
     float powers[CsiFeatures::kBins]{};
     for (auto& byte : bytes) byte = 10;
     uint32_t now = 0;
-    uint8_t brightness = 0;
+    bool lightOn = false;
     const size_t before = allocations;
     const auto start = std::chrono::steady_clock::now();
     forbidAllocation = true;
@@ -69,7 +69,7 @@ int main() {
             assert(CsiFeatures::extract(bytes, sizeof(bytes), powers));
             assert(detector.addPowers(powers, CsiFeatures::kBins, now));
             const auto status = detector.status(now);
-            automation.update(status.motion, brightness, 128, now, brightness);
+            automation.update(status.motion, lightOn, true, lightOn);
         }
         detector.setSuppressed(true);
         detector.setSuppressed(false);

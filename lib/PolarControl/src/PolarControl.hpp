@@ -2,6 +2,7 @@
 #include <TMC2209.h>
 #include <Print.h>
 #include "MotionPlanner.hpp"
+#include "RhoPositionTracker.hpp"
 #include "Profiler.hpp"
 #include <PosGen.hpp>
 #include <freertos/semphr.h>
@@ -221,7 +222,11 @@ public:
   // Relative single-axis jogs are also allowed before homing. Unhomed rho
   // moves use a temporary logical midpoint so both directions remain usable;
   // completing the jog does not promote the controller to IDLE/homed.
-  bool jogRelative(float thetaDelta, float rhoDelta);
+  using RhoJogMotor = RhoPositionTracker::Motor;
+  bool jogRelative(float thetaDelta, float rhoDelta,
+                   RhoJogMotor motor = RhoJogMotor::BOTH);
+  RhoPositionTracker::Sample getRhoPositionEstimate();
+  bool isIndependentRhoJog() const { return m_independentRhoJog.load(); }
   bool startClearing(std::unique_ptr<PosGen> posGen);
   bool loadAndRunFile(String filePath);
   bool loadAndRunFile(String filePath, float maxRho);
@@ -410,7 +415,7 @@ private:
   std::unique_ptr<PosGen> m_posGen;
 
   // Speed setting: 1-10
-  std::atomic<uint8_t> m_speed{5};
+  std::atomic<uint8_t> m_speed{10};
   bool m_clearingSpeedActive = false;
   bool m_pauseAfterStop = false;
   bool m_restartAfterSpeedChange = false;
@@ -443,6 +448,9 @@ private:
                                   uint16_t targetPhase);
   bool serviceInactiveRhoHoldLocked();
   void clearInactiveRhoHoldLocked();
+  bool restoreInactiveRhoInterfaceLocked(uint8_t address, uint16_t microsteps);
+  bool finishIndependentRhoJogLocked();
+  void sampleRhoPositionLocked();
   void recordHomingSample(bool valid, uint16_t stallGuard,
                          uint16_t contactBaseline = 0,
                          uint16_t contactThreshold = 0);
@@ -485,6 +493,13 @@ private:
                 const DriverSettings& homingSettings);
   bool homeDrivers();
 
+  RhoPositionTracker m_rhoPosition{R_MAX * 0.5};
+  RhoJogMotor m_jogMotor = RhoJogMotor::BOTH;
+  bool m_rhoManualProfileDirty = false;
+  std::atomic<bool> m_independentRhoJog{false};
+  double m_jogSavedTheta = 0.0;
+  double m_jogSavedRho = 0.0;
+  uint32_t m_inactiveRhoHoldGconf = 0;
   uint8_t m_inactiveRhoHoldAddress = UINT8_MAX;
   uint16_t m_inactiveRhoHoldTargetPhase = 0;
   uint32_t m_inactiveRhoHoldLastToggleMs = 0;

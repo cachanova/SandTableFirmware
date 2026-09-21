@@ -7,7 +7,7 @@ async function check(page) {
     const html = fs.readFileSync(`lib/WebServer/src/${page}`, 'utf8');
     const script = html.split('<script>')[1].split('</script>')[0]
         .replace('const controller = new SisyphusController();', 'globalThis.Controller = SisyphusController;');
-    const requests = [], alerts = [], warnings = [], draws = [], timers = new Set();
+    const requests = [], notices = [], warnings = [], draws = [], timers = new Set();
     let closed = 0, failThumbnail = false, failDecode = false;
     const elements = {};
     const canvas = { getContext: () => ({ drawImage: (...args) => draws.push(args) }),
@@ -19,7 +19,7 @@ async function check(page) {
         } },
         window: {}, AbortController,
         setTimeout: fn => { timers.add(fn); return fn; }, clearTimeout: fn => timers.delete(fn),
-        alert: message => alerts.push(message),
+        uiNotify: message => notices.push(message),
         console: {warn: (...args) => warnings.push(args)},
         createImageBitmap: async () => { if (failDecode) throw new Error('Not an image'); return bitmap; },
         FormData: class { constructor() { this.fields=[]; } append(...args) { this.fields.push(args); } },
@@ -50,7 +50,7 @@ async function check(page) {
     await upload(pattern, original);
     assert.equal(requests.length, 3);
     assert.equal(warnings.length, 1);
-    assert.ok(alerts.every(message => !message.startsWith('Upload failed')));
+    assert.ok(notices.every(message => !message.startsWith('Upload failed')));
     assert.equal(closed, 2); assert.equal(timers.size, 0);
     failDecode = true; requests.length = 0;
     await upload(pattern, original);

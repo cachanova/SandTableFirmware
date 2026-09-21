@@ -1,6 +1,7 @@
 #pragma once
 
-const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
+// Sent as one response; see UIPages.hpp for how the parts join.
+const char WEB_UI_HEAD[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -31,7 +32,12 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             color: var(--ink);
             min-height: 100vh;
             font-size: 14px;
+            /* Nothing on this page is editable prose; the I-beam pointer only
+               suggests otherwise. Controls opt back in below. */
+            cursor: default;
         }
+        input[type="text"], input[type="number"] { cursor: text; }
+        input[type="checkbox"], input[type="range"], input[type="file"], select { cursor: pointer; }
 
         /* ── Header ─────────────────────── */
         .topbar {
@@ -150,6 +156,13 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             margin-bottom: 10px;
         }
         .slider-value { font-family: var(--mono); color: var(--ink); }
+        .light-switch { display: inline-flex; cursor: pointer; position: relative; }
+        .light-switch input { position: absolute; opacity: 0; width: 48px; height: 28px; margin: 0; }
+        .light-switch-track { width: 48px; height: 28px; border-radius: 14px; background: var(--ink-faint); transition: background .15s; }
+        .light-switch-track::after { content: ""; display: block; width: 22px; height: 22px; margin: 3px; border-radius: 50%; background: white; transition: transform .15s; }
+        .light-switch input:checked + .light-switch-track { background: var(--ink); }
+        .light-switch input:checked + .light-switch-track::after { transform: translateX(20px); }
+        .light-switch input:focus-visible + .light-switch-track { outline: 2px solid var(--ink); outline-offset: 3px; }
         #brightness-message { margin-top: 8px; font-size: 12px; color: var(--ink-faint); }
         #brightness-message:empty { display: none; }
         input[type="range"] {
@@ -405,6 +418,9 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             .topbar { padding: 16px 20px; }
             .topnav { gap: 18px; }
         }
+)rawliteral";
+
+const char WEB_UI_BODY[] PROGMEM = R"rawliteral(
     </style>
 </head>
 <body>
@@ -456,17 +472,17 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 <div class="slider-section">
                     <div class="slider-header">
                         <span>Light</span>
-                        <span class="slider-value" id="brightness-value">50%</span>
+                        <span class="slider-value" id="brightness-value">On</span>
                     </div>
-                    <input type="range" id="brightness-slider" min="0" max="100" value="50">
+                    <label class="light-switch"><input type="checkbox" id="light-toggle" role="switch" aria-label="Light" checked><span class="light-switch-track" aria-hidden="true"></span></label>
                     <div id="brightness-message" role="status" aria-live="polite"></div>
                 </div>
                 <div class="slider-section">
                     <div class="slider-header">
                         <span>Speed</span>
-                        <span class="slider-value" id="speed-value">5</span>
+                        <span class="slider-value" id="speed-value">10</span>
                     </div>
-                    <input type="range" id="speed-slider" min="1" max="10" value="5">
+                    <input type="range" id="speed-slider" min="1" max="10" value="10">
                 </div>
             </div>
         </div>
@@ -577,7 +593,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     <div class="fact"><span class="k">Wi-Fi</span><span class="v" id="wifi-ssid">—</span></div>
                     <div class="fact"><span class="k">IP Address</span><span class="v" id="wifi-ip">—</span></div>
                     <div class="fact"><span class="k">Signal</span><span class="v" id="wifi-rssi">—</span></div>
-                    <div class="fact"><span class="k">Light</span><span class="v"><span id="status-brightness">50</span>%</span></div>
+                    <div class="fact"><span class="k">Light</span><span class="v"><span id="status-brightness">On</span></span></div>
                     <div class="fact"><span class="k">Presence</span><span class="v" id="presence-state">Starting…</span></div>
                     <div class="fact"><span class="k">CSI activity</span><span class="v" id="presence-score">—</span></div>
                 </div>
@@ -598,7 +614,9 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             </section>
         </div>
     </main>
+)rawliteral";
 
+const char WEB_UI_SCRIPT[] PROGMEM = R"rawliteral(
     <script>
         async function uploadPatternThumbnail(apiBase, imageFile, imageName) {
             // Keep full-size uploads for the canvas; list previews need only 128px.
@@ -638,6 +656,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 this.homingActive = false;
                 this.canHome = false;
                 this.homeInFlight = false;
+                this.homeConfirmPending = false;
                 this.errorsInterval = null;
                 this.lastPatternName = '';
                 this.selectedPattern = null;
@@ -680,8 +699,11 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 filePattern.addEventListener('change', async () => {
                     if (filePattern.files.length === 0) return;
                     const patternFile = filePattern.files[0];
-                    
-                    if (confirm('Do you want to add a preview image for this pattern?')) {
+
+                    const withImage = await uiConfirm(
+                        'A preview image is shown on the pattern list and behind the live path.',
+                        { title: 'Add a preview image?', confirmLabel: 'Choose image', cancelLabel: 'Skip' });
+                    if (withImage) {
                         fileImage.value = ''; // Reset
                         // Runs on selection or on picker cancel (uploads without image)
                         const handleImage = async () => {
@@ -701,7 +723,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
 
             async performUpload(patternFile, imageFile) {
                 if (!this.storageAvailable) {
-                    alert('Insert an SD card before uploading patterns.');
+                    uiNotify('Insert an SD card before uploading patterns.', { tone: 'error' });
                     return;
                 }
                 const statusBadge = document.getElementById('state-badge');
@@ -730,10 +752,10 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                         await uploadPatternThumbnail(this.apiBase, imageFile, imageName);
                     }
 
-                    alert('Upload complete!');
+                    uiNotify('Upload complete.');
                     await this.loadFileList();
                 } catch (err) {
-                    alert('Upload failed: ' + err.message);
+                    uiNotify('Upload failed: ' + err.message, { tone: 'error' });
                 } finally {
                     statusBadge.textContent = originalText;
                     // Restore original class will happen on next status update
@@ -887,16 +909,9 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             }
 
             setupEventListeners() {
-                const brightness = document.getElementById('brightness-slider');
-                brightness.addEventListener('pointerdown', e => {
-                    this.brightnessDragging = true;
-                    brightness.setPointerCapture(e.pointerId);
+                document.getElementById('light-toggle').addEventListener('change', e => {
+                    this.setBrightness(e.target.checked ? 100 : 0);
                 });
-                brightness.addEventListener('pointerup', () => { this.brightnessDragging = false; });
-                brightness.addEventListener('pointercancel', () => { this.brightnessDragging = false; });
-                brightness.addEventListener('lostpointercapture', () => { this.brightnessDragging = false; });
-                brightness.addEventListener('input', e => this.setBrightness(Number(e.target.value)));
-                brightness.addEventListener('change', e => this.setBrightness(Number(e.target.value)));
 
                 document.getElementById('speed-slider').addEventListener('input', (e) => {
                     document.getElementById('speed-value').textContent = e.target.value;
@@ -954,10 +969,10 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             async startPattern() {
                 if (this.startInFlight) return;
                 const file = this.selectedPattern;
-                if (!file) { alert('Please select a pattern'); return; }
+                const message = document.getElementById('playback-message');
+                if (!file) { message.textContent = 'Select a pattern first.'; return; }
                 this.startInFlight = true;
                 const button = document.getElementById('btn-start');
-                const message = document.getElementById('playback-message');
                 button.disabled = true;
                 message.textContent = `Requesting ${file.replace(/\.thr$/, '')}…`;
                 const formData = new FormData();
@@ -1040,8 +1055,19 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             }
 
             async homeDevice() {
-                if (!this.canHome || this.homeInFlight) return;
-                if (!confirm('Run sensorless homing? Keep clear of the mechanism and watch the carriage.')) return;
+                if (!this.canHome || this.homeInFlight || this.homeConfirmPending) return;
+                // The confirmation no longer blocks the page, so the button
+                // stays live: hold the slot while the operator decides.
+                this.homeConfirmPending = true;
+                let proceed = false;
+                try {
+                    proceed = await uiConfirm(
+                        'The carriage moves until it stalls against its limit. Keep clear of the mechanism and watch it run.',
+                        { title: 'Run sensorless homing?', confirmLabel: 'Start homing', danger: true });
+                } finally {
+                    this.homeConfirmPending = false;
+                }
+                if (!proceed || !this.canHome || this.homeInFlight) return;
                 this.homeInFlight = true;
                 document.getElementById('btn-home').disabled = true;
                 document.getElementById('btn-home-retry').disabled = true;
@@ -1053,8 +1079,8 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     document.getElementById('home-abort-status').textContent = '';
                     this.clearPath();
                 } catch (error) {
-                    alert(error.status ? error.message
-                        : 'No acknowledgement from the table. Homing is unconfirmed; check its status before retrying.');
+                    document.getElementById('home-abort-status').textContent = error.status ? error.message
+                        : 'No acknowledgement from the table. Homing is unconfirmed; check its status before retrying.';
                 } finally {
                     await this.pollStatusOnce().catch(() => {});
                     this.homeInFlight = false;
@@ -1069,50 +1095,37 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 const response = await fetch(this.apiBase + '/home/confirm', { method: 'POST', body: formData });
                 const result = await response.json();
                 if (!result.success) {
-                    alert('Failed: ' + (result.message || 'Unknown error'));
+                    uiNotify('Failed: ' + (result.message || 'Unknown error'), { tone: 'error' });
                 }
                 await this.pollStatusOnce();
             }
 
+            showBrightness(value) {
+                document.getElementById('light-toggle').checked = value === 100;
+                document.getElementById('brightness-value').textContent = value === 100 ? 'On' : 'Off';
+            }
+
             syncBrightnessControl(status, revision = this.brightnessRevision || 0) {
-                if (revision !== (this.brightnessRevision || 0) || this.brightnessDragging ||
+                if (revision !== (this.brightnessRevision || 0) ||
                     this.brightnessInFlight || this.brightnessPending !== undefined) return;
-                const slider = document.getElementById('brightness-slider');
                 const target = Number.isFinite(status.ledTargetBrightness)
                     ? status.ledTargetBrightness : status.ledBrightness;
-                slider.value = target;
+                if (target !== 0 && target !== 100) return;
                 this.brightnessDesired = target;
-                document.getElementById('brightness-value').textContent = target + '%';
+                this.showBrightness(target);
             }
 
             setBrightness(value) {
-                if (!Number.isInteger(value) || value < 0 || value > 100) return;
-                // input and change may report the same final value. Keep one
-                // request plus one replaceable pending value, never a drag backlog.
+                if (value !== 0 && value !== 100) return;
+                // Serialize rapid toggles, keeping only the latest pending selection.
                 if (value === this.brightnessDesired && !this.brightnessFailed) return;
                 this.brightnessDesired = value;
                 this.brightnessPending = value;
                 this.brightnessFailed = false;
                 this.brightnessRevision = (this.brightnessRevision || 0) + 1;
-                document.getElementById('brightness-value').textContent = value + '%';
+                this.showBrightness(value);
                 document.getElementById('brightness-message').textContent = '';
-                this.scheduleBrightness();
-            }
-
-            scheduleBrightness() {
-                if (this.brightnessInFlight || this.brightnessTimer ||
-                    this.brightnessPending === undefined) return;
-                // At most ten sends per second, including fast local networks.
-                const remaining = this.brightnessLastSentAt === undefined ? 0
-                    : Math.max(0, 100 - (Date.now() - this.brightnessLastSentAt));
-                if (remaining) {
-                    this.brightnessTimer = setTimeout(() => {
-                        this.brightnessTimer = null;
-                        this.sendBrightness();
-                    }, remaining);
-                } else {
-                    this.sendBrightness();
-                }
+                this.sendBrightness();
             }
 
             async sendBrightness() {
@@ -1120,7 +1133,6 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 const value = this.brightnessPending;
                 this.brightnessPending = undefined;
                 this.brightnessInFlight = true;
-                this.brightnessLastSentAt = Date.now();
                 const formData = new FormData();
                 formData.append('brightness', value);
                 try {
@@ -1138,7 +1150,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                     // Polls begun before this acknowledgement may contain the
                     // previous value even if they finish after the write.
                     this.brightnessRevision = (this.brightnessRevision || 0) + 1;
-                    this.scheduleBrightness();
+                    this.sendBrightness();
                 }
             }
 
@@ -1651,7 +1663,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
                 }
 
                 document.getElementById('current-pattern').textContent = displayPattern.replace('.thr', '');
-                document.getElementById('status-brightness').textContent = status.ledBrightness;
+                document.getElementById('status-brightness').textContent = status.ledBrightness === 100 ? 'On' : 'Off';
                 document.getElementById('uptime').textContent = this.formatUptime(status.uptime);
 
                 const presence = status.presence || {};
@@ -1842,7 +1854,7 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             // Playlist methods
             async addToPlaylist() {
                 const file = this.selectedPattern;
-                if (!file) { alert('Select a pattern first'); return; }
+                if (!file) { uiNotify('Select a pattern first.'); return; }
                 const formData = new FormData();
                 formData.append('file', file);
                 formData.append('useClearing', 'true');
@@ -1851,21 +1863,28 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             }
 
             async addAllToPlaylist() {
-                if (!confirm('Add all patterns to playlist?')) return;
+                const proceed = await uiConfirm(
+                    'Every pattern in the library is appended to the current playlist.',
+                    { title: 'Add all patterns?', confirmLabel: 'Add all' });
+                if (!proceed) return;
                 const response = await fetch(this.apiBase + '/playlist/addall', { method: 'POST' });
                 const result = await response.json();
-                if (result.success) alert(`Added ${result.count} patterns`);
+                if (result.success) uiNotify(`Added ${result.count} patterns.`);
                 await this.loadPlaylistStatus();
             }
 
             async clearPlaylist() {
-                if (!confirm('Clear playlist?')) return;
+                const proceed = await uiConfirm('The playlist is emptied. Patterns stay on the card.',
+                    { title: 'Clear playlist?', confirmLabel: 'Clear', danger: true });
+                if (!proceed) return;
                 await fetch(this.apiBase + '/playlist/clear', { method: 'POST' });
                 await this.loadPlaylistStatus();
             }
 
             async clearErrors() {
-                if (!confirm('Clear all error logs?')) return;
+                const proceed = await uiConfirm('Every logged error is discarded.',
+                    { title: 'Clear all error logs?', confirmLabel: 'Clear', danger: true });
+                if (!proceed) return;
                 await fetch(this.apiBase + '/errors/clear', { method: 'POST' });
                 const errors = await this.getErrors();
                 this.updateErrorUI(errors);
@@ -1895,32 +1914,35 @@ const char WEB_UI_HTML[] PROGMEM = R"rawliteral(
             }
 
             async shufflePlaylist() {
-                if (!confirm('Shuffle playlist?')) return;
+                const proceed = await uiConfirm('The current playlist order is replaced by a random one.',
+                    { title: 'Shuffle playlist?', confirmLabel: 'Shuffle' });
+                if (!proceed) return;
                 await fetch(this.apiBase + '/playlist/shuffle', { method: 'POST' });
                 await this.loadPlaylistStatus();
             }
 
             async savePlaylist() {
                 const name = document.getElementById('playlist-name-input').value.trim();
-                if (!name) { alert('Enter a playlist name'); return; }
+                if (!name) { uiNotify('Enter a playlist name first.'); return; }
                 const formData = new FormData();
                 formData.append('name', name);
                 const response = await fetch(this.apiBase + '/playlist/save', { method: 'POST', body: formData });
                 const result = await response.json();
-                if (result.success) alert('Saved: ' + name);
+                if (result.success) uiNotify('Saved: ' + name);
+                else uiNotify('Not saved: ' + (result.message || 'Unknown error'), { tone: 'error' });
             }
 
             async loadPlaylist() {
                 const name = document.getElementById('playlist-name-input').value.trim();
-                if (!name) { alert('Enter a playlist name'); return; }
+                if (!name) { uiNotify('Enter a playlist name first.'); return; }
                 const formData = new FormData();
                 formData.append('name', name);
                 const response = await fetch(this.apiBase + '/playlist/load', { method: 'POST', body: formData });
                 if (response.ok) {
                     await this.loadPlaylistStatus();
-                    alert('Loaded: ' + name);
+                    uiNotify('Loaded: ' + name);
                 } else {
-                    alert('Playlist not found');
+                    uiNotify('Playlist not found: ' + name, { tone: 'error' });
                 }
             }
 

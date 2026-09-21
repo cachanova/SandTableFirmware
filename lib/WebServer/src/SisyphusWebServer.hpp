@@ -48,6 +48,7 @@ private:
     float m_pendingManualRho = 0.0f;
     float m_pendingJogTheta = 0.0f;
     float m_pendingJogRho = 0.0f;
+    PolarControl::RhoJogMotor m_pendingJogMotor = PolarControl::RhoJogMotor::BOTH;
     float m_pendingThetaSegmentTarget = 0.0f;
     float m_pendingRhoSegmentTarget = 0.0f;
 #ifdef SISYPHUS_RHO_COMMISSIONING
@@ -209,10 +210,6 @@ private:
     SemaphoreHandle_t m_stateMutex = nullptr;
     StaticSemaphore_t m_ledMutexStorage{};
     SemaphoreHandle_t m_ledMutex = nullptr;
-    uint32_t m_ledLastRequestUs = 0;
-    uint32_t m_ledMaxRequestUs = 0;
-    uint32_t m_ledLastLockWaitUs = 0;
-    uint32_t m_ledMaxLockWaitUs = 0;
 
 
 };

@@ -39,7 +39,7 @@ def main():
     if status:
         print('status', status)
 
-    bright_set = safe('brightness_set', lambda: post_form('/api/led/brightness', {'brightness': '10'}))
+    bright_set = safe('brightness_set', lambda: post_form('/api/led/brightness', {'brightness': '0'}))
     if bright_set:
         print('brightness_set', bright_set)
 

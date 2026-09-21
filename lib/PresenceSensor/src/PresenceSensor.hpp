@@ -80,7 +80,7 @@ private:
     std::atomic<bool> m_captureEnabled{false};
     std::atomic<bool> m_available{false};
     std::atomic<uint8_t> m_action{
-        static_cast<uint8_t>(PresenceAction::FADE_LIGHT_ON)};
+        static_cast<uint8_t>(PresenceAction::RESTORE_LIGHT)};
     std::atomic<uint32_t> m_packets{0};
     std::atomic<uint32_t> m_dropped{0};
     // Protected together with the detector by m_detectorMutex.

@@ -19,11 +19,16 @@ static constexpr int kWebCore = 0;
 // Config portal timeout for WiFiManager in seconds.
 static constexpr uint32_t kWifiPortalTimeoutSec = 180;
 
-// Main-only SG startup uses the qualified dedicated profile and bounded
-// retries. Serve the abort endpoint before starting; failures keep zero untrusted.
+// SG homing uses the dedicated profile and bounded retries for each fitted
+// motor. Serve the abort endpoint before starting; failures keep zero untrusted.
 // Service builds still boot without motion. See RHO_HOMING_TUNING.md for evidence
 // and SG/command-ledger limitations; these flags do not provide position sensing.
+#ifdef SISYPHUS_FULL_MANUAL
+static constexpr bool kAutoHomeOnBoot = false;
+#else
 static constexpr bool kAutoHomeOnBoot = true;
+#endif
+// Manual Home and automatic boot homing are independent controls.
 static constexpr bool kEnableUnknownPositionRhoHoming = true;
 
 // Static IP defaults for STA mode.
@@ -53,10 +58,22 @@ static constexpr uint8_t kUartTxPin = 26;
 // companion uses address 1. Both receive the shared RHO STEP/DIR signals.
 static constexpr uint8_t kRhoDriverAddress = 0;
 static constexpr uint8_t kRhoCDriverAddress = 1;
+// The fitted CW socket presents the opposite DIR level to the main socket.
+// Compensate with SHAFT so their effective STEP directions match (2026-09-20).
+static constexpr bool kRhoCompanionDirectionInverted = true;
 static constexpr uint8_t kThetaDriverAddress = 2;
-// The address-1 driver is fitted, but its motor is not connected. Keep its
-// bridge off during all motion, including main-only sensorless homing.
+// The reinstalled address-1 motor is enabled in paired service/full manual images.
+// Main-only images keep its bridge off until paired tuning is qualified.
+#ifdef SISYPHUS_RHO_PAIRED_SERVICE
+#ifndef SISYPHUS_RHO_COMMISSIONING
+#error "Paired rho service requires commissioning mode (no automatic homing)"
+#endif
+#endif
+#if defined(SISYPHUS_RHO_PAIRED_SERVICE) || defined(SISYPHUS_FULL_MANUAL)
+static constexpr bool kRhoCompanionMotorEnabled = true;
+#else
 static constexpr bool kRhoCompanionMotorEnabled = false;
+#endif
 
 // FYSETC TMC2209 V3.0 uses 0.11 ohm external sense resistors. UART operation
 // disables analog current scaling, so the onboard VREF potentiometer does not

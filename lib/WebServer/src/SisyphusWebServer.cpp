@@ -1,9 +1,6 @@
 #include "WiFi.h"
 #include "SisyphusWebServer.hpp"
-#include "WebUI.h"
-#include "ManualUI.h"
-#include "SettingsUI.h"
-#include "FileUI.h"
+#include "UIPages.hpp"
 #include "JsonHelpers.hpp"
 #include "BufferedResponse.hpp"
 #include "BulkResponseBudget.hpp"
@@ -285,9 +282,7 @@ void SisyphusWebServer::begin(PolarControl *polarControl,
 
     m_server.on("/settings", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
-        request->send(new StaticContentResponse("text/html",
-                      reinterpret_cast<const uint8_t *>(SETTINGS_UI_HTML),
-                      sizeof(SETTINGS_UI_HTML) - 1));
+        request->send(uiPageResponse(SETTINGS_UI_PAGE));
     });
 
     m_server.on("/tuning", HTTP_GET, [this](AsyncWebServerRequest *request) {
@@ -297,16 +292,12 @@ void SisyphusWebServer::begin(PolarControl *polarControl,
 
     m_server.on("/manual", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
-        request->send(new StaticContentResponse("text/html",
-                      reinterpret_cast<const uint8_t *>(MANUAL_UI_HTML),
-                      sizeof(MANUAL_UI_HTML) - 1));
+        request->send(uiPageResponse(MANUAL_UI_PAGE));
     });
 
     m_server.on("/files", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
-        request->send(new StaticContentResponse("text/html",
-                      reinterpret_cast<const uint8_t *>(FILE_UI_HTML),
-                      sizeof(FILE_UI_HTML) - 1));
+        request->send(uiPageResponse(FILE_UI_PAGE));
     });
 
     m_server.on("/api/status", HTTP_GET, [this](AsyncWebServerRequest *request) {
@@ -1031,47 +1022,31 @@ void SisyphusWebServer::loop() {
 static void formatPositionEvent(char* buffer, size_t capacity,
                                 const PolarCord_t& position,
                                 const PolarVelocity_t& velocity,
-                                const CartesianCord_t& norm, bool clear) {
+                                const CartesianCord_t& norm, bool clear,
+                                const RhoPositionTracker::Sample& rhoEstimate) {
     // Radial and tangential components are perpendicular; no extra sin/cos
     // calls are needed to calculate Cartesian speed.
     const float speed = hypotf(velocity.rho, position.rho * velocity.theta);
     snprintf(buffer, capacity,
-             "{\"x\":%.4f,\"y\":%.4f,\"r\":%.1f,\"t\":%.2f,\"vr\":%.2f,\"vt\":%.3f,\"vc\":%.2f%s}",
+             "{\"x\":%.4f,\"y\":%.4f,\"r\":%.1f,\"t\":%.2f,\"vr\":%.2f,\"vt\":%.3f,\"vc\":%.2f,\"mainRho\":%.2f,\"cwRho\":%.2f,\"cwAvailable\":%s,\"rhoReferenced\":%s%s}",
              norm.x, norm.y, position.rho, position.theta, velocity.rho,
-             velocity.theta, speed, clear ? ",\"clear\":1" : "");
+             velocity.theta, speed, rhoEstimate.mainRho, rhoEstimate.companionRho,
+             rhoEstimate.available ? "true" : "false", rhoEstimate.referenced ? "true" : "false", clear ? ",\"clear\":1" : "");
 }
 
 void SisyphusWebServer::updatePresenceAutomation() {
-    if (m_ledController == nullptr) return;
-
-    // getStatus can block on the detector mutex; never call it while holding
-    // the LED lock or a manual brightness request could wait behind it.
-    const bool havePresence = m_presenceSensor != nullptr;
-    PresenceStatus status;
-    if (havePresence) status = m_presenceSensor->getStatus();
-    // Presence sampling and motion must never hold up manual light commands.
-    // A busy LED just skips this fade tick; the next tick uses elapsed time.
+    if (!m_ledController || !m_presenceSensor) return;
+    // Read the detector before taking the LED mutex, so light commands stay responsive.
+    const auto status = m_presenceSensor->getStatus();
     if (xSemaphoreTake(m_ledMutex, 0) != pdTRUE) return;
-    m_ledController->update(millis());
-    // A user-requested fade owns the output until it lands; presence resumes
-    // on the next tick after it finishes.
-    if (!havePresence || m_ledController->isFading()) {
-        xSemaphoreGive(m_ledMutex);
-        return;
-    }
-    const bool valid = status.available && status.receiving &&
-        status.calibrated && !status.suppressed;
-    if (!valid) {
-        m_presenceAutomation.cancelFade();
-        xSemaphoreGive(m_ledMutex);
-        return;
-    }
-    m_presenceAutomation.setAction(m_presenceSensor->getAction());
-    uint8_t nextBrightness = m_ledController->getBrightness();
-    if (m_presenceAutomation.update(status.motion, nextBrightness,
-                                    m_ledController->getTargetBrightness(),
-                                    millis(), nextBrightness)) {
-        m_ledController->setOutputBrightness(nextBrightness);
+    if (!status.available || !status.receiving || !status.calibrated || status.suppressed) {
+        m_presenceAutomation.manualOverride();
+    } else {
+        m_presenceAutomation.setAction(m_presenceSensor->getAction());
+        bool nextOn = m_ledController->isOn();
+        if (m_presenceAutomation.update(status.motion, nextOn,
+                                        m_ledController->targetOn(), nextOn))
+            m_ledController->setOutputOn(nextOn);
     }
     xSemaphoreGive(m_ledMutex);
 }
@@ -1083,8 +1058,8 @@ void SisyphusWebServer::broadcastSinglePosition(AsyncEventSourceClient *client) 
     m_polarControl->getPositionSample(position, velocity, completed);
     const CartesianCord_t norm = PolarUtils::toNormalizedCartesian(
         position, m_polarControl->getMaxRho());
-    char buffer[196];
-    formatPositionEvent(buffer, sizeof(buffer), position, velocity, norm, false);
+    char buffer[320];
+    formatPositionEvent(buffer, sizeof(buffer), position, velocity, norm, false, m_polarControl->getRhoPositionEstimate());
     try {
         if (client) client->send(buffer, "pos", millis());
         else m_events.send(buffer, "pos", millis());
@@ -1114,7 +1089,7 @@ void SisyphusWebServer::broadcastPosition() {
     }
     const CartesianCord_t norm = PolarUtils::toNormalizedCartesian(
         position, m_polarControl->getMaxRho());
-    const bool unchanged = fabsf(norm.x - m_lastBroadcastX) < 0.0001f &&
+    const bool unchanged = !m_polarControl->isIndependentRhoJog() && fabsf(norm.x - m_lastBroadcastX) < 0.0001f &&
         fabsf(norm.y - m_lastBroadcastY) < 0.0001f &&
         fabsf(velocity.rho - m_lastBroadcastVr) < 0.005f &&
         fabsf(velocity.theta - m_lastBroadcastVt) < 0.0005f;
@@ -1122,8 +1097,8 @@ void SisyphusWebServer::broadcastPosition() {
     // unchanged. Otherwise the browser can retain a stale speed indefinitely.
     if (unchanged && !shouldClear && now - m_lastPosSent < 1000) return;
 
-    char buffer[196];
-    formatPositionEvent(buffer, sizeof(buffer), position, velocity, norm, shouldClear);
+    char buffer[320];
+    formatPositionEvent(buffer, sizeof(buffer), position, velocity, norm, shouldClear, m_polarControl->getRhoPositionEstimate());
     try {
         if (m_events.send(buffer, "pos", now) == AsyncEventSource::DISCARDED) return;
         m_lastBroadcastX = norm.x;
@@ -1165,7 +1140,7 @@ void SisyphusWebServer::processPatternQueue() {
                 m_activeMotion = MotionOwner::MANUAL;
                 break;
             case PendingMotion::MANUAL_JOG:
-                started = m_polarControl->jogRelative(jogTheta, jogRho);
+                started = m_polarControl->jogRelative(jogTheta, jogRho, m_pendingJogMotor);
                 m_activeMotion = MotionOwner::MANUAL;
                 break;
             case PendingMotion::THETA_CONTINUOUS:
@@ -1351,6 +1326,7 @@ void SisyphusWebServer::clearPlaybackLocked() {
 }
 
 bool SisyphusWebServer::prepareReplacementLocked() {
+    if (m_polarControl->isIndependentRhoJog()) return false;
     const auto state = m_polarControl->getState();
     switch (state) {
         case PolarControl::IDLE:
@@ -1369,6 +1345,10 @@ bool SisyphusWebServer::prepareReplacementLocked() {
 }
 
 bool SisyphusWebServer::prepareManualJogLocked() {
+    if (m_polarControl->isIndependentRhoJog()) {
+        clearPlaybackLocked();
+        return m_polarControl->stop();
+    }
     const auto state = m_polarControl->getState();
     if (state == PolarControl::INITIALIZED ||
         state == PolarControl::HOMING_FAILED) {
@@ -1411,9 +1391,7 @@ void SisyphusWebServer::writeSystemInfoJSON(Print& out) {
 }
 
 void SisyphusWebServer::handleRoot(AsyncWebServerRequest *request) {
-    request->send(new StaticContentResponse("text/html",
-                  reinterpret_cast<const uint8_t *>(WEB_UI_HTML),
-                  sizeof(WEB_UI_HTML) - 1));
+    request->send(uiPageResponse(WEB_UI_PAGE));
 }
 
 void SisyphusWebServer::handleStatus(AsyncWebServerRequest *request) {
@@ -1473,14 +1451,12 @@ void SisyphusWebServer::handlePresenceSettingsGet(
     }
 
     const char* action = m_presenceSensor->getAction() ==
-        PresenceAction::FADE_LIGHT_ON ? "fade_light_on" : "none";
+        PresenceAction::RESTORE_LIGHT ? "restore_light" : "none";
     auto response = std_patch::make_unique<BufferedResponse>("application/json");
     response->printf(
-        "{\"action\":\"%s\",\"fadeDurationMs\":%lu,\"targetBrightness\":%u}",
+        "{\"action\":\"%s\",\"targetBrightness\":%u}",
         action,
-        static_cast<unsigned long>(PresenceAutomation::kFadeDurationMs),
-        static_cast<unsigned>(JsonHelpers::brightnessPercent(
-            m_ledController->getTargetBrightness())));
+        static_cast<unsigned>(m_ledController->targetOn() ? 100 : 0));
     request->send(response.release());
 }
 
@@ -1501,11 +1477,11 @@ void SisyphusWebServer::handlePresenceSettingsSet(
     PresenceAction action;
     if (value == "none") {
         action = PresenceAction::NONE;
-    } else if (value == "fade_light_on") {
-        action = PresenceAction::FADE_LIGHT_ON;
+    } else if (value == "restore_light" || value == "fade_light_on") {
+        action = PresenceAction::RESTORE_LIGHT;
     } else {
         request->send(400, "application/json",
-            "{\"success\":false,\"message\":\"Action must be none or fade_light_on\"}");
+            "{\"success\":false,\"message\":\"Action must be none or restore_light\"}");
         return;
     }
 
@@ -1974,15 +1950,15 @@ void SisyphusWebServer::handleManualJog(AsyncWebServerRequest *request) {
     const String axis = request->getParam("axis", true)->value();
     float amount = 0.0f;
     if (!parseStrictFloat(request->getParam("amount", true)->value(), amount) ||
-        (axis != "theta" && axis != "rho") ||
+        (axis != "theta" && axis != "rho" && axis != "rho-main" && axis != "rho-cw") ||
         (fabsf(amount) != 1.0f && fabsf(amount) != 10.0f &&
          fabsf(amount) != 100.0f)) {
         request->send(400, "application/json",
-            "{\"success\":false,\"message\":\"Jog must be +/-1, 10, or 100 on theta or rho\"}");
+            "{\"success\":false,\"message\":\"Jog must be +/-1, 10, or 100 on theta, rho, rho-main, or rho-cw\"}");
         return;
     }
 #ifdef SISYPHUS_RHO_COMMISSIONING
-    if (axis != "rho") {
+    if (axis == "theta") {
         request->send(409, "application/json",
             "{\"success\":false,\"message\":\"Theta remains locked out in RHO service firmware\"}");
         return;
@@ -1991,7 +1967,9 @@ void SisyphusWebServer::handleManualJog(AsyncWebServerRequest *request) {
 
     const DriverAvailability drivers = m_polarControl->getDriverAvailability();
     if ((axis == "theta" && !drivers.thetaAxis()) ||
-        (axis == "rho" && !drivers.rhoAxis())) {
+        (axis == "rho" && !drivers.rhoAxis()) ||
+        (axis == "rho-main" && !drivers.rho) ||
+        (axis == "rho-cw" && !drivers.rhoCompanion)) {
         request->send(409, "application/json",
             "{\"success\":false,\"message\":\"That motor driver is disconnected\"}");
         return;
@@ -2005,7 +1983,10 @@ void SisyphusWebServer::handleManualJog(AsyncWebServerRequest *request) {
     }
 
     m_pendingJogTheta = axis == "theta" ? amount * PI / 180.0f : 0.0f;
-    m_pendingJogRho = axis == "rho" ? amount : 0.0f;
+    m_pendingJogRho = axis != "theta" ? amount : 0.0f;
+    m_pendingJogMotor = axis == "rho-main" ? PolarControl::RhoJogMotor::MAIN
+        : axis == "rho-cw" ? PolarControl::RhoJogMotor::COMPANION
+        : PolarControl::RhoJogMotor::BOTH;
     m_pendingMotion = PendingMotion::MANUAL_JOG;
     request->send(202, "application/json",
         "{\"success\":true,\"message\":\"Manual jog queued\"}");
@@ -2415,34 +2396,15 @@ void SisyphusWebServer::handleFileDelete(AsyncWebServerRequest *request) {
 
 void SisyphusWebServer::handleLEDBrightnessGet(AsyncWebServerRequest *request) {
     JsonDocument doc;
-    LEDController::Diagnostics diagnostics;
-    uint8_t brightness, target;
-    uint32_t lastRequestUs, maxRequestUs, lastLockWaitUs, maxLockWaitUs;
     {
         SemaphoreGuard ledLock(m_ledMutex);
-        brightness = m_ledController->getBrightness();
-        target = m_ledController->getTargetBrightness();
-        diagnostics = m_ledController->getDiagnostics();
-        lastRequestUs = m_ledLastRequestUs;
-        maxRequestUs = m_ledMaxRequestUs;
-        lastLockWaitUs = m_ledLastLockWaitUs;
-        maxLockWaitUs = m_ledMaxLockWaitUs;
+        doc["on"] = m_ledController->isOn();
+        doc["ready"] = m_ledController->isReady();
+        // Retain binary percentages for existing status clients.
+        doc["brightness"] = m_ledController->isOn() ? 100 : 0;
+        doc["targetBrightness"] = m_ledController->targetOn() ? 100 : 0;
     }
-    doc["brightness"] = JsonHelpers::brightnessPercent(brightness);
-    doc["targetBrightness"] = JsonHelpers::brightnessPercent(target);
     doc["pin"] = m_ledController->getPin();
-    doc["pwmReady"] = diagnostics.ready;
-    doc["pwmDuty"] = diagnostics.duty; // Raw register readback: 0–256, 256 = full on.
-    doc["pwmFrequencyHz"] = diagnostics.frequencyHz;
-    doc["writeCount"] = diagnostics.writes;
-    doc["writeErrors"] = diagnostics.errors;
-    doc["lastWriteUs"] = diagnostics.lastWriteUs;
-    doc["maxWriteUs"] = diagnostics.maxWriteUs;
-    doc["lastRequestUs"] = lastRequestUs;
-    doc["maxRequestUs"] = maxRequestUs;
-    doc["lastLockWaitUs"] = lastLockWaitUs;
-    doc["maxLockWaitUs"] = maxLockWaitUs;
-
     auto response = std_patch::make_unique<BufferedResponse>("application/json", kResponseBufferSize);
     if (doc.overflowed()) throw std::bad_alloc();
     serializeJson(doc, *response);
@@ -2450,48 +2412,25 @@ void SisyphusWebServer::handleLEDBrightnessGet(AsyncWebServerRequest *request) {
 }
 
 void SisyphusWebServer::handleLEDBrightnessSet(AsyncWebServerRequest *request) {
-    const uint32_t startedUs = micros();
-    if (!request->hasParam("brightness", true)) {
-        request->send(400, "application/json",
-            "{\"success\":false,\"message\":\"Missing brightness parameter\"}");
-        return;
-    }
-
     int brightness = 0;
-    if (!parseStrictInt(request->getParam("brightness", true)->value(), brightness) ||
-        brightness < 0 || brightness > 100) {
+    if (!request->hasParam("brightness", true) ||
+        !parseStrictInt(request->getParam("brightness", true)->value(), brightness) ||
+        (brightness != 0 && brightness != 100)) {
         request->send(400, "application/json",
-            "{\"success\":false,\"message\":\"Brightness must be 0-100\"}");
+            "{\"success\":false,\"message\":\"Light supports only Off (0) or On (100)\"}");
         return;
     }
-
-    uint8_t ledValue = map(brightness, 0, 100, 0, 255);
-    const uint32_t lockStartedUs = micros();
     if (xSemaphoreTake(m_ledMutex, pdMS_TO_TICKS(10)) != pdTRUE) {
         request->send(503, "application/json",
             "{\"success\":false,\"message\":\"Light control busy; try again\"}");
         return;
     }
-    const uint32_t lockWaitUs = micros() - lockStartedUs;
-    m_presenceAutomation.cancelFade();
-    const bool applied = m_ledController->setBrightness(ledValue, millis());
-    const uint32_t requestUs = micros() - startedUs;
-    m_ledLastRequestUs = requestUs;
-    m_ledMaxRequestUs = std::max(m_ledMaxRequestUs, requestUs);
-    m_ledLastLockWaitUs = lockWaitUs;
-    m_ledMaxLockWaitUs = std::max(m_ledMaxLockWaitUs, lockWaitUs);
+    const bool applied = m_ledController->setOn(brightness == 100);
+    if (applied) m_presenceAutomation.manualOverride();
     xSemaphoreGive(m_ledMutex);
-    if (!applied) {
-        request->send(503, "application/json",
-            "{\"success\":false,\"message\":\"LED controller not ready\"}");
-        return;
-    }
-
-    LOG("LED brightness target set to: %d%% (%u/255), handler %luus, lock %luus\r\n", brightness,
-        static_cast<unsigned>(ledValue), static_cast<unsigned long>(requestUs),
-        static_cast<unsigned long>(lockWaitUs));
-
-    request->send(200, "application/json", "{\"success\":true}");
+    request->send(applied ? 200 : 503, "application/json", applied
+        ? "{\"success\":true}"
+        : "{\"success\":false,\"message\":\"Light output could not be changed\"}");
 }
 
 void SisyphusWebServer::handleSpeedGet(AsyncWebServerRequest *request) {
@@ -2866,6 +2805,7 @@ void SisyphusWebServer::handlePosition(AsyncWebServerRequest *request) {
     PolarCord_t actualPos = m_polarControl->getActualPosition();
     PolarVelocity_t actualVel = m_polarControl->getActualVelocity();
     float maxRho = m_polarControl->getMaxRho();
+    const auto rhoEstimate = m_polarControl->getRhoPositionEstimate();
 
     // Debug log (throttled)
     static unsigned long lastLog = 0;
@@ -2890,8 +2830,9 @@ void SisyphusWebServer::handlePosition(AsyncWebServerRequest *request) {
         float cartVel = sqrtf(cartVelX * cartVelX + cartVelY * cartVelY);
 
         response->printf(
-            "{\"current\":{\"x\":%.4f,\"y\":%.4f,\"rho\":%.2f,\"theta\":%.2f,\"vr\":%.2f,\"vt\":%.3f,\"vc\":%.2f},\"maxRho\":%.2f}",
-            norm.x, norm.y, actualPos.rho, actualPos.theta, actualVel.rho, actualVel.theta, cartVel, maxRho);
+            "{\"current\":{\"x\":%.4f,\"y\":%.4f,\"rho\":%.2f,\"theta\":%.2f,\"vr\":%.2f,\"vt\":%.3f,\"vc\":%.2f,\"mainRho\":%.2f,\"cwRho\":%.2f,\"cwAvailable\":%s,\"rhoReferenced\":%s},\"maxRho\":%.2f}",
+            norm.x, norm.y, actualPos.rho, actualPos.theta, actualVel.rho, actualVel.theta, cartVel, rhoEstimate.mainRho, rhoEstimate.companionRho,
+            rhoEstimate.available ? "true" : "false", rhoEstimate.referenced ? "true" : "false", maxRho);
     }
 
     request->send(response.release());
