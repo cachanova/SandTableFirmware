@@ -25,6 +25,7 @@ public:
         if (_chunked || !_sendContentLength) { fail(request); return; }
         try {
             addHeader("Connection", "close", false);
+            _addResponseHeaders();
             _assembleHead(m_headers, request->version());
         } catch (const std::bad_alloc&) {
             fail(request);
@@ -43,6 +44,11 @@ public:
         _ackedLength += std::min(length, _writtenLength - _ackedLength);
         return pump(request);
     }
+
+    // Subclass headers belong here rather than in a constructor: adding one
+    // allocates, and a refused allocation must fail the response instead of
+    // escaping the route handler that constructed it.
+    virtual void _addResponseHeaders() {}
 
     virtual size_t _fillBuffer(uint8_t* data, size_t length) = 0;
 

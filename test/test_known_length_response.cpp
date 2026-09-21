@@ -231,34 +231,32 @@ int main() {
         std::cout << "PASS: multiple partial buffers and temporary output failure preserve exact binary framing\n";
     }
     {
-        // Every page is a run of flash spans; the joined document must come
-        // out byte-for-byte whatever the TCP writes chop it into.
-        const std::vector<std::pair<const StaticContentResponse::Segment*, size_t>> pages = {
-            {WEB_UI_PAGE, std::size(WEB_UI_PAGE)},
-            {MANUAL_UI_PAGE, std::size(MANUAL_UI_PAGE)},
-            {SETTINGS_UI_PAGE, std::size(SETTINGS_UI_PAGE)},
-            {FILE_UI_PAGE, std::size(FILE_UI_PAGE)}
+        // Every page is one gzip stream in flash; it must come out
+        // byte-for-byte whatever the TCP writes chop it into, and the browser
+        // must be told to inflate it.
+        const std::vector<std::pair<const uint8_t*, size_t>> pages = {
+            {WEB_UI_GZ, std::size(WEB_UI_GZ)},
+            {MANUAL_UI_GZ, std::size(MANUAL_UI_GZ)},
+            {SETTINGS_UI_GZ, std::size(SETTINGS_UI_GZ)},
+            {FILE_UI_GZ, std::size(FILE_UI_GZ)}
         };
         for (const auto& page : pages) {
-            std::string expected;
-            for (size_t i = 0; i < page.second; ++i) {
-                expected.append(reinterpret_cast<const char*>(page.first[i].data), page.first[i].length);
-            }
+            const std::string expected(reinterpret_cast<const char*>(page.first), page.second);
             AsyncClient client;
             client.accept = {5, 0, 7, all, 101, 17, 0, 83, 3, all, 0, 251, 11, all};
             AsyncWebServerRequest request(client);
-            StaticContentResponse response("text/html", page.first, page.second);
+            StaticContentResponse response("text/html", page.first, page.second, "gzip");
             response._respond(&request);
             assert(!response._finished());
             drain(response, request);
             assert(body(client) == expected);
             assert(client.bytes.find("Content-Length: " + std::to_string(expected.size()) + "\r\n") != std::string::npos);
-            // The shared dialog spans are spliced in, not duplicated per page.
-            assert(expected.find(UI_DIALOG_CSS) != std::string::npos);
-            assert(expected.find(UI_DIALOG_JS) != std::string::npos);
-            assert(expected.find(UI_DIALOG_JS) > expected.find(UI_DIALOG_CSS));
+            // Content-Length is the compressed length, so the encoding header
+            // is what keeps the browser from rendering the deflate stream.
+            assert(client.bytes.find("Content-Encoding: gzip\r\n") != std::string::npos);
+            assert(page.second > 2 && page.first[0] == 0x1f && page.first[1] == 0x8b);
         }
-        std::cout << "PASS: all four actual static HTML pages survive partial headers/body byte-for-byte\n";
+        std::cout << "PASS: all four gzipped HTML pages survive partial headers/body byte-for-byte\n";
     }
     {
         // A segment run must not lose or repeat bytes at its seams, including
@@ -322,6 +320,20 @@ int main() {
             assert(client.bytes.empty() && client.addCalls == 0 && response.reads == 0);
             response._ack(&request, 0, 0);
             assert(client.bytes.empty() && response.reads == 0);
+        }
+        {
+            // The gzip pages add a header of their own. Adding it allocates,
+            // so it has to happen inside the guarded respond path: from a
+            // constructor a refused allocation would escape the route handler
+            // that built the response.
+            AsyncClient client;
+            AsyncWebServerRequest request(client);
+            StaticContentResponse response("text/html", WEB_UI_GZ, std::size(WEB_UI_GZ), "gzip");
+            assert(response.headerCount() == 0);
+            response.headerFault = AsyncWebServerResponse::HeaderFault::Add;
+            response._respond(&request);
+            assert(response._failed() && !client.closed && client.rxTimeout == 1);
+            assert(client.bytes.empty() && client.addCalls == 0);
         }
         AsyncClient client;
         AsyncWebServerRequest request(client);

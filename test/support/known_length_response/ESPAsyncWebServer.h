@@ -8,6 +8,7 @@
 #include <new>
 #include <string>
 #include <functional>
+#include <vector>
 
 using String = std::string;
 static constexpr size_t TCP_MSS = 1436; // pinned ESP32 SDK configuration
@@ -60,14 +61,16 @@ public:
     enum class HeaderFault { None, Add, Assemble };
     HeaderFault headerFault = HeaderFault::None;
     virtual ~AsyncWebServerResponse() = default;
-    bool addHeader(const char*, const char*, bool = true) {
+    bool addHeader(const char* name, const char* value, bool = true) {
         if (headerFault == HeaderFault::Add) throw std::bad_alloc();
+        m_headers.emplace_back(String(name) + ": " + value + "\r\n");
         return true;
     }
     void _assembleHead(String& output, uint8_t) {
         if (headerFault == HeaderFault::Assemble) throw std::bad_alloc();
-        output = "HTTP/1.1 200 OK\r\nContent-Length: " + std::to_string(_contentLength) +
-                 "\r\nConnection: close\r\n\r\n";
+        output = "HTTP/1.1 200 OK\r\nContent-Length: " + std::to_string(_contentLength) + "\r\n";
+        for (const String& header : m_headers) output += header;
+        output += "\r\n";
         _headLength = output.size();
     }
     virtual bool _sourceValid() const { return false; }
@@ -75,4 +78,7 @@ public:
     virtual bool _failed() const { return _state == RESPONSE_FAILED; }
     virtual void _respond(AsyncWebServerRequest*) {}
     virtual size_t _ack(AsyncWebServerRequest*, size_t, uint32_t) { return 0; }
+    size_t headerCount() const { return m_headers.size(); }
+private:
+    std::vector<String> m_headers;
 };

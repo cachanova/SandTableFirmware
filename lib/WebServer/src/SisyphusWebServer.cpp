@@ -282,7 +282,7 @@ void SisyphusWebServer::begin(PolarControl *polarControl,
 
     m_server.on("/settings", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
-        request->send(uiPageResponse(SETTINGS_UI_PAGE));
+        request->send(uiPageResponse(SETTINGS_UI_GZ));
     });
 
     m_server.on("/tuning", HTTP_GET, [this](AsyncWebServerRequest *request) {
@@ -292,12 +292,12 @@ void SisyphusWebServer::begin(PolarControl *polarControl,
 
     m_server.on("/manual", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
-        request->send(uiPageResponse(MANUAL_UI_PAGE));
+        request->send(uiPageResponse(MANUAL_UI_GZ));
     });
 
     m_server.on("/files", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
-        request->send(uiPageResponse(FILE_UI_PAGE));
+        request->send(uiPageResponse(FILE_UI_GZ));
     });
 
     m_server.on("/api/status", HTTP_GET, [this](AsyncWebServerRequest *request) {
@@ -1391,7 +1391,7 @@ void SisyphusWebServer::writeSystemInfoJSON(Print& out) {
 }
 
 void SisyphusWebServer::handleRoot(AsyncWebServerRequest *request) {
-    request->send(uiPageResponse(WEB_UI_PAGE));
+    request->send(uiPageResponse(WEB_UI_GZ));
 }
 
 void SisyphusWebServer::handleStatus(AsyncWebServerRequest *request) {

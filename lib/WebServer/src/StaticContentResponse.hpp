@@ -12,15 +12,18 @@ public:
         size_t length;
     };
 
-    StaticContentResponse(const char* contentType, const uint8_t* data, size_t length)
-        : m_inline{data, length}, m_segments(&m_inline), m_count(1) {
+    StaticContentResponse(const char* contentType, const uint8_t* data, size_t length,
+                          const char* contentEncoding = nullptr)
+        : m_inline{data, length}, m_segments(&m_inline), m_count(1),
+          m_contentEncoding(contentEncoding) {
         describe(contentType, length);
     }
 
-    // Spans sent back to back as one body. Pages share their dialog markup
-    // this way: the shared spans sit in flash once instead of once per page.
-    StaticContentResponse(const char* contentType, const Segment* segments, size_t count)
-        : m_segments(segments), m_count(count) {
+    // Spans sent back to back as one body, for content that is contiguous in
+    // flash only in pieces. The UI pages are single blobs and use the above.
+    StaticContentResponse(const char* contentType, const Segment* segments, size_t count,
+                          const char* contentEncoding = nullptr)
+        : m_segments(segments), m_count(count), m_contentEncoding(contentEncoding) {
         size_t total = 0;
         for (size_t i = 0; i < count; ++i) total += segments[i].length;
         describe(contentType, total);
@@ -31,6 +34,11 @@ public:
             if (!m_segments[i].data && m_segments[i].length) return false;
         }
         return true;
+    }
+
+    void _addResponseHeaders() override {
+        // Content-Length stays the encoded length; the browser inflates.
+        if (m_contentEncoding) addHeader("Content-Encoding", m_contentEncoding, false);
     }
 
     size_t _fillBuffer(uint8_t* data, size_t length) override {
@@ -60,6 +68,7 @@ private:
     const Segment m_inline{nullptr, 0};
     const Segment* const m_segments;
     const size_t m_count;
+    const char* const m_contentEncoding;
     size_t m_index = 0;
     size_t m_offset = 0;
 };

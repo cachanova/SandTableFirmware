@@ -13,9 +13,8 @@
 // All three return promises, and calls are serialized so overlapping
 // requests queue instead of stacking.
 //
-// Each page is one standalone document, but it is sent as a sequence of
-// flash spans (see UIPages.hpp), so these two live in flash once and are
-// spliced into every page's single response: the CSS at the end of its
+// Each page is one standalone document. scripts/build_ui_gz.py splices these
+// two into every page before compressing it: the CSS at the end of the page's
 // <style>, the script in the body ahead of the page's own.
 
 const char UI_DIALOG_CSS[] PROGMEM = R"uidialogcss(

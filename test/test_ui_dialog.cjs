@@ -129,18 +129,23 @@ const flush = async () => { for (let i = 0; i < 10; ++i) await Promise.resolve()
     {
         // No page may fall back to a blocking browser popup, and each must be
         // assembled with the shared dialog spans rather than its own copy.
-        const pages = fs.readFileSync(path.join(SOURCE, 'UIPages.hpp'), 'utf8');
+        // scripts/build_ui_gz.py joins the spans; test_ui_gzip.cjs checks the
+        // blobs it emits, so what matters here is that no page is left out.
+        const generator = fs.readFileSync(
+            path.join(__dirname, '../scripts/build_ui_gz.py'), 'utf8');
+        const composition = generator
+            .match(/joined = \(([\s\S]*?)\)\n/)[1].replace(/\s+/g, ' ');
+        assert.equal(composition,
+            "page[prefix + '_HEAD'] + dialog['UI_DIALOG_CSS'] + " +
+            "page[prefix + '_BODY'] + dialog['UI_DIALOG_JS'] + page[prefix + '_SCRIPT']",
+            'pages must be sent as head, dialog CSS, body, dialog script, page script');
         for (const name of PAGES) {
             const html = fs.readFileSync(path.join(SOURCE, name), 'utf8');
             assert.ok(!/(^|[^.\w])(confirm|alert|prompt)\s*\(/.test(html),
                 `${name} must use the in-page dialogs, not window.confirm/alert/prompt`);
             const prefix = html.match(/const char (\w+)_HEAD\[\]/)[1];
-            const composition = pages.match(
-                new RegExp(`${prefix}_PAGE\\[\\] = \\{([\\s\\S]*?)\\};`))[1].replace(/\s+/g, ' ');
-            assert.match(composition, new RegExp(
-                `${prefix}_HEAD\\), UI_SPAN\\(UI_DIALOG_CSS\\), ` +
-                `UI_SPAN\\(${prefix}_BODY\\), UI_SPAN\\(UI_DIALOG_JS\\), UI_SPAN\\(${prefix}_SCRIPT`),
-                `${name} must be sent as head, dialog CSS, body, dialog script, page script`);
+            assert.ok(generator.includes(`('${prefix}', '${name}')`),
+                `${name} must be listed in the page table build_ui_gz.py compresses`);
         }
         console.log('PASS: every page is assembled from the shared in-page dialogs');
     }

@@ -135,9 +135,12 @@ node test/test_canvas_trace_ui.cjs
 node test/test_homing_abort_ui.cjs
 node test/test_thumbnail_upload_ui.cjs
 node test/test_ui_recovery.cjs
+node test/test_ui_gzip.cjs
 g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
   -I lib/WebServer/src test/test_response_buffer.cpp -o /tmp/test_response_buffer
 /tmp/test_response_buffer
+# UIPagesGz.h is generated; PlatformIO builds it, a bare g++ needs it first.
+python3 scripts/build_ui_gz.py
 g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
   -Itest/support/known_length_response -Ilib/WebServer/src \
   test/test_known_length_response.cpp -o /tmp/test_known_length_response

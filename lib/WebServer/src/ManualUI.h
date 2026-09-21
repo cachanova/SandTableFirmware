@@ -1,6 +1,6 @@
 #pragma once
 
-// Sent as one response; see UIPages.hpp for how the parts join.
+// Sent as one gzipped response; scripts/build_ui_gz.py joins the parts.
 const char MANUAL_UI_HEAD[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
