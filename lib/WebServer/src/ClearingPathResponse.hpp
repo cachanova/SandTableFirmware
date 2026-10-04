@@ -53,6 +53,9 @@ public:
         _chunked = false;
     }
 
+    // The library's default reports no source and answers 500 instead.
+    bool _sourceValid() const override { return true; }
+
     void _addResponseHeaders() override {
         addHeader("Cache-Control", "max-age=3600", false);
     }

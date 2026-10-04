@@ -18,6 +18,7 @@ int main() {
     for (int p = SPIRAL_OUTWARD; p <= PETAL_FLOWER; ++p) {
         const auto pattern = static_cast<ClearingPattern>(p);
         Probe response(pattern, 425.0f);
+        assert(response._sourceValid());
         const size_t length = response.contentLength();
         assert(length > 0 && length % ClearingPathResponse::kPointBytes == 0);
         assert(length < 64 * 1024);  // keep previews small over Wi-Fi
