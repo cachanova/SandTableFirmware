@@ -145,6 +145,114 @@ void MotionPlanner::updateSegmentTarget(Segment& seg, PathPoint target) {
     seg.rho.targetSteps = rhoToSteps(target.rho);
 }
 
+// Replace the corner at the end of the last queued line with a short blend
+// segment, so that both THR lines stay exactly straight and only the blend is
+// slowed by curvature. Returns false (keeping an exact, stopping corner) when
+// the last line is already committed or the corner is too sharp to round.
+bool MotionPlanner::blendCorner(Segment& last, PathPoint target) {
+    if (m_cornerTolerance <= 0 || last.blend || last.geometryLocked || last.braking ||
+        last.executing || last.nextSampleUs != 0 || last.generationComplete ||
+        last.startDistance != 0)
+        return false;
+    const int used = (m_segmentHead - m_segmentTail + SEGMENT_BUFFER_SIZE) % SEGMENT_BUFFER_SIZE;
+    if (SEGMENT_BUFFER_SIZE - 1 - used < 2)
+        return false;
+    const PathPoint corner = last.path.end;
+    const double nextLength = PolarPath::norm(target - corner, m_maxRho);
+    if (last.path.length < 1e-9 || nextLength < 1e-9)
+        return false;
+    const PathPoint d1 = last.path.exit, d2 = (target - corner) * (1 / nextLength);
+    const double cosine = m_maxRho * m_maxRho * d1.theta * d2.theta + d1.rho * d2.rho;
+    // Nearly collinear lines already share a tangent; reversals and sharp
+    // corners stop exactly at the waypoint.
+    if (cosine > 1 - 1e-12 || cosine < -0.5)
+        return false;
+    // The blend stays inside the triangle (corner - L*d1, corner, corner + L*d2),
+    // whose points lie within (L/2)*sin(turn) of the lines in the
+    // (radius*theta, rho) metric, and Cartesian error is at most sqrt(2) times
+    // that. Keep half of each line for the blends at its other end.
+    const double sine = std::sqrt(std::max(0.0, 1 - cosine * cosine));
+    double reach = std::min(0.5 * last.path.length, 0.5 * nextLength);
+    if (sine > 1e-12)
+        reach = std::min(reach, std::sqrt(2.0) * m_cornerTolerance / sine);
+    if (reach < 1e-6)
+        return false;
+    // The last line's profile ends at rest. If its predecessor has already
+    // committed an entry speed, the shortened line must still be able to stop.
+    const int lastIndex = (m_segmentHead + SEGMENT_BUFFER_SIZE - 1) % SEGMENT_BUFFER_SIZE;
+    if (lastIndex != m_segmentTail) {
+        const Segment& previous =
+            m_segments[(lastIndex + SEGMENT_BUFFER_SIZE - 1) % SEGMENT_BUFFER_SIZE];
+        const bool committed =
+            previous.executing || previous.nextSampleUs != 0 || previous.generationComplete;
+        if (committed && previous.exitVelocity > 0) {
+            const double shortened = last.path.length - reach;
+            if (!last.limitsCalculated ||
+                previous.exitVelocity > shortened / MIN_SEGMENT_DURATION ||
+                SCurve::decelerationDistance(previous.exitVelocity, 0, last.maxAcceleration,
+                                             last.maxJerk) > shortened)
+                return false;
+        }
+    }
+
+    const PathPoint enter = corner - d1 * reach, leave = corner + d2 * reach;
+    last.path.line(last.path.start, enter, m_maxRho);
+    last.endDistance = last.path.length;
+    last.limitsCalculated = false;
+    updateSegmentTarget(last, enter);
+
+    Segment& blend = m_segments[m_segmentHead];
+    blend = Segment{};
+    if (m_evaluationSegment == &blend)
+        m_evaluationSegment = nullptr;
+    blend.blend = true;
+    blend.theta.startSteps = blend.lastGenThetaSteps = last.theta.targetSteps;
+    blend.rho.startSteps = blend.lastGenRhoSteps = last.rho.targetSteps;
+    blend.path.start = enter;
+    blend.path.end = leave;
+    blend.path.length = PolarPath::norm(leave - enter, m_maxRho);
+    blend.path.entry = d1;
+    blend.path.exit = d2;
+    blend.endDistance = blend.path.length;
+    updateSegmentTarget(blend, leave);
+    m_queuedTSteps.store(blend.theta.targetSteps);
+    m_queuedRSteps.store(blend.rho.targetSteps);
+    m_targetTheta = leave.theta;
+    m_targetRho = leave.rho;
+    m_segmentHead = (m_segmentHead + 1) % SEGMENT_BUFFER_SIZE;
+    return true;
+}
+
+PathPoint MotionPlanner::cornerOf(const Segment& blend) const {
+    const double span = PolarPath::norm(blend.path.entry + blend.path.exit, m_maxRho);
+    return blend.path.start + blend.path.entry * (blend.path.length / span);
+}
+
+// THR waypoints still to be drawn from segment `first`, for replay after a
+// pause. Blends are not waypoints: their corner stands in for them unless the
+// blend itself is partially drawn, when its own end continues the curve.
+size_t MotionPlanner::sourceTargets(int first, bool partialFirst, PathPoint* out,
+                                    size_t capacity) const {
+    size_t count = 0;
+    for (int n = first; n != m_segmentHead && count < capacity; n = (n + 1) % SEGMENT_BUFFER_SIZE) {
+        const Segment& s = m_segments[n];
+        const int next = (n + 1) % SEGMENT_BUFFER_SIZE;
+        const bool blendNext = next != m_segmentHead && m_segments[next].blend;
+        const PathPoint own{s.targetTheta, s.targetRho};
+        if (n == first && partialFirst) {
+            out[count++] = own;
+            if (blendNext && count < capacity)
+                out[count++] = cornerOf(m_segments[next]);
+        } else if (s.blend) {
+            if (n == first)
+                out[count++] = cornerOf(s);
+        } else {
+            out[count++] = blendNext ? cornerOf(m_segments[next]) : own;
+        }
+    }
+    return count;
+}
+
 bool MotionPlanner::addSegment(double theta, double rho) {
     if (!hasSpace() || !std::isfinite(theta) || !std::isfinite(rho) ||
         !std::isfinite(m_stepsPerRadT) || !std::isfinite(m_stepsPerMmR) || m_stepsPerRadT <= 0 ||
@@ -165,6 +273,15 @@ bool MotionPlanner::addSegment(double theta, double rho) {
         // change the start of a later move without emitting that movement.
         return true;
     }
+    const PathPoint target{theta, rho};
+    PathPoint from{m_targetTheta, m_targetRho};
+    double nominalFromTheta = m_targetTheta, nominalFromRho = m_targetRho;
+    if (!m_resumeReady && m_segmentHead != m_segmentTail) {
+        Segment& last = m_segments[(m_segmentHead + SEGMENT_BUFFER_SIZE - 1) % SEGMENT_BUFFER_SIZE];
+        if (blendCorner(last, target)) {
+            from = m_segments[(m_segmentHead + SEGMENT_BUFFER_SIZE - 1) % SEGMENT_BUFFER_SIZE].path.end;
+        }
+    }
     Segment& seg = m_segments[m_segmentHead];
     seg = Segment{};
     if (m_evaluationSegment == &seg)
@@ -173,11 +290,10 @@ bool MotionPlanner::addSegment(double theta, double rho) {
     seg.rho.startSteps = m_queuedRSteps.load();
     seg.lastGenThetaSteps = seg.theta.startSteps;
     seg.lastGenRhoSteps = seg.rho.startSteps;
-    const PathPoint target{theta, rho};
-    seg.path.line({m_targetTheta, m_targetRho}, target, m_maxRho);
+    seg.path.line(from, target, m_maxRho);
     seg.endDistance = seg.path.length;
-    seg.nominalDuration = nominalSegmentSeconds(theta - m_targetTheta, rho - m_targetRho,
-                                                m_targetRho, rho, m_tMaxVel, m_rMaxVel,
+    seg.nominalDuration = nominalSegmentSeconds(theta - nominalFromTheta, rho - nominalFromRho,
+                                                nominalFromRho, rho, m_tMaxVel, m_rMaxVel,
                                                 m_ballMaxVelocity);
     if (m_resumeReady) {
         if (std::abs(theta - m_resumePath.end.theta) < 1e-10 &&
@@ -269,7 +385,7 @@ void MotionPlanner::calculatePathLimits(Segment& seg) {
     seg.limitsCalculated = true;
 }
 
-void MotionPlanner::calculateSegmentProfile(Segment& seg) {
+void MotionPlanner::calculateSegmentProfile(Segment& seg, bool reportFailure) {
     SCurve::Profile profile{};
     const bool valid =
         SCurve::calculate(seg.endDistance - seg.startDistance, seg.entryVelocity, seg.exitVelocity,
@@ -277,7 +393,8 @@ void MotionPlanner::calculateSegmentProfile(Segment& seg) {
     if (!valid) {
         // A failed solve must never publish a discontinuous rest-to-rest
         // fallback. This is an invariant violation, not a valid trajectory.
-        LOG("ERROR: infeasible shared path profile\n");
+        if (reportFailure)
+            LOG("ERROR: infeasible shared path profile\n");
         seg.calculated = false;
         return;
     }
@@ -306,20 +423,8 @@ void MotionPlanner::recalculate() {
         Segment& b = m_segments[indices[k + 1]];
         if (!mutableProfile(a) || !mutableProfile(b))
             continue;
-        if (!a.geometryLocked && !b.geometryLocked) {
-            PathPoint tangent = boundedJunction(a.path, b.path, m_maxRho, m_cornerTolerance);
-            if (PolarPath::norm(tangent, m_maxRho) > 1e-12) {
-                if (a.path.exit.theta != tangent.theta || a.path.exit.rho != tangent.rho) {
-                    a.path.exit = tangent;
-                    a.limitsCalculated = false;
-                }
-                if (b.path.entry.theta != tangent.theta || b.path.entry.rho != tangent.rho) {
-                    b.path.entry = tangent;
-                    b.limitsCalculated = false;
-                }
-            }
-
-        } else if (a.geometryLocked && !b.geometryLocked) {
+        // Corner blends fix all other geometry when a waypoint is added.
+        if (a.geometryLocked && !b.geometryLocked) {
             if (b.path.entry.theta != a.path.exit.theta || b.path.entry.rho != a.path.exit.rho) {
                 b.path.entry = a.path.exit;
                 b.limitsCalculated = false;
@@ -351,9 +456,17 @@ void MotionPlanner::recalculate() {
         const Segment& s = m_segments[indices[k]];
         if (!mutableProfile(s))
             continue;
-        double allowed =
-            SCurve::maxAchievableEntryVelocity(s.endDistance - s.startDistance, boundary[k + 1],
-                                               s.maxVelocity, s.maxAcceleration, s.maxJerk);
+        // With zero acceleration at both ends, the jerk-limited braking
+        // distance is not monotonic in the exit speed: stopping can need less
+        // room than slowing to a small nonzero speed. Allow the better of the
+        // two so that raising a later boundary never lowers this entry after a
+        // predecessor has committed to it; the forward pass picks the exit.
+        const double length = s.endDistance - s.startDistance;
+        double allowed = std::max(
+            SCurve::maxAchievableEntryVelocity(length, boundary[k + 1], s.maxVelocity,
+                                               s.maxAcceleration, s.maxJerk),
+            SCurve::maxAchievableEntryVelocity(length, 0, s.maxVelocity, s.maxAcceleration,
+                                               s.maxJerk));
         if (k == 0 || mutableProfile(m_segments[indices[k - 1]]))
             boundary[k] = std::min(boundary[k], allowed);
     }
@@ -367,7 +480,24 @@ void MotionPlanner::recalculate() {
                                               s.maxVelocity, s.maxAcceleration, s.maxJerk));
         s.entryVelocity = boundary[k];
         s.exitVelocity = boundary[k + 1];
-        calculateSegmentProfile(s);
+        calculateSegmentProfile(s, false);
+        if (!s.calculated) {
+            // The entry was allowed by stopping rather than by this exit. Take
+            // the fastest exit below it that the segment can still reach; a
+            // lower entry is always feasible for the following segment.
+            const double length = s.endDistance - s.startDistance;
+            for (int step = 1; step <= 32 && !s.calculated; ++step) {
+                boundary[k + 1] = s.exitVelocity * (1.0 - step / 32.0);
+                SCurve::Profile trial{};
+                if (SCurve::calculate(length, s.entryVelocity, boundary[k + 1], s.maxVelocity,
+                                      s.maxAcceleration, s.maxJerk, trial)) {
+                    s.exitVelocity = boundary[k + 1];
+                    calculateSegmentProfile(s);
+                }
+            }
+            if (!s.calculated)
+                calculateSegmentProfile(s);
+        }
     }
 }
 
@@ -439,9 +569,8 @@ void MotionPlanner::stopGracefully(bool preserveForResume) {
                     m_resumeStartDistance = finish;
                     m_resumeReady = true;
                 }
-                for (int n = first; n != m_segmentHead; n = (n + 1) % SEGMENT_BUFFER_SIZE)
-                    m_resumeTargets[m_resumeTargetCount++] = {m_segments[n].targetTheta,
-                                                              m_segments[n].targetRho};
+                m_resumeTargetCount =
+                    sourceTargets(first, first == i, m_resumeTargets, SEGMENT_BUFFER_SIZE);
             }
             m_brakeProfile = brake;
             m_brakeStartTime = time;
@@ -858,7 +987,8 @@ void MotionPlanner::process() {
 
             // Segment complete
             current.executing = false;
-            m_completedCount++;
+            if (!current.blend)
+                m_completedCount++;
             m_completedNominalSec += current.nominalDuration;
             m_completedPlannedSec += current.duration;
 
@@ -1017,7 +1147,9 @@ bool MotionPlanner::queueStepEvent(uint32_t time, uint8_t stepMask, uint8_t dirM
 }
 
 bool MotionPlanner::hasSpace() const {
-    return ((m_segmentHead + 1) % SEGMENT_BUFFER_SIZE) != m_segmentTail;
+    // Each waypoint may also insert a corner blend before its line.
+    const int used = (m_segmentHead - m_segmentTail + SEGMENT_BUFFER_SIZE) % SEGMENT_BUFFER_SIZE;
+    return SEGMENT_BUFFER_SIZE - 1 - used >= 2;
 }
 
 bool MotionPlanner::isRunning() const {
@@ -1085,12 +1217,12 @@ size_t MotionPlanner::copyPendingTargets(double* theta, double* rho, size_t capa
         }
         return count;
     }
-    size_t count = 0;
-    for (int i = m_genSegmentIdx; i != m_segmentHead && count < capacity;
-         i = (i + 1) % SEGMENT_BUFFER_SIZE) {
-        theta[count] = m_segments[i].targetTheta;
-        rho[count] = m_segments[i].targetRho;
-        ++count;
+    PathPoint targets[SEGMENT_BUFFER_SIZE];
+    const size_t count = sourceTargets(m_genSegmentIdx, false, targets,
+                                       std::min(capacity, size_t(SEGMENT_BUFFER_SIZE)));
+    for (size_t i = 0; i < count; ++i) {
+        theta[i] = targets[i].theta;
+        rho[i] = targets[i].rho;
     }
     return count;
 }

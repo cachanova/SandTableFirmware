@@ -115,6 +115,9 @@ connecting Cartesian endpoints can omit complete turns. See
   Angles remain unwrapped, with double precision and exact nominal gearing.
 - Corner smoothing is bounded to 0.10 mm by default; set **Corner Smoothing** to
   zero for the exact piecewise polar path, stopping where its direction changes.
+  Each smoothed corner is its own short blend segment between straight THR
+  lines, so only the blend slows for curvature and the lines keep full speed.
+  Corners sharper than 120 degrees stop exactly at the waypoint.
 - Ball speed and planar acceleration are limited alongside the motor limits.
   Defaults are 30 mm/s and 100 mm/s²; the speed slider scales velocity limits.
 - Lookahead uses integer microsecond clocks and flushes each exact motor target.

@@ -79,6 +79,8 @@ struct Segment {
     uint64_t durationUs = 0, nextSampleUs = 0;
     bool calculated = false, executing = false, generationComplete = false;
     bool geometryLocked = false, braking = false, limitsCalculated = false;
+    // A corner blend inserted between two THR lines; not a THR waypoint.
+    bool blend = false;
     int32_t lastGenThetaSteps = 0, lastGenRhoSteps = 0;
 };
 
@@ -407,12 +409,15 @@ private:
 #endif
 
     // Internal methods
-    void calculateSegmentProfile(Segment& seg);
+    void calculateSegmentProfile(Segment& seg, bool reportFailure = true);
     void calculatePathLimits(Segment& seg);
     const SCurve::Profile& evaluationProfile(const Segment& seg) const;
     double segmentDistance(const Segment& seg, double time) const;
     double segmentSpeed(const Segment& seg, double time) const;
     void updateSegmentTarget(Segment& seg, PathPoint target);
+    bool blendCorner(Segment& last, PathPoint target);
+    PathPoint cornerOf(const Segment& blend) const;
+    size_t sourceTargets(int first, bool partialFirst, PathPoint* out, size_t capacity) const;
     bool ensureStepTimer();
     FillStopReason fillStepQueue(uint32_t horizonUs);
     int getStepQueueSpace() const;

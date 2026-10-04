@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -171,23 +172,34 @@ PathPoint derivative(const PolarPath &p, double u, int order) {
     }
     return sum;
 }
+// Cartesian distance from q to the polar-linear line a..b, projected in the
+// (radius*theta, rho) metric.
+double lineDeviation(PathPoint q, PathPoint a, PathPoint b) {
+    const auto delta = b - a;
+    const double length2 = delta.theta * delta.theta * 425 * 425 + delta.rho * delta.rho;
+    const double projected =
+        length2 > 0 ? std::clamp(((q.theta - a.theta) * delta.theta * 425 * 425 +
+                                  (q.rho - a.rho) * delta.rho) / length2,
+                                 0.0, 1.0)
+                    : 0.0;
+    const auto ref = a + delta * projected;
+    return std::hypot(q.rho * std::cos(q.theta) - ref.rho * std::cos(ref.theta),
+                      q.rho * std::sin(q.theta) - ref.rho * std::sin(ref.theta));
+}
 void checkCurve(const Segment &s, double tolerance) {
     const auto profile = s.profile.expand();
-    const auto delta = s.path.end - s.path.start;
+    // A blend replaces the corner of two THR lines; measure it against them.
+    const double span = PolarPath::norm(s.path.entry + s.path.exit, 425);
+    const auto corner = s.path.start + s.path.entry * (s.path.length / span);
     for (int i = 0; i <= 1500; ++i) {
         const double time = s.duration * i / 1500;
         const double distance = SCurve::getPosition(profile, time) + s.startDistance;
         const double u = distance / s.path.length;
         auto q = s.path.position(distance);
-        const double projected =
-            std::clamp(((q.theta - s.path.start.theta) * delta.theta * 425 * 425 +
-                        (q.rho - s.path.start.rho) * delta.rho) /
-                           (s.path.length * s.path.length),
-                       0.0, 1.0);
-        const auto ref = s.path.start + delta * projected;
         const double deviation =
-            std::hypot(q.rho * std::cos(q.theta) - ref.rho * std::cos(ref.theta),
-                       q.rho * std::sin(q.theta) - ref.rho * std::sin(ref.theta));
+            s.blend ? std::min(lineDeviation(q, s.path.start, corner),
+                               lineDeviation(q, corner, s.path.end))
+                    : lineDeviation(q, s.path.start, s.path.end);
         require(deviation <= tolerance + 1e-7, "curve left its Cartesian tolerance corridor");
         require(q.rho >= -1e-8 && q.rho <= 425 + 1e-8, "curve left radial travel");
         const auto first = derivative(s.path, u, 1), second = derivative(s.path, u, 2),
@@ -229,7 +241,7 @@ void geometry() {
         p.setEndOfPattern(true);
         p.recalculate();
         require(p.getMaxBoundaryVelocityDiscontinuity() < 1e-8, "junction velocity discontinuity");
-        for (int i = 0; i < 7; ++i) {
+        for (int i = 0; i < MotionAccuracyTestAccess::head(p); ++i) {
             auto &s = MotionAccuracyTestAccess::at(p, i);
             require(s.calculated, "profile solve failed");
             checkCurve(s, tolerance);
@@ -246,7 +258,8 @@ void geometry() {
         init(p, trial % 2 ? .1 : 0);
         double theta = trial * 2000.0, rho = 212.5;
         p.resetPosition(theta, rho);
-        for (int i = 0; i < 20; ++i) {
+        // Up to two buffer slots per waypoint when corners are blended.
+        for (int i = 0; i < 15; ++i) {
             theta += (random() - .5) * (i % 3 ? .02 : 4);
             rho = std::clamp(rho + (random() - .5) * (i % 3 ? .5 : 400), 0.0, 425.0);
             require(p.addSegment(theta, rho), "varied geometry target rejected");
@@ -261,6 +274,32 @@ void geometry() {
         }
     }
     std::cout << "PASS strict/shared geometry, bounded corners, axis and ball limits\n";
+}
+void cornerLocalSpeed() {
+    // Two long, nearly radial lines with a gentle corner. Blending must slow
+    // only the short corner piece; the lines keep the full rho speed limit.
+    MotionPlanner p;
+    init(p);
+    p.resetPosition(1, 100);
+    require(p.addSegment(1.002, 200) && p.addSegment(1.0, 300), "corner targets rejected");
+    p.setEndOfPattern(true);
+    p.recalculate();
+    require(MotionAccuracyTestAccess::head(p) == 3 && MotionAccuracyTestAccess::at(p, 1).blend,
+            "corner was not blended");
+    for (int i : {0, 2})
+        require(MotionAccuracyTestAccess::at(p, i).maxVelocity >= 5.49,
+                "a straight line next to a corner lost speed");
+    for (int i = 0; i < 3; ++i)
+        checkCurve(MotionAccuracyTestAccess::at(p, i), .1);
+    double theta[32], rho[32];
+    require(p.copyPendingTargets(theta, rho, 32) == 2 && std::abs(theta[0] - 1.002) < 1e-12 &&
+                std::abs(rho[0] - 200) < 1e-9 && rho[1] == 300,
+            "pending targets must be THR waypoints, not blend endpoints");
+    p.start();
+    run(p);
+    require(p.getCompletedCount() == 2, "blend counted as a waypoint");
+    require(MotionAccuracyTestAccess::rho(p) == 120000, "corner endpoint step loss");
+    std::cout << "PASS corner-local blending keeps straight lines at full speed\n";
 }
 void delayedStartup() {
     MotionPlanner p;
@@ -417,15 +456,65 @@ void streaming() {
     require(telemetry.underruns == 0, "streaming underruns");
     std::cout << "PASS streamed lookahead, exact endpoint ledger, no underruns\n";
 }
+void denseStaircase() {
+    // Short pixel steps at full rho speed: with blended corners, jerk-limited
+    // braking is not monotonic in exit speed, and a later boundary must never
+    // make a committed entry unreachable.
+    std::ifstream in("test/test_motion/regressions/DenseStaircase.thr");
+    require(bool(in), "dense staircase fixture missing");
+    std::vector<PathPoint> points;
+    for (std::string line; std::getline(in, line);) {
+        double theta = 0, rho = 0;
+        if (parseThrLine(line.c_str(), 425, theta, rho) == ThrLine::Coordinate)
+            points.push_back({theta, rho});
+    }
+    require(points.size() > 800, "dense staircase fixture truncated");
+    MotionPlanner p;
+    init(p);
+    p.resetPosition(points[0].theta, points[0].rho);
+    size_t next = 1;
+    bool started = false;
+    for (int tick = 0; tick < 2000000; ++tick) {
+        bool changed = false;
+        while (next < points.size() && p.hasSpace()) {
+            require(p.addSegment(points[next].theta, points[next].rho), "dense target rejected");
+            ++next;
+            changed = true;
+        }
+        p.setEndOfPattern(next == points.size());
+        if (changed) {
+            p.recalculate();
+            for (int n = MotionAccuracyTestAccess::tail(p); n != MotionAccuracyTestAccess::head(p);
+                 n = (n + 1) % 32)
+                require(MotionAccuracyTestAccess::at(p, n).calculated,
+                        "dense staircase profile became infeasible");
+        }
+        if (!started) {
+            p.start();
+            started = true;
+        }
+        p.process();
+        advanceMicros(10000);
+        if (next == points.size() && p.isIdle())
+            break;
+    }
+    require(p.isIdle(), "dense staircase did not finish");
+    require(MotionAccuracyTestAccess::theta(p) == std::llround(points.back().theta * kThetaSteps) &&
+                MotionAccuracyTestAccess::rho(p) == std::llround(points.back().rho * 400),
+            "dense staircase endpoint lost steps");
+    std::cout << "PASS dense staircase keeps committed entries reachable\n";
+}
 int main() try {
     compactProfiles();
     conversion();
     parser();
     geometry();
+    cornerLocalSpeed();
     delayedStartup();
     clockAndEndpoint();
     pauseResume();
     streaming();
+    denseStaircase();
     std::cout << "ALL ACCURACY TESTS PASSED; Segment=" << sizeof(Segment)
               << " planner=" << sizeof(MotionPlanner) << " bytes\n";
     return 0;
