@@ -57,6 +57,12 @@ bool PlaylistManager::removePattern(int index) {
   return false;
 }
 
+void PlaylistManager::renamePattern(const String& from, const String& to) {
+  for (auto& item : m_playlist) {
+    if (item.filename == from) item.filename = to;
+  }
+}
+
 void PlaylistManager::clear() {
   m_playlist.clear();
   m_currentIndex = -1;

@@ -8,9 +8,10 @@
 //
 //   uiConfirm(message, {title, confirmLabel, cancelLabel, danger}) -> boolean
 //   uiAlert(message, {title, dismissLabel})                        -> void
+//   uiPrompt(message, {title, value, confirmLabel, cancelLabel})   -> string | null
 //   uiNotify(message, {tone: 'error'})                             -> dismiss fn
 //
-// All three return promises, and calls are serialized so overlapping
+// All four return promises, and calls are serialized so overlapping
 // requests queue instead of stacking.
 //
 // Each page is one standalone document. scripts/build_ui_gz.py splices these
@@ -52,6 +53,19 @@ const char UI_DIALOG_CSS[] PROGMEM = R"uidialogcss(
             color: var(--ink-soft);
             overflow-wrap: anywhere;
         }
+        .ui-dialog-input {
+            display: block;
+            width: 100%;
+            margin-top: 14px;
+            padding: 10px 12px;
+            border: 1px solid var(--ink);
+            background: var(--paper);
+            color: var(--ink);
+            font: inherit;
+            font-size: 15px;
+        }
+        .ui-dialog-input[hidden] { display: none; }
+        .ui-dialog-input:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
         .ui-dialog-actions {
             display: flex;
             flex-wrap: wrap;
@@ -132,7 +146,7 @@ const char UI_DIALOG_JS[] PROGMEM = R"uidialogjs(
     (function () {
         'use strict';
 
-        let host = null, panelEl = null, titleEl = null, bodyEl = null, actionsEl = null;
+        let host = null, panelEl = null, titleEl = null, bodyEl = null, inputEl = null, actionsEl = null;
         let current = null;
         let chain = Promise.resolve();
 
@@ -160,10 +174,23 @@ const char UI_DIALOG_JS[] PROGMEM = R"uidialogjs(
             bodyEl.className = 'ui-dialog-body';
             bodyEl.id = 'ui-dialog-body';
 
+            inputEl = document.createElement('input');
+            inputEl.type = 'text';
+            inputEl.className = 'ui-dialog-input';
+            inputEl.hidden = true;
+            inputEl.setAttribute('aria-labelledby', 'ui-dialog-title');
+            inputEl.addEventListener('keydown', event => {
+                // Return submits the text the way a native prompt does.
+                if (event.key === 'Enter' && current && current.submit) {
+                    event.preventDefault();
+                    current.submit();
+                }
+            });
+
             actionsEl = document.createElement('div');
             actionsEl.className = 'ui-dialog-actions';
 
-            panelEl.append(titleEl, bodyEl, actionsEl);
+            panelEl.append(titleEl, bodyEl, inputEl, actionsEl);
             host.append(scrim, panelEl);
             document.body.appendChild(host);
 
@@ -183,6 +210,7 @@ const char UI_DIALOG_JS[] PROGMEM = R"uidialogjs(
             if (event.key !== 'Tab') return;
             // Keep focus inside the dialog for as long as it is open.
             const buttons = Array.from(actionsEl.querySelectorAll('button'));
+            if (!inputEl.hidden) buttons.unshift(inputEl);
             if (!buttons.length) return;
             const first = buttons[0], last = buttons[buttons.length - 1];
             const focused = document.activeElement;
@@ -201,6 +229,7 @@ const char UI_DIALOG_JS[] PROGMEM = R"uidialogjs(
             const pending = current;
             current = null;
             host.hidden = true;
+            inputEl.hidden = true;
             actionsEl.textContent = '';
             const restore = pending.previousFocus;
             if (restore && typeof restore.focus === 'function' && document.contains(restore)) {
@@ -215,8 +244,12 @@ const char UI_DIALOG_JS[] PROGMEM = R"uidialogjs(
                 current = {
                     resolve: resolve,
                     cancelValue: options.cancelValue,
-                    previousFocus: document.activeElement
+                    previousFocus: document.activeElement,
+                    submit: null
                 };
+                const hasInput = options.input !== undefined;
+                inputEl.hidden = !hasInput;
+                inputEl.value = hasInput ? options.input : '';
                 titleEl.textContent = options.title || '';
                 titleEl.hidden = !options.title;
                 bodyEl.textContent = options.message || '';
@@ -229,12 +262,19 @@ const char UI_DIALOG_JS[] PROGMEM = R"uidialogjs(
                     button.type = 'button';
                     button.className = 'ui-dialog-btn' + (spec.style ? ' ui-dialog-' + spec.style : '');
                     button.textContent = spec.label;
-                    button.addEventListener('click', () => settle(spec.value));
+                    const choose = () => settle(spec.fromInput ? inputEl.value : spec.value);
+                    button.addEventListener('click', choose);
+                    if (spec.fromInput) current.submit = choose;
                     actionsEl.appendChild(button);
                     if (spec.initialFocus) initial = button;
                 });
 
                 host.hidden = false;
+                if (hasInput) {
+                    inputEl.focus();
+                    if (typeof inputEl.select === 'function') inputEl.select();
+                    return;
+                }
                 const focusTarget = initial || actionsEl.lastElementChild;
                 if (focusTarget) focusTarget.focus();
             });
@@ -285,6 +325,20 @@ const char UI_DIALOG_JS[] PROGMEM = R"uidialogjs(
                     style: 'primary',
                     initialFocus: true
                 }]
+            });
+        };
+
+        window.uiPrompt = function (message, options) {
+            const opts = options || {};
+            return queue({
+                title: opts.title || 'Enter a value',
+                message: message,
+                input: opts.value === undefined ? '' : String(opts.value),
+                cancelValue: null,
+                buttons: [
+                    { label: opts.cancelLabel || 'Cancel', value: null },
+                    { label: opts.confirmLabel || 'OK', fromInput: true, style: 'primary' }
+                ]
             });
         };
 

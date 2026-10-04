@@ -103,6 +103,8 @@ private:
     void handleFileUpload(AsyncWebServerRequest *request, String filename,
                          size_t index, uint8_t *data, size_t len, bool final);
     void handleFileDelete(AsyncWebServerRequest *request);
+    void handleFileRename(AsyncWebServerRequest *request);
+    void handleSystemTime(AsyncWebServerRequest *request);
     void handleLEDBrightnessGet(AsyncWebServerRequest *request);
     void handleLEDBrightnessSet(AsyncWebServerRequest *request);
     void handleSpeedGet(AsyncWebServerRequest *request);

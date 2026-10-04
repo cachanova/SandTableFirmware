@@ -677,6 +677,7 @@ const char WEB_UI_SCRIPT[] PROGMEM = R"rawliteral(
             }
 
             async init() {
+                this.syncDeviceClock();
                 this.setupCanvas();
                 this.setupEventListeners();
                 this.setupUploadHandlers();
@@ -1162,6 +1163,14 @@ const char WEB_UI_SCRIPT[] PROGMEM = R"rawliteral(
                 const formData = new FormData();
                 formData.append('speed', value);
                 await fetch(this.apiBase + '/speed', { method: 'POST', body: formData });
+            }
+
+            // The board has no battery clock; lend it this browser's so uploads
+            // get real dates and the library sorts newest first.
+            syncDeviceClock() {
+                const formData = new FormData();
+                formData.append('epoch', String(Math.floor(Date.now() / 1000)));
+                fetch(this.apiBase + '/system/time', { method: 'POST', body: formData }).catch(() => {});
             }
 
             async loadFileList() {

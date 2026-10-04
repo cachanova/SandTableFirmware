@@ -242,6 +242,30 @@ const flush = async () => { for (let i = 0; i < 10; ++i) await Promise.resolve()
     }
     {
         const h = page();
+        const renamed = h.context.uiPrompt('New name', {title: 'Rename', value: 'Spiral', confirmLabel: 'Rename'});
+        await flush();
+        const input = h.panel.children.find(c => c.className === 'ui-dialog-input');
+        assert.equal(input.hidden, false);
+        assert.equal(input.value, 'Spiral');
+        assert.equal(h.context.document.activeElement, input, 'the text field opens focused');
+        assert.deepEqual(h.buttons.map(b => b.textContent), ['Cancel', 'Rename']);
+        h.focus(h.button('Rename'));
+        h.key('Tab');
+        assert.equal(h.context.document.activeElement, input, 'Tab wraps through the text field');
+        input.value = 'Spiral Two';
+        const enter = input.dispatch('keydown', {key: 'Enter'});
+        assert.equal(enter.defaultPrevented, true);
+        assert.equal(await renamed, 'Spiral Two');
+        assert.equal(input.hidden, true, 'the field hides again for the next dialog');
+
+        const declined = h.context.uiPrompt('New name');
+        await flush();
+        h.key('Escape');
+        assert.equal(await declined, null);
+        console.log('PASS: prompt returns the edited text on Return and null when cancelled');
+    }
+    {
+        const h = page();
         h.context.uiNotify('Saved.');
         assert.equal(h.notices.length, 1);
         assert.equal(h.notices[0].children[0].textContent, 'Saved.');

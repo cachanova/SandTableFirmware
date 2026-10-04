@@ -98,7 +98,7 @@ const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve()
     }
     {
         const h = setup(); const never = deferred(); let statusStarted = false;
-        for (const method of ['setupCanvas', 'setupEventListeners', 'setupUploadHandlers', 'connectStream', 'startErrorPolling']) h.controller[method] = () => {};
+        for (const method of ['syncDeviceClock', 'setupCanvas', 'setupEventListeners', 'setupUploadHandlers', 'connectStream', 'startErrorPolling']) h.controller[method] = () => {};
         h.controller.startStatusPolling = () => { statusStarted = true; };
         h.controller.loadFileList = () => never.promise;
         h.controller.loadSystemInfo = h.controller.loadPlaylistStatus = async () => {};

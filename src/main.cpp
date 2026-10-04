@@ -221,6 +221,11 @@ void setup() {
     LOG("IP Address: %s\r\n", WiFi.localIP().toString().c_str());
     LOG("SSID: %s\r\n", WiFi.SSID().c_str());
 
+    // No battery clock: without this, files written to the card are stamped
+    // 1980 and newest-first ordering breaks. SNTP runs in the background; the
+    // web pages also send the browser's clock in case the network has no NTP.
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+
     // CSI uses the existing Wi-Fi link as an ambient motion sensor. Presence
     // may affect lighting, but is never allowed to start or stop motion.
     presenceSensor.begin();

@@ -87,7 +87,14 @@ const char FILE_UI_HEAD[] PROGMEM = R"rawliteral(
             border-bottom: 1px solid var(--hair);
         }
         .file-item:hover { background: var(--wash); }
-        .file-info { flex: 1; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
+        .file-thumb {
+            flex: none; width: 48px; height: 48px;
+            border: 1px solid var(--hair); border-radius: 50%; overflow: hidden;
+            background: var(--sand); display: flex; align-items: center; justify-content: center;
+            font-family: var(--mono); font-size: 8px; color: var(--ink-faint); text-transform: uppercase;
+        }
+        .file-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .file-info { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
         .file-name {
             font-family: var(--serif);
             font-size: 16px;
@@ -95,8 +102,9 @@ const char FILE_UI_HEAD[] PROGMEM = R"rawliteral(
             overflow: hidden;
             text-overflow: ellipsis;
         }
-        .file-size { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); flex: none; }
-        .btn-delete {
+        .file-size { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
+        .file-actions { display: flex; gap: 8px; flex: none; }
+        .btn-rename, .btn-delete {
             padding: 6px 14px;
             font-size: 10px;
             font-weight: 600;
@@ -110,6 +118,8 @@ const char FILE_UI_HEAD[] PROGMEM = R"rawliteral(
             font-family: inherit;
             flex: none;
         }
+        .btn-rename { color: var(--ink); border-color: var(--ink); }
+        .btn-rename:hover { background: var(--ink); color: var(--paper); }
         .btn-delete:hover { background: var(--danger); color: var(--paper); }
 
         .empty-state {
@@ -130,6 +140,7 @@ const char FILE_UI_HEAD[] PROGMEM = R"rawliteral(
             .topbar { padding: 16px 20px; }
             .topnav { gap: 16px; }
             .container { padding: 24px 16px 60px; }
+            .file-actions { flex-direction: column; gap: 6px; }
         }
 )rawliteral";
 
@@ -218,6 +229,8 @@ const char FILE_UI_SCRIPT[] PROGMEM = R"rawliteral(
                 if (data.loading) fileListRetry = setTimeout(loadFileList, 750);
                 const fileList = document.getElementById('file-list');
                 fileList.innerHTML = '';
+                thumbnailQueue = [];
+                thumbnailGeneration++;
                 storageAvailable = data.storageAvailable !== false;
                 const uploadArea = document.getElementById('upload-area');
                 uploadArea.style.pointerEvents = storageAvailable ? '' : 'none';
@@ -230,11 +243,19 @@ const char FILE_UI_SCRIPT[] PROGMEM = R"rawliteral(
                 }
 
                 if (data.files && data.files.length > 0) {
+                    // The device lists newest first.
                     data.files.forEach(file => {
                         const displayName = file.name.replace('.thr', '');
-                        const thumbUrl = apiBase + '/pattern/image?file=' + encodeURIComponent(displayName);
                         const fileItem = document.createElement('div');
                         fileItem.className = 'file-item';
+                        const thumb = document.createElement('div');
+                        thumb.className = 'file-thumb';
+                        thumb.textContent = file.hasImage ? '' : 'None';
+                        if (file.hasImage) {
+                            const t = file.thumbnailTime || file.imageTime || file.time || 0;
+                            thumbnailQueue.push({ thumb, url: apiBase + '/pattern/image?file=' +
+                                encodeURIComponent(file.name) + '&thumbnail=1&t=' + t });
+                        }
                         const info = document.createElement('div');
                         info.className = 'file-info';
                         const name = document.createElement('div');
@@ -242,17 +263,27 @@ const char FILE_UI_SCRIPT[] PROGMEM = R"rawliteral(
                         name.textContent = displayName;
                         const size = document.createElement('div');
                         size.className = 'file-size';
-                        size.textContent = file.size > 0 ? (file.size / 1024).toFixed(1) + ' KB' : '';
+                        size.textContent = describeFile(file);
+                        const actions = document.createElement('div');
+                        actions.className = 'file-actions';
+                        const rename = document.createElement('button');
+                        rename.className = 'btn-rename';
+                        rename.textContent = 'Rename';
+                        rename.addEventListener('click', () => renameFile(file.name));
                         const remove = document.createElement('button');
                         remove.className = 'btn-delete';
                         remove.textContent = 'Delete';
                         remove.addEventListener('click', () => deleteFile(file.name));
                         info.appendChild(name);
                         info.appendChild(size);
+                        actions.appendChild(rename);
+                        actions.appendChild(remove);
+                        fileItem.appendChild(thumb);
                         fileItem.appendChild(info);
-                        fileItem.appendChild(remove);
+                        fileItem.appendChild(actions);
                         fileList.appendChild(fileItem);
                     });
+                    loadThumbnails();
                 } else {
                     fileList.innerHTML = '<div class="empty-state">No pattern files found</div>';
                 }
@@ -264,6 +295,89 @@ const char FILE_UI_SCRIPT[] PROGMEM = R"rawliteral(
                 clearTimeout(timeout);
                 fileListInFlight = false;
             }
+        }
+
+        // Before 2020 means the board's clock was unset when the file was written.
+        const CLOCK_VALID_EPOCH = 1577836800;
+
+        function describeFile(file) {
+            const parts = [];
+            if (file.size > 0) parts.push((file.size / 1024).toFixed(1) + ' KB');
+            if (file.time >= CLOCK_VALID_EPOCH) {
+                parts.push('added ' + new Date(file.time * 1000).toLocaleDateString(undefined,
+                    { year: 'numeric', month: 'short', day: 'numeric' }));
+            }
+            return parts.join(' · ');
+        }
+
+        // One SD image read at a time; the device answers 503 while busy.
+        let thumbnailQueue = [];
+        let thumbnailGeneration = 0;
+        let thumbnailsLoading = false;
+        async function loadThumbnails() {
+            if (thumbnailsLoading) return;
+            thumbnailsLoading = true;
+            const generation = thumbnailGeneration;
+            try {
+                let next;
+                while (generation === thumbnailGeneration && (next = thumbnailQueue.shift())) {
+                    for (let attempt = 0; attempt < 3; attempt++) {
+                        let response;
+                        try {
+                            response = await fetch(next.url, { cache: 'default' });
+                        } catch (error) {
+                            break;
+                        }
+                        if (response.status === 503) {
+                            await new Promise(resolve => setTimeout(resolve, 1000));
+                            continue;
+                        }
+                        if (!response.ok) break;
+                        const objectUrl = URL.createObjectURL(await response.blob());
+                        const img = document.createElement('img');
+                        img.alt = '';
+                        img.onload = img.onerror = () => URL.revokeObjectURL(objectUrl);
+                        img.src = objectUrl;
+                        next.thumb.textContent = '';
+                        next.thumb.appendChild(img);
+                        break;
+                    }
+                }
+            } finally {
+                thumbnailsLoading = false;
+                if (generation !== thumbnailGeneration && thumbnailQueue.length) loadThumbnails();
+            }
+        }
+
+        async function renameFile(filename) {
+            const current = filename.replace('.thr', '');
+            const entered = await uiPrompt('Letters, numbers, spaces, - _ and . are allowed.',
+                { title: 'Rename ' + current, value: current, confirmLabel: 'Rename' });
+            if (entered === null) return;
+            const name = entered.trim().replace(/\.thr$/i, '');
+            if (!name || name === current) return;
+            const formData = new FormData();
+            formData.append('file', filename);
+            formData.append('name', name);
+            try {
+                const response = await fetch(apiBase + '/files/rename', { method: 'POST', body: formData });
+                const result = await response.json().catch(() => ({}));
+                if (!response.ok || result.success === false) {
+                    throw new Error(result.message || 'Rename failed');
+                }
+            } catch (error) {
+                uiNotify('Could not rename ' + current + ': ' + error.message, { tone: 'error' });
+                return;
+            }
+            await loadFileList();
+        }
+
+        // The board has no battery clock; lend it this browser's so uploads
+        // get real dates and sort newest first.
+        function syncDeviceClock() {
+            const formData = new FormData();
+            formData.append('epoch', String(Math.floor(Date.now() / 1000)));
+            fetch(apiBase + '/system/time', { method: 'POST', body: formData }).catch(() => {});
         }
 
         async function deleteFile(filename) {
@@ -368,7 +482,10 @@ const char FILE_UI_SCRIPT[] PROGMEM = R"rawliteral(
             }
         });
 
-        window.onload = loadFileList;
+        window.onload = () => {
+            syncDeviceClock();
+            loadFileList();
+        };
     </script>
 </body>
 </html>

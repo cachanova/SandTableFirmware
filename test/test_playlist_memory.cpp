@@ -8,6 +8,8 @@ int main(){
     assert(playlist.movePattern(0,2));assert(playlist.getCurrentIndex()==2);
     assert(playlist.getItem(0).filename=="B.thr" && playlist.getItem(2).filename=="A.thr");
     assert(playlist.movePattern(2,0));assert(playlist.getCurrentIndex()==0);
+    playlist.renamePattern("A.thr","Z.thr");assert(playlist.getItem(0).filename=="Z.thr");
+    playlist.renamePattern("Z.thr","A.thr");
     assert(playlist.saveToFile("roundtrip"));
     const auto original=*storage.files.at("/playlists/roundtrip.json");
     playlist.clear();assert(playlist.addPattern("D.thr"));

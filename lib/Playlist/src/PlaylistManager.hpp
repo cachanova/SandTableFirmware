@@ -25,6 +25,8 @@ public:
 
   bool addPattern(const String& filename);
   bool removePattern(int index);
+  // Point every entry for a renamed pattern file at its new name.
+  void renamePattern(const String& from, const String& to);
   void clear();
   bool movePattern(int fromIndex, int toIndex);
   void shuffle(); // Randomize the list in-place

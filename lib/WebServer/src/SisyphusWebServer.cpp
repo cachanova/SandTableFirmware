@@ -12,6 +12,8 @@
 #include <SemaphoreGuard.hpp>
 #include <SDCard.hpp>
 #include <ClearingPatternGen.hpp>
+#include <sys/time.h>
+#include <vector>
 #include <ErrorLog.hpp>
 #include <RhoAcousticProfile.hpp>
 #include <algorithm>
@@ -88,6 +90,9 @@ static bool validSimpleFilename(const String& filename, const char* extension) {
     }
     return true;
 }
+
+// 2020-01-01: anything earlier means the clock was never set this boot.
+static constexpr time_t kClockValidEpoch = 1577836800;
 
 static bool parseStrictInt(const String& text, int& value) {
     if (text.length() == 0) return false;
@@ -639,6 +644,16 @@ void SisyphusWebServer::begin(PolarControl *polarControl,
         handleFileDelete(request);
     });
 
+    m_server.on("/api/files/rename", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handleFileRename(request);
+    });
+
+    m_server.on("/api/system/time", HTTP_POST, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        handleSystemTime(request);
+    });
+
     m_server.on("/api/led/brightness", HTTP_GET, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handleLEDBrightnessGet(request);
@@ -972,6 +987,12 @@ bool SisyphusWebServer::updateFileListCache() {
 
         }
     }
+    // Newest first, so every list shows recently added patterns on top.
+    // Renames keep a file's timestamp, and with it its place.
+    std::sort(newCache.begin(), newCache.end(), [](const FileEntry& a, const FileEntry& b) {
+        if (a.time != b.time) return a.time > b.time;
+        return a.baseName.compareTo(b.baseName) < 0;
+    });
     for (size_t i = 0; i < newCache.size(); ++i) newIndex.push_back({newCache[i].baseName, i});
     std::sort(newIndex.begin(), newIndex.end(), [](const FileIndexEntry& a, const FileIndexEntry& b) {
         return a.baseName.compareTo(b.baseName) < 0;
@@ -2396,6 +2417,109 @@ void SisyphusWebServer::handleFileDelete(AsyncWebServerRequest *request) {
             ? "{\"success\":false,\"message\":\"Could not delete all pattern files\"}"
             : "{\"success\":false,\"message\":\"File not found\"}");
     }
+}
+
+void SisyphusWebServer::handleFileRename(AsyncWebServerRequest *request) {
+    SemaphoreGuard stateLock(m_stateMutex);
+    if (!requirePatternStorage(request)) return;
+    if (!request->hasParam("file", true) || !request->hasParam("name", true)) {
+        request->send(400, "application/json", "{\"success\":false,\"message\":\"Missing filename\"}");
+        return;
+    }
+    const String filename = request->getParam("file", true)->value();
+    String target = request->getParam("name", true)->value();
+    target.trim();
+    if (!target.endsWith(".thr")) target += ".thr";
+    if (!validSimpleFilename(filename, ".thr") || !validSimpleFilename(target, ".thr")) {
+        request->send(400, "application/json", "{\"success\":false,\"message\":\"Use letters, numbers, spaces, - _ and . only\"}");
+        return;
+    }
+    if (target == filename) {
+        request->send(200, "application/json", "{\"success\":true}");
+        return;
+    }
+    // A running or waiting pattern is read by name until it finishes.
+    for (const String* busy : {&m_currentPattern, &m_pendingPattern, &m_queuedPattern}) {
+        if (*busy == filename) {
+            request->send(409, "application/json", "{\"success\":false,\"message\":\"Stop this pattern before renaming it\"}");
+            return;
+        }
+    }
+    if (m_imageInflight.load() != 0 || m_fileScanActive.load()) {
+        std::unique_ptr<AsyncWebServerResponse> response(request->beginResponse(503, "application/json",
+            "{\"success\":false,\"message\":\"Pattern library busy; try again\"}"));
+        response->addHeader("Retry-After", "1");
+        request->send(response.release());
+        return;
+    }
+
+    const String from = filename.substring(0, filename.length() - 4);
+    const String to = target.substring(0, target.length() - 4);
+    const String fromDir = "/patterns/" + from, toDir = "/patterns/" + to;
+    // FAT names are case-insensitive: a case-only rename is the same entry.
+    const bool caseOnly = from.equalsIgnoreCase(to);
+    if (!caseOnly && (SD.exists(toDir) || SD.exists(toDir + ".thr") || SD.exists(toDir + ".png"))) {
+        request->send(409, "application/json", "{\"success\":false,\"message\":\"A pattern with that name already exists\"}");
+        return;
+    }
+
+    // Nested patterns keep base.thr/.png/.thumb.png in /patterns/base/;
+    // legacy flat ones keep base.thr and base.png beside a thumbnail-only
+    // directory. Rename every piece that exists, directory last, and undo
+    // the completed steps if one fails so the pattern never splits.
+    struct Step { String from, to; };
+    std::vector<Step> steps;
+    if (SD.exists(fromDir)) {
+        for (const char* suffix : {".thr", ".png", ".thumb.png"}) {
+            const String path = fromDir + "/" + from + suffix;
+            if (SD.exists(path)) steps.push_back({path, fromDir + "/" + to + suffix});
+        }
+        steps.push_back({fromDir, toDir});
+    }
+    for (const char* suffix : {".thr", ".png"}) {
+        if (SD.exists(fromDir + suffix)) steps.push_back({fromDir + suffix, toDir + suffix});
+    }
+    if (steps.empty()) {
+        request->send(404, "application/json", "{\"success\":false,\"message\":\"File not found\"}");
+        return;
+    }
+    size_t done = 0;
+    for (; done < steps.size(); ++done) {
+        if (!SD.rename(steps[done].from, steps[done].to)) break;
+    }
+    if (done < steps.size()) {
+        while (done > 0) {
+            --done;
+            SD.rename(steps[done].to, steps[done].from);
+        }
+        m_fileListDirty.store(true);
+        request->send(500, "application/json", "{\"success\":false,\"message\":\"Could not rename the pattern files\"}");
+        return;
+    }
+    m_playlist.renamePattern(filename, target);
+    m_fileListDirty.store(true);
+    LOG("Renamed pattern %s -> %s\r\n", filename.c_str(), target.c_str());
+    request->send(200, "application/json", "{\"success\":true}");
+}
+
+void SisyphusWebServer::handleSystemTime(AsyncWebServerRequest *request) {
+    // The board has no battery clock, and files written before the clock is
+    // set get 1980 timestamps that break newest-first ordering. Pages send
+    // the browser's clock on load; NTP, if reachable, keeps it accurate.
+    double epoch = 0;
+    if (!request->hasParam("epoch", true) ||
+        !(epoch = request->getParam("epoch", true)->value().toDouble())) {
+        request->send(400, "application/json", "{\"success\":false,\"message\":\"Missing epoch\"}");
+        return;
+    }
+    const bool alreadySet = time(nullptr) >= kClockValidEpoch;
+    if (!alreadySet && epoch >= kClockValidEpoch) {
+        timeval now{static_cast<time_t>(epoch), 0};
+        settimeofday(&now, nullptr);
+        LOG("Clock set from browser: %ld\r\n", static_cast<long>(now.tv_sec));
+    }
+    request->send(200, "application/json", time(nullptr) >= kClockValidEpoch
+        ? "{\"success\":true,\"clockSet\":true}" : "{\"success\":true,\"clockSet\":false}");
 }
 
 void SisyphusWebServer::handleLEDBrightnessGet(AsyncWebServerRequest *request) {
