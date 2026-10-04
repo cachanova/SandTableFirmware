@@ -238,10 +238,16 @@ public:
     // multiplier to estimate time left.
     double getCompletedNominalSec() const { return m_completedNominalSec; }
 
+    // Sum of completed segments' planned durations, including acceleration,
+    // jerk, and corner limits at the speed multiplier they ran with. Its ratio
+    // to getCompletedNominalSec() calibrates the nominal remainder.
+    double getCompletedPlannedSec() const { return m_completedPlannedSec; }
+
     // Reset completed count and nominal-duration accumulator
     void resetCompletedCount() {
         m_completedCount = 0;
         m_completedNominalSec = 0.0;
+        m_completedPlannedSec = 0.0;
     }
 
     // Get diagnostic info
@@ -380,6 +386,7 @@ private:
     bool m_stopEventQueued = false;
     uint32_t m_completedCount;
     double m_completedNominalSec = 0.0;
+    double m_completedPlannedSec = 0.0;
     bool m_startupHoldoff = false;
 
     // Timer handle (ESP32 specific)

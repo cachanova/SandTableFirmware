@@ -15,7 +15,7 @@ public:
                                 LEDController* ledController,
                                 PresenceSensor* presenceSensor,
                                 const String& currentPattern,
-                                const String& clearingPattern,
+                                const char* clearingPattern, int clearingPatternId,
                                 const String& queuedPattern, uint32_t fileListRevision) {
         String state = getStateString(polarControl->getState());
         int progress = polarControl->getProgressPercent();
@@ -39,6 +39,8 @@ public:
         out.print(progress);
         out.print(",\"clearingProgress\":");
         out.print(clearingProgress);
+        out.print(",\"clearingPatternId\":");
+        out.print(clearingPatternId);
         out.print(",\"etaSeconds\":");
         out.print(polarControl->getEtaSeconds());
         out.print(",\"ledBrightness\":");

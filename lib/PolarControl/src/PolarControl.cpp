@@ -2676,12 +2676,13 @@ bool PolarControl::jogRelative(float thetaDelta, float rhoDelta,
     return true;
 }
 
-bool PolarControl::startClearing(std::unique_ptr<PosGen> posGen) {
+bool PolarControl::startClearing(ClearingPattern pattern) {
 #if defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
-    (void)posGen;
+    (void)pattern;
     LOG("COMMISSIONING: clearing motion rejected\r\n");
     return false;
 #endif
+    auto posGen = std_patch::make_unique<ClearingPatternGen>(pattern, R_MAX);
     xSemaphoreTake(m_mutex, portMAX_DELAY);
 
     if (m_state != IDLE) {
@@ -2693,7 +2694,16 @@ bool PolarControl::startClearing(std::unique_ptr<PosGen> posGen) {
     m_clearingSpeedActive = true;
     m_planner.setSpeedMultiplier(1.0f);
 
-    LOG("Starting Clearing Pattern\r\n");
+    // Walks the generator once (a few thousand points, a few milliseconds),
+    // including the approach from the ball's current position.
+    double theta = 0.0, rho = 0.0;
+    m_planner.getCurrentPosition(theta, rho);
+    m_clearingNominalSec = static_cast<float>(posGen->nominalSeconds(
+        {theta, rho}, m_motionSettings.tMaxVelocity, m_motionSettings.rMaxVelocity,
+        m_motionSettings.ballMaxVelocity));
+    m_clearingOverhead = static_cast<float>(ClearingPatternGen::plannerOverhead(pattern));
+
+    LOG("Starting Clearing Pattern %d (nominal %.0f s)\r\n", pattern, m_clearingNominalSec);
 
     m_posGen = std::move(posGen);
 
@@ -2991,7 +3001,12 @@ int PolarControl::getProgressPercent() const {
     // Alternatively, make m_mutex mutable, but C++ style cast is easier here for existing code
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     int progress = -1;
-    if (m_posGen) {
+    if (m_state.load() == CLEARING && m_clearingNominalSec > 0.0f) {
+        // Time-weighted, so the percentage and the ETA always agree.
+        const double done = m_planner.getCompletedPlannedSec();
+        const double total = done + clearingRemainingSecLocked();
+        progress = total > 0.0 ? static_cast<int>(std::min(100.0, 100.0 * done / total)) : 0;
+    } else if (m_posGen) {
         progress = m_posGen->getProgressPercent();
     } else {
         const uint32_t totalPoints = m_patternTotalPoints.load();
@@ -3016,11 +3031,28 @@ int PolarControl::getProgressPercent() const {
     return progress;
 }
 
+double PolarControl::clearingRemainingSecLocked() const {
+    // Clearing always runs at multiplier 1. Scale the nominal remainder by
+    // the slower of the pattern's simulated overhead and the ratio observed
+    // so far: the observed ratio catches slower motion settings, while the
+    // prior covers patterns that slow down most near the end.
+    const double completedNominal = m_planner.getCompletedNominalSec();
+    double remaining = m_clearingNominalSec - completedNominal;
+    if (remaining < 0.0) remaining = 0.0;
+    double ratio = m_clearingOverhead;
+    if (completedNominal > 30.0) {
+        ratio = std::max(ratio, m_planner.getCompletedPlannedSec() / completedNominal);
+    }
+    return remaining * ratio;
+}
+
 int PolarControl::getEtaSeconds() const {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     int etaSeconds = -1;
     const float totalNominalSec = m_patternNominalSec.load();
-    if (!m_posGen && totalNominalSec > 0.0f) {
+    if (m_state.load() == CLEARING && m_clearingNominalSec > 0.0f) {
+        etaSeconds = static_cast<int>(std::lround(clearingRemainingSecLocked()));
+    } else if (!m_posGen && totalNominalSec > 0.0f) {
         const State_t state = m_state.load();
         if (state == RUNNING || state == PAUSED || state == STOPPING ||
             state == PREPARING) {

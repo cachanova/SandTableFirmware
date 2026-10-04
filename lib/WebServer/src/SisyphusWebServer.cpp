@@ -5,6 +5,7 @@
 #include "BufferedResponse.hpp"
 #include "BulkResponseBudget.hpp"
 #include "PatternImageResponse.hpp"
+#include "ClearingPathResponse.hpp"
 #include "StaticContentResponse.hpp"
 #include "PolarUtils.hpp"
 #include "MakeUnique.hpp"
@@ -157,19 +158,6 @@ String SisyphusWebServer::resolvePatternPath(const String& filename) {
 }
 
 static constexpr bool kEnablePatternImages = true;
-
-static const char* getClearingPatternName(ClearingPattern pattern) {
-    switch (pattern) {
-        case SPIRAL_OUTWARD: return "Spiral Outward";
-        case SPIRAL_INWARD: return "Spiral Inward";
-        case CONCENTRIC_CIRCLES: return "Concentric Circles";
-        case ZIGZAG_RADIAL: return "Zigzag Radial";
-        case PETAL_FLOWER: return "Petal Flower";
-        case CLEARING_NONE: return "";
-        case CLEARING_RANDOM: return "Random";
-        default: return "";
-    }
-}
 
 SisyphusWebServer::SisyphusWebServer(uint16_t port)
     : m_server(port),
@@ -746,6 +734,21 @@ void SisyphusWebServer::begin(PolarControl *polarControl,
         handlePlaylistList(request);
     });
 
+    m_server.on("/api/clearing/path", HTTP_GET, [this](AsyncWebServerRequest *request) {
+        noteRequest(request);
+        int pattern = 0;
+        if (!request->hasParam("pattern") ||
+            !parseStrictInt(request->getParam("pattern")->value(), pattern) ||
+            pattern <= CLEARING_NONE || pattern >= CLEARING_RANDOM) {
+            request->send(400, "application/json",
+                "{\"success\":false,\"message\":\"Invalid clearing pattern\"}");
+            return;
+        }
+        auto response = std_patch::make_unique<ClearingPathResponse>(
+            static_cast<ClearingPattern>(pattern), m_polarControl->getMaxRho());
+        request->send(response.release());
+    });
+
     m_server.on("/api/playlist/clearing", HTTP_POST, [this](AsyncWebServerRequest *request) {
         noteRequest(request);
         handlePlaylistClearing(request);
@@ -1220,7 +1223,7 @@ void SisyphusWebServer::processPatternQueue() {
             ClearingPattern pattern = m_selectedClearing;
             if (pattern == CLEARING_RANDOM) pattern = getRandomClearingPattern();
 
-            if (!m_polarControl->startClearing(std_patch::make_unique<ClearingPatternGen>(pattern, m_polarControl->getMaxRho()))) {
+            if (!m_polarControl->startClearing(pattern)) {
                 m_runningClearing = false;
                 m_singlePatternClearing = false;
                 m_activeClearingPattern = CLEARING_NONE;
@@ -1267,7 +1270,7 @@ void SisyphusWebServer::processPatternQueue() {
                     ClearingPattern pattern = next.clearingPattern;
                     if (pattern == CLEARING_RANDOM) pattern = getRandomClearingPattern();
 
-                    if (!m_polarControl->startClearing(std_patch::make_unique<ClearingPatternGen>(pattern, m_polarControl->getMaxRho()))) {
+                    if (!m_polarControl->startClearing(pattern)) {
                         m_runningClearing = false;
                         m_activeClearingPattern = CLEARING_NONE;
                         beginPatternLocked(next.filename);
@@ -1372,13 +1375,14 @@ String SisyphusWebServer::getStateString() {
 }
 
 void SisyphusWebServer::writeStatusJSON(Print& out) {
-    String clearingPattern = "";
+    ClearingPattern clearing = CLEARING_NONE;
     if (m_polarControl->getState() == PolarControl::CLEARING) {
-        clearingPattern = getClearingPatternName(m_activeClearingPattern);
+        clearing = m_activeClearingPattern;
     }
     JsonHelpers::writeStatusJSON(out, m_polarControl, m_ledController,
         m_presenceSensor, m_currentPattern,
-        clearingPattern, m_hasQueuedPattern ? m_queuedPattern : m_pendingPattern,
+        ClearingPatternGen::displayName(clearing), static_cast<int>(clearing),
+        m_hasQueuedPattern ? m_queuedPattern : m_pendingPattern,
         m_fileListRevision.load());
 }
 

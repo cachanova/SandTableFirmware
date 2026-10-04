@@ -92,6 +92,7 @@ const char WEB_UI_HEAD[] PROGMEM = R"rawliteral(
             margin-bottom: 8px;
             overflow-wrap: anywhere;
         }
+        .stage-next { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); margin: -4px 0 8px; }
         .progress-rule { height: 2px; background: var(--hair); max-width: 440px; }
         .progress-rule-fill { height: 100%; width: 0%; background: var(--ink); transition: width .3s ease; }
         .progress-pct { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); margin-top: 4px; }
@@ -442,6 +443,7 @@ const char WEB_UI_BODY[] PROGMEM = R"rawliteral(
                 <span class="stage-uptime">up <span id="uptime">0s</span></span>
             </div>
             <div class="stage-title" id="current-pattern">None</div>
+            <div class="stage-next" id="clearing-next" style="display: none;"></div>
             <div id="playback-message" role="status" aria-live="polite"></div>
             <div id="file-progress-container" style="display: none;">
                 <div class="progress-rule"><div class="progress-rule-fill" id="file-progress-bar"></div></div>
@@ -514,8 +516,8 @@ const char WEB_UI_BODY[] PROGMEM = R"rawliteral(
                     <select id="clearing-select">
                         <option value="0">No Clearing</option>
                         <option value="6">Clear first — Random</option>
-                        <option value="1">Clear first — Spiral Inward (CW)</option>
-                        <option value="2">Clear first — Spiral Inward (CCW)</option>
+                        <option value="1">Clear first — Spiral (CW)</option>
+                        <option value="2">Clear first — Spiral (CCW)</option>
                         <option value="3">Clear first — Concentric Circles (Inward)</option>
                         <option value="4">Clear first — ZigZag</option>
                         <option value="5">Clear first — Petal Flower</option>
@@ -669,6 +671,8 @@ const char WEB_UI_SCRIPT[] PROGMEM = R"rawliteral(
                 this.overlayObjectUrl = null;
                 this.overlayObjectUrlIsTemp = false;
                 this.overlaySuppressed = false;
+                this.clearingOverlayId = 0;
+                this.clearingOverlayCache = {};
                 this.init();
             }
 
@@ -1656,11 +1660,20 @@ const char WEB_UI_SCRIPT[] PROGMEM = R"rawliteral(
                         img.src = '';
                         this.overlayObjectUrl = null;
                         this.overlayObjectUrlIsTemp = false;
+                        this.overlaySourceUrl = '';
+                        this.clearingOverlayId = 0;
                     }
+                    this.setClearingOverlay(status.clearingPatternId);
                 } else if (this.overlaySuppressed) {
                     this.overlaySuppressed = false;
+                    this.clearingOverlayId = 0;
                     this.setOverlayImage(currentPattern);
                 }
+
+                const clearingNext = document.getElementById('clearing-next');
+                const nextPattern = (status.queuedPattern || '').replace('.thr', '');
+                clearingNext.textContent = isClearing && nextPattern ? `Up next: ${nextPattern}` : '';
+                clearingNext.style.display = clearingNext.textContent ? 'block' : 'none';
 
                 document.getElementById('current-pattern').textContent = displayPattern.replace('.thr', '');
                 document.getElementById('status-brightness').textContent = status.ledBrightness === 100 ? 'On' : 'Off';
@@ -1710,7 +1723,7 @@ const char WEB_UI_SCRIPT[] PROGMEM = R"rawliteral(
                 const npProgressText = document.getElementById('np-file-progress-text');
 
                 if (isRunning && progress >= 0) {
-                    const etaSuffix = !isClearing && Number.isFinite(status.etaSeconds) &&
+                    const etaSuffix = Number.isFinite(status.etaSeconds) &&
                         status.etaSeconds >= 0
                         ? ` · ~${this.formatEta(status.etaSeconds)} left` : '';
                     const progressLabel = progress + '%' + etaSuffix;
@@ -1783,6 +1796,64 @@ const char WEB_UI_SCRIPT[] PROGMEM = R"rawliteral(
                     line.appendChild(msg);
                     logContainer.appendChild(line);
                 }
+            }
+
+            // Draws the running clearing sweep, from the generator's own points,
+            // into the pattern overlay so the table shows where the ball will go.
+            async setClearingOverlay(patternId) {
+                if (!Number.isInteger(patternId) || patternId <= 0 ||
+                    patternId === this.clearingOverlayId) return;
+                this.clearingOverlayId = patternId;
+                const requestId = ++this.overlayRequestId;
+                let src = this.clearingOverlayCache[patternId];
+                if (!src) {
+                    try {
+                        const response = await fetch(`${this.apiBase}/clearing/path?pattern=${patternId}`);
+                        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                        src = this.renderClearingPath(new Float32Array(await response.arrayBuffer()));
+                    } catch (error) {
+                        // Retry on a later status poll.
+                        if (this.clearingOverlayId === patternId) this.clearingOverlayId = 0;
+                        return;
+                    }
+                    if (src) this.clearingOverlayCache[patternId] = src;
+                }
+                if (!src || requestId !== this.overlayRequestId || !this.overlaySuppressed) return;
+                const img = document.getElementById('pattern-overlay');
+                img.onload = img.onerror = null;
+                img.src = src;
+                img.style.display = 'block';
+            }
+
+            renderClearingPath(points) {
+                if (points.length < 4) return '';
+                const canvas = document.createElement('canvas');
+                canvas.width = canvas.height = 800;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) return '';
+                // Same mapping as the live trace: the outermost pass is the rim.
+                let maxRho = 0;
+                for (let i = 1; i < points.length; i += 2) maxRho = Math.max(maxRho, points[i]);
+                if (!(maxRho > 0)) return '';
+                const center = 400, scale = (400 - 20) / maxRho;
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 1.2;
+                ctx.beginPath();
+                let theta = points[0], rho = points[1];
+                ctx.moveTo(center + rho * Math.cos(theta) * scale, center + rho * Math.sin(theta) * scale);
+                for (let i = 2; i + 1 < points.length; i += 2) {
+                    const t = points[i], r = points[i + 1];
+                    // The planner interpolates in polar space; follow it in ~3 mm steps.
+                    const steps = Math.max(1, Math.ceil(Math.abs(t - theta) * Math.max(r, rho) / 3));
+                    for (let k = 1; k <= steps; k++) {
+                        const u = k / steps, tt = theta + (t - theta) * u, rr = rho + (r - rho) * u;
+                        ctx.lineTo(center + rr * Math.cos(tt) * scale, center + rr * Math.sin(tt) * scale);
+                    }
+                    theta = t;
+                    rho = r;
+                }
+                ctx.stroke();
+                return canvas.toDataURL('image/png');
             }
 
             formatEta(seconds) {

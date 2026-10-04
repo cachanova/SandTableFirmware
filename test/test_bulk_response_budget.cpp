@@ -4,7 +4,8 @@
 
 int main() {
     using namespace BulkResponseBudget;
-    for (const char* path : {"/", "/settings", "/manual", "/files", "/api/pattern/image", "/api/pattern/download"})
+    for (const char* path : {"/", "/settings", "/manual", "/files", "/api/pattern/image", "/api/pattern/download",
+                             "/api/clearing/path"})
         assert(isBulkPath(path));
     for (const char* path : {"/api/status", "/api/system/info", "/api/presence",
                             "/api/pattern/stop", "/api/stream", "/tuning"})

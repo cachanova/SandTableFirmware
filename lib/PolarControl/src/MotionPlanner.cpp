@@ -130,6 +130,7 @@ void MotionPlanner::init(double stepsPerMmR, double stepsPerRadT, float maxRho, 
     m_stepQueueTail = 0;
     m_completedCount = 0;
     m_completedNominalSec = 0.0;
+    m_completedPlannedSec = 0.0;
     m_stopEventQueued = false;
     m_underrunCount.store(0);
     m_consecutiveUnderruns.store(0);
@@ -859,6 +860,7 @@ void MotionPlanner::process() {
             current.executing = false;
             m_completedCount++;
             m_completedNominalSec += current.nominalDuration;
+            m_completedPlannedSec += current.duration;
 
             // Move to next segment
             m_segmentTail = (m_segmentTail + 1) % SEGMENT_BUFFER_SIZE;

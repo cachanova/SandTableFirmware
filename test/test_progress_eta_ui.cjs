@@ -32,6 +32,8 @@ vm.runInContext(script, context);
 const controller = Object.create(context.Controller.prototype);
 controller.clearPath = () => {};
 controller.setOverlayImage = () => {};
+const clearingOverlays = [];
+controller.setClearingOverlay = id => clearingOverlays.push(id);
 controller.loadFileList = () => {};
 controller.syncBrightnessControl = () => {};
 
@@ -50,9 +52,19 @@ assert.equal(el('file-progress-text').textContent, '42%');
 console.log('PASS: an unknown ETA leaves the plain percentage');
 
 controller.updateUI({ ...baseStatus, state: 'CLEARING', progress: 10, clearingProgress: 40,
-    etaSeconds: 90 }, 0);
-assert.equal(el('file-progress-text').textContent, '40%');
-console.log('PASS: clearing progress never shows a pattern ETA');
+    etaSeconds: 90, clearingPattern: 'Spiral (CW)', clearingPatternId: 1,
+    queuedPattern: 'Wave.thr' }, 0);
+assert.equal(el('file-progress-text').textContent, '40% · ~2 min left');
+assert.equal(el('current-pattern').textContent, 'Clearing: Spiral (CW)');
+assert.equal(el('clearing-next').textContent, 'Up next: Wave');
+assert.equal(el('clearing-next').style.display, 'block');
+assert.deepEqual(clearingOverlays, [1]);
+console.log('PASS: clearing shows its pattern, ETA, path overlay, and the pattern that follows');
+
+controller.updateUI({ ...baseStatus, state: 'RUNNING', progress: 0, clearingProgress: -1,
+    etaSeconds: -1, currentPattern: 'Wave.thr' }, 0);
+assert.equal(el('clearing-next').style.display, 'none');
+console.log('PASS: the up-next line hides once the pattern starts');
 
 assert.equal(controller.formatEta(0), '0s');
 assert.equal(controller.formatEta(59), '59s');

@@ -4,11 +4,11 @@
 
 enum ClearingPattern {
     CLEARING_NONE,       // No clearing
-    SPIRAL_OUTWARD,      // Edge → center (clockwise)
-    SPIRAL_INWARD,       // Edge → center (counterclockwise)
-    CONCENTRIC_CIRCLES,  // Series of circles from edge inward
-    ZIGZAG_RADIAL,       // Radial zigzag pattern
-    PETAL_FLOWER,        // Flower clearing pattern
+    SPIRAL_OUTWARD,      // Rim lap, then spiral to the centre (clockwise); legacy name
+    SPIRAL_INWARD,       // Rim lap, then spiral to the centre (counterclockwise)
+    CONCENTRIC_CIRCLES,  // Rings from the rim inward
+    ZIGZAG_RADIAL,       // Parallel edge-to-edge chords; legacy name
+    PETAL_FLOWER,        // Scalloped spiral from the rim inward
     CLEARING_RANDOM      // Pick a random clearing pattern (not NONE)
 };
 
@@ -20,28 +20,47 @@ inline ClearingPattern getRandomClearingPattern() {
     return static_cast<ClearingPattern>(1 + (random() % NUM_CLEARING_PATTERNS));
 }
 
+// Every pattern sweeps the whole disc: neighbouring passes are never farther
+// apart than MAX_PASS_SPACING, the outermost pass runs along the rim, and the
+// path reaches the centre (zigzag reaches both rim extremes instead).
+// Coordinates are THR-style (theta, rho); the planner interpolates linearly in
+// polar space, so spirals and rings are exact between points.
 class ClearingPatternGen : public PosGen {
 public:
+    // Centre-to-centre spacing limit between passes. A 1/2" ball ploughs a
+    // groove about 9-11 mm wide, so 9 mm leaves no ridge between passes.
+    static constexpr double MAX_PASS_SPACING = 9.0;
+
     ClearingPatternGen(ClearingPattern pattern, float maxRho = 450.0);
     PolarCord_t getNextPos() override;
-    int getProgressPercent() const override;
+    ClearingPattern pattern() const { return m_pattern; }
+
+    // Full-speed steady-state duration of the whole sweep starting at `from`,
+    // summed with the planner's own per-segment formula (NominalTime.hpp).
+    double nominalSeconds(PolarCord_t from, double tMaxVel, double rMaxVel,
+                          double ballMaxVel) const;
+
+    // Planned-to-nominal duration ratio over a whole sweep, from the native
+    // planner simulation at the default motion settings. Nominal time ignores
+    // acceleration and jerk, which matter for zigzag's reversals and the
+    // petal's radial oscillation but hardly at all for spirals and rings.
+    static double plannerOverhead(ClearingPattern pattern);
+
+    static const char* displayName(ClearingPattern pattern);
 
 private:
-    ClearingPattern m_pattern;
-    float m_maxRho;
-    float m_currentTheta;
-    float m_currentRho;
-    int m_circleIndex;  // For concentric circles
-    int m_spokeIndex;   // For zigzag radial
-    bool m_inward;      // For zigzag radial direction
-    bool m_complete;
-    float m_lastUnwrappedTheta = 0.0f;
-    bool m_haveUnwrappedTheta = false;
+    PolarCord_t nextSpiral(double direction);
+    PolarCord_t nextRings();
+    PolarCord_t nextZigzag();
+    PolarCord_t nextPetal();
+    double petalRho(double phi) const;
 
-    // Pattern-specific generation methods
-    PolarCord_t generateSpiralOutward();
-    PolarCord_t generateSpiralInward();
-    PolarCord_t generateConcentricCircles();
-    PolarCord_t generateZigzagRadial();
-    PolarCord_t generatePetalFlower();
+    ClearingPattern m_pattern;
+    double m_maxRho;
+    int m_passes;        // spiral turns, rings, or zigzag row gaps
+    double m_spacing;    // radial or row spacing actually used (<= MAX_PASS_SPACING)
+    double m_param = 0;  // swept angle (spiral, ring, petal) or distance along a row
+    int m_index = 0;     // current ring or row
+    bool m_complete = false;
+    double m_lastTheta = 0;
 };

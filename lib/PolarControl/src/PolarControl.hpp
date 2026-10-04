@@ -5,6 +5,7 @@
 #include "RhoPositionTracker.hpp"
 #include "Profiler.hpp"
 #include <PosGen.hpp>
+#include <ClearingPatternGen.hpp>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <memory>
@@ -227,7 +228,7 @@ public:
                    RhoJogMotor motor = RhoJogMotor::BOTH);
   RhoPositionTracker::Sample getRhoPositionEstimate();
   bool isIndependentRhoJog() const { return m_independentRhoJog.load(); }
-  bool startClearing(std::unique_ptr<PosGen> posGen);
+  bool startClearing(ClearingPattern pattern);
   bool loadAndRunFile(String filePath);
   bool loadAndRunFile(String filePath, float maxRho);
   bool pause();
@@ -251,7 +252,7 @@ public:
   float getMaxRho() const { return R_MAX; }
   int getProgressPercent() const;
   // Whole seconds left in the running pattern file at the current speed
-  // setting; -1 while no estimate exists (generators, clearing, no pattern).
+  // setting, or in the running clearing sweep; -1 while no estimate exists.
   int getEtaSeconds() const;
 
   void getDiagnostics(uint32_t& queueDepth, uint32_t& underruns) const;
@@ -363,6 +364,12 @@ private:
   // Zero while nothing is loaded or a load was rejected.
   std::atomic<uint32_t> m_patternTotalPoints{0};
   std::atomic<float> m_patternNominalSec{0.0f};
+  // Full-speed nominal duration of the running clearing sweep and its
+  // pattern's planned-to-nominal ratio; zero outside clearing.
+  float m_clearingNominalSec = 0.0f;
+  float m_clearingOverhead = 1.0f;
+  // Estimated seconds left in the running clearing sweep. Caller holds m_mutex.
+  double clearingRemainingSecLocked() const;
 
   std::atomic<State_t> m_state{UNINITIALIZED};
   std::atomic<State_t> m_motionCompletionState{IDLE};
