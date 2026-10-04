@@ -14,6 +14,7 @@
 #include "thr_reader.hpp"
 #include "profile_validator.hpp"
 #include "NominalTime.hpp"
+#include "PatternFrame.hpp"
 #include "RhoAcousticProfile.hpp"
 #include "StallGuardDetector.hpp"
 #include "RhoContactConsensus.hpp"
@@ -243,6 +244,27 @@ bool testControlledSpeedTransition() {
               << " rad/s, boundary jump=" << resumedBoundaryJump
               << ", final=(" << finalTheta << ", " << finalRho << ")"
               << std::endl;
+    return passed;
+}
+
+bool testNearestTurnOffset() {
+    std::cout << "\n=== Test: Pattern Start Nearest Turn ===" << std::endl;
+    const double turn = 2.0 * M_PI;
+    bool passed = true;
+    // Already within half a turn: no offset.
+    passed &= nearestTurnOffset(0.4, 0.1) == 0.0;
+    passed &= nearestTurnOffset(-3.0, 0.0) == 0.0;
+    // A previous pattern left 7 turns plus 0.2 rad: start on the same lap.
+    const double current = 7 * turn + 0.2;
+    const double offset = nearestTurnOffset(current, 0.3);
+    passed &= std::abs(offset - 7 * turn) < 1e-9;
+    passed &= std::abs(0.3 + offset - current) <= M_PI;
+    // Negative wind-up and a first angle beyond a full turn.
+    passed &= std::abs(nearestTurnOffset(-5 * turn, 3 * turn + 0.1) + 8 * turn) < 1e-9;
+    // Offsets are whole turns, so the drawing is unchanged.
+    passed &= std::abs(std::remainder(nearestTurnOffset(12.345, -6.789), turn)) < 1e-9;
+    passed &= nearestTurnOffset(NAN, 1.0) == 0.0;
+    std::cout << (passed ? "PASS" : "FAIL") << std::endl;
     return passed;
 }
 
@@ -1788,6 +1810,7 @@ int main(int argc, char* argv[]) {
     allPassed &= testPresenceDetectionCalibrationAndHold();
     allPassed &= testPresenceLightAutomation();
     allPassed &= testPresenceRecovery();
+    allPassed &= testNearestTurnOffset();
     allPassed &= testNominalSegmentSeconds();
     allPassed &= testCompletedNominalDurationTracking();
     allPassed &= testSpeedMultiplierScalesSpatialVelocity();

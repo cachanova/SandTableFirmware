@@ -2,6 +2,7 @@
 #include <JsonPersistence.hpp>
 #include "PatternLineReader.hpp"
 #include "PolarControl.hpp"
+#include "PatternFrame.hpp"
 #include "RhoAcousticProfile.hpp"
 #include "PolarUtils.hpp"
 #include "ThrParser.hpp"
@@ -3210,9 +3211,13 @@ void PolarControl::feedPlanner() {
         PolarCord_t next;
         if (xQueueReceive(m_coordQueue, &next, 0) == pdTRUE) {
             if (m_state == PREPARING) {
+                double theta = 0.0, rho = 0.0;
+                m_planner.getCurrentPosition(theta, rho);
+                m_fileThetaOffset = nearestTurnOffset(theta, next.theta);
                 m_state = RUNNING;
                 LOG("feedPlanner: First coord received, state -> RUNNING\r\n");
             }
+            next.theta += m_fileThetaOffset;
             m_planner.setEndOfPattern(false);
             if (!m_planner.addSegment(next.theta, next.rho)) {
                 ErrorLog::instance().log("ERROR", "MOTION", "FILE_POINT_REJECTED",

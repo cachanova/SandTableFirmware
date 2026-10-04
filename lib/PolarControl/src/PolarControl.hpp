@@ -354,6 +354,8 @@ private:
   QueueHandle_t m_cmdQueue = NULL;
   TaskHandle_t m_fileTaskHandle = NULL;
   std::atomic<bool> m_fileLoading{false};
+  // Whole turns added to the streaming file's angles; see PatternFrame.hpp.
+  double m_fileThetaOffset = 0.0;
   std::atomic<uint32_t> m_fileGeneration{0};
   std::atomic<uint32_t> m_fileReadyGeneration{0};
   std::atomic<uint32_t> m_lastFileLine{0};

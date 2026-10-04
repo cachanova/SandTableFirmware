@@ -125,9 +125,11 @@ connecting Cartesian endpoints can omit complete turns. See
   embedded NULs, empty files, and motor-step overflow reject the file with a line
   number. Blank lines and `#` / `//` comments are accepted.
 - Moving from the current position to the first THR coordinate is an explicit
-  approach and can draw a connecting line. The existing playback controller resets
-  the logical theta origin at each new pattern; within that frame, file angles
-  stay unwrapped and the planner preserves every requested turn.
+  approach and can draw a connecting line. Theta is one continuous frame across
+  patterns; each file's angles are shifted by whole turns so its first point is
+  within half a turn of the ball, which keeps the approach from unwinding turns
+  left by the previous pattern. Within the file, angles stay unwrapped and the
+  planner preserves every requested turn.
 
 See [motion accuracy implementation and validation](docs/MOTION_ACCURACY_IMPLEMENTATION.md)
 for measured changes, timing tradeoffs, reproduction commands, and physical checks.
