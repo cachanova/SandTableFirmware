@@ -120,6 +120,13 @@ connecting Cartesian endpoints can omit complete turns. See
   Corners sharper than 120 degrees stop exactly at the waypoint.
 - Ball speed and planar acceleration are limited alongside the motor limits.
   Defaults are 30 mm/s and 100 mm/s²; the speed slider scales velocity limits.
+- The pattern ETA and progress come from a run-time model (`EtaModel.hpp`)
+  that uses the planner's own line and corner-blend speed limits plus
+  jerk-limited slowing at each corner. Preflight totals it over the file; the
+  planner credits each completed waypoint and, after about a minute of motion,
+  scales the remainder by how planned time compares with the model. On the
+  native corpus the model is within 4% of planned time (11% on pixel-dense
+  legacy files), where the former velocity-only estimate was 2-81% short.
 - Lookahead uses integer microsecond clocks and flushes each exact motor target.
   Pause, stop, and speed changes brake along the source curve; resume continues
   the unfinished portion before taking the next waypoint.

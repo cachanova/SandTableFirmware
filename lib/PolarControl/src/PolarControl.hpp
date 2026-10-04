@@ -315,6 +315,10 @@ private:
       float tMaxVel = 0.0f;
       float rMaxVel = 0.0f;
       float ballMaxVel = 0.0f;
+      // Remaining limits for the preflight EtaModel total.
+      float tMaxAccel = 0.0f, tMaxJerk = 0.0f;
+      float rMaxAccel = 0.0f, rMaxJerk = 0.0f;
+      float ballMaxAccel = 0.0f, cornerTolerance = 0.0f;
   };
 
   static void fileReadTask(void* arg);
@@ -366,6 +370,8 @@ private:
   // Zero while nothing is loaded or a load was rejected.
   std::atomic<uint32_t> m_patternTotalPoints{0};
   std::atomic<float> m_patternNominalSec{0.0f};
+  // EtaModel total of the loaded file at speed 1 (0 when unknown).
+  std::atomic<float> m_patternModelSec{0.0f};
   // Full-speed nominal duration of the running clearing sweep and its
   // pattern's planned-to-nominal ratio; zero outside clearing.
   float m_clearingNominalSec = 0.0f;

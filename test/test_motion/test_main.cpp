@@ -326,7 +326,8 @@ bool testCompletedNominalDurationTracking() {
         nominalSegmentSeconds(0.0, 100.0, 200.0, 300.0, T_MAX_VEL, R_MAX_VEL, 30.0);
     const double accumulated = planner.getCompletedNominalSec();
     const bool tracked = planner.isIdle() && planner.getCompletedCount() == 2 &&
-        std::abs(accumulated - expected) < 1e-9;
+        // Segments store their nominal seconds as float to keep the buffer size.
+        std::abs(accumulated - expected) < 1e-6 * expected;
 
     planner.resetCompletedCount();
     const bool resets = planner.getCompletedCount() == 0 &&

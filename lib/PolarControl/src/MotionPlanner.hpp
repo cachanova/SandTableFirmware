@@ -4,6 +4,8 @@
 #include <atomic>
 #include "SCurve.hpp"
 #include "PolarPath.hpp"
+#include "PathLimits.hpp"
+#include "EtaModel.hpp"
 #include "FastGPIO.hpp"
 #include "Profiler.hpp"
 
@@ -75,7 +77,9 @@ struct Segment {
     double duration = 0;
     // Speed-independent steady-state estimate (see NominalTime.hpp), kept for
     // progress/remaining-time accounting rather than motion execution.
-    double nominalDuration = 0;
+    float nominalDuration = 0;
+    // EtaModel seconds of the waypoint segment before this one (see addSegment).
+    float modelDuration = 0;
     uint64_t durationUs = 0, nextSampleUs = 0;
     bool calculated = false, executing = false, generationComplete = false;
     bool geometryLocked = false, braking = false, limitsCalculated = false;
@@ -252,6 +256,16 @@ public:
         m_completedPlannedSec = 0.0;
     }
 
+    // Restart the EtaModel stream for a new file. Its waypoints must match the
+    // preflight's, so resume replays are excluded with suspendEstimate().
+    void startEstimate();
+    void suspendEstimate(bool suspended) { m_estimateSuspended = suspended; }
+    // EtaModel seconds of completed waypoint segments at speed 1, and the same
+    // divided by the speed each ran at; compare the latter with planned time.
+    double getCompletedModelSec() const { return m_completedModelSec; }
+    double getCompletedModelScaledSec() const { return m_completedModelScaledSec; }
+    EtaModel etaModel() const;
+
     // Get diagnostic info
     void getDiagnostics(uint32_t& queueDepth, uint32_t& underruns) const;
 
@@ -389,6 +403,10 @@ private:
     uint32_t m_completedCount;
     double m_completedNominalSec = 0.0;
     double m_completedPlannedSec = 0.0;
+    EtaStream m_etaStream;
+    double m_pendingModelSec = 0.0;
+    double m_completedModelSec = 0.0, m_completedModelScaledSec = 0.0;
+    bool m_estimateSuspended = false;
     bool m_startupHoldoff = false;
 
     // Timer handle (ESP32 specific)
@@ -411,6 +429,7 @@ private:
     // Internal methods
     void calculateSegmentProfile(Segment& seg, bool reportFailure = true);
     void calculatePathLimits(Segment& seg);
+    MotionLimits motionLimits() const;
     const SCurve::Profile& evaluationProfile(const Segment& seg) const;
     double segmentDistance(const Segment& seg, double time) const;
     double segmentSpeed(const Segment& seg, double time) const;

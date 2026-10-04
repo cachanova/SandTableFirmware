@@ -3,6 +3,7 @@
 #include "PatternLineReader.hpp"
 #include "PolarControl.hpp"
 #include "PatternFrame.hpp"
+#include "EtaModel.hpp"
 #include "RhoAcousticProfile.hpp"
 #include "PolarUtils.hpp"
 #include "ThrParser.hpp"
@@ -2762,6 +2763,12 @@ bool PolarControl::loadAndRunFile(String filePath, float maxRho) {
     cmd.tMaxVel = m_motionSettings.tMaxVelocity;
     cmd.rMaxVel = m_motionSettings.rMaxVelocity;
     cmd.ballMaxVel = m_motionSettings.ballMaxVelocity;
+    cmd.tMaxAccel = m_motionSettings.tMaxAccel;
+    cmd.tMaxJerk = m_motionSettings.tMaxJerk;
+    cmd.rMaxAccel = m_motionSettings.rMaxAccel;
+    cmd.rMaxJerk = m_motionSettings.rMaxJerk;
+    cmd.ballMaxAccel = m_motionSettings.ballMaxAccel;
+    cmd.cornerTolerance = m_motionSettings.cornerTolerance;
 
     // Set flag explicitly BEFORE command to prevent race condition with feedPlanner
     m_fileLoading = true;
@@ -2771,6 +2778,7 @@ bool PolarControl::loadAndRunFile(String filePath, float maxRho) {
 
     // Reset planner stats
     m_planner.resetCompletedCount();
+    m_planner.startEstimate();
 
     // Send command
     if (xQueueOverwrite(m_cmdQueue, &cmd) != pdTRUE) {
@@ -3011,7 +3019,12 @@ int PolarControl::getProgressPercent() const {
         progress = m_posGen->getProgressPercent();
     } else {
         const uint32_t totalPoints = m_patternTotalPoints.load();
-        if (totalPoints > 0) {
+        const float totalModelSec = m_patternModelSec.load();
+        if (totalModelSec > 0.0f) {
+            // Time-weighted, so the percentage and the ETA agree.
+            const double done = m_planner.getCompletedModelSec();
+            progress = static_cast<int>(std::min(100.0, 100.0 * done / totalModelSec));
+        } else if (totalPoints > 0) {
             // Count segments the planner has executed, not bytes the reader
             // has buffered: the 256-coordinate queue plus the planner's own
             // lookahead otherwise report a large head start on short files.
@@ -3057,12 +3070,28 @@ int PolarControl::getEtaSeconds() const {
         const State_t state = m_state.load();
         if (state == RUNNING || state == PAUSED || state == STOPPING ||
             state == PREPARING) {
-            double remaining = totalNominalSec - m_planner.getCompletedNominalSec();
-            if (remaining < 0.0) remaining = 0.0;
             // Same mapping and clamp as updateSpeedSettings/setSpeedMultiplier,
             // read from the requested speed so the estimate reacts immediately.
             const float multiplier =
                 std::max(0.1f, std::min(1.0f, m_speed.load() / 10.0f));
+            const float totalModelSec = m_patternModelSec.load();
+            double remaining;
+            if (totalModelSec > 0.0f) {
+                // EtaModel includes acceleration and corners. Once enough has
+                // run, scale it by how planned time compares with the model.
+                remaining = totalModelSec - m_planner.getCompletedModelSec();
+                const double modelled = m_planner.getCompletedModelScaledSec();
+                double scale = 1.0;
+                if (modelled > 60.0) {
+                    const double weight = (modelled - 60.0) / (modelled + 600.0);
+                    const double observed = m_planner.getCompletedPlannedSec() / modelled;
+                    scale = (1.0 - weight) + weight * std::max(0.5, std::min(2.0, observed));
+                }
+                remaining *= scale;
+            } else {
+                remaining = totalNominalSec - m_planner.getCompletedNominalSec();
+            }
+            if (remaining < 0.0) remaining = 0.0;
             etaSeconds = static_cast<int>(std::lround(remaining / multiplier));
         }
     }
@@ -3146,6 +3175,8 @@ void PolarControl::capturePendingTargetsForResume() {
 
 void PolarControl::feedPlanner() {
     bool replayAdded = false;
+    // Replayed waypoints were already counted by the run-time estimate.
+    m_planner.suspendEstimate(m_resumePointIndex < m_resumePoints.size());
     while (m_resumePointIndex < m_resumePoints.size() && m_planner.hasSpace()) {
         const PolarCord_t& point = m_resumePoints[m_resumePointIndex];
         if (!m_planner.addSegment(point.theta, point.rho)) {
@@ -3173,6 +3204,7 @@ void PolarControl::feedPlanner() {
     if (!m_resumePoints.empty()) {
         return;
     }
+    m_planner.suspendEstimate(false);
 
     // Mode 1: Generator (Testing/Clear)
     if (m_posGen) {
@@ -4698,6 +4730,7 @@ void PolarControl::fileReadTask(void* arg) {
                     xQueueReset(pc->m_coordQueue);
                     pc->m_patternTotalPoints.store(0);
                     pc->m_patternNominalSec.store(0.0f);
+                    pc->m_patternModelSec.store(0.0f);
                     pc->m_fileLoading.store(true);
                     LOG("FileTask: Opening %s with maxRho=%.2f\r\n", cmd.filename, cmd.maxRho);
                     strncpy(currentFilename, cmd.filename, sizeof(currentFilename) - 1);
@@ -4720,7 +4753,19 @@ void PolarControl::fileReadTask(void* arg) {
                         // large THR does not consume extra heap or task stack.
                         bool valid = true, cancelled = false;
                         uint32_t lines = 0;
-                        double nominalTotalSec = 0.0;
+                        double nominalTotalSec = 0.0, modelTotalSec = 0.0;
+                        MotionLimits limits;
+                        limits.tMaxVel = cmd.tMaxVel;
+                        limits.tMaxAccel = cmd.tMaxAccel;
+                        limits.tMaxJerk = cmd.tMaxJerk;
+                        limits.rMaxVel = cmd.rMaxVel;
+                        limits.rMaxAccel = cmd.rMaxAccel;
+                        limits.rMaxJerk = cmd.rMaxJerk;
+                        limits.ballMaxVelocity = cmd.ballMaxVel;
+                        limits.ballMaxAcceleration = cmd.ballMaxAccel;
+                        EtaStream estimate;
+                        estimate.reset(makeEtaModel(limits, directMaxRho, cmd.cornerTolerance,
+                                                    MIN_SEGMENT_DURATION));
                         bool havePreviousPoint = false;
                         PolarCord_t previousPoint{};
                         ThrValidator validator(directMaxRho, pc->getStepsPerRadian());
@@ -4744,6 +4789,7 @@ void PolarControl::fileReadTask(void* arg) {
                                         previousPoint.rho, pendingPos.rho,
                                         cmd.tMaxVel, cmd.rMaxVel, cmd.ballMaxVel);
                                 }
+                                modelTotalSec += estimate.add({pendingPos.theta, pendingPos.rho});
                                 previousPoint = pendingPos;
                                 havePreviousPoint = true;
                             }
@@ -4775,6 +4821,8 @@ void PolarControl::fileReadTask(void* arg) {
                         if (directActive) {
                             pc->m_patternTotalPoints.store(validator.points());
                             pc->m_patternNominalSec.store(static_cast<float>(nominalTotalSec));
+                            pc->m_patternModelSec.store(
+                                static_cast<float>(modelTotalSec + estimate.finish()));
                         }
                         directBufLen = directBufPos = 0;
                         directEof = false;
@@ -4803,6 +4851,7 @@ void PolarControl::fileReadTask(void* arg) {
                     pc->m_lastFileSize.store(0);
                     pc->m_patternTotalPoints.store(0);
                     pc->m_patternNominalSec.store(0.0f);
+                    pc->m_patternModelSec.store(0.0f);
                     // Clear queue
                     PolarCord_t dummy;
                     while (xQueueReceive(pc->m_coordQueue, &dummy, 0) == pdTRUE);
@@ -4899,6 +4948,7 @@ void PolarControl::fileReadTask(void* arg) {
             pc->m_lastFileSize.store(0);
             pc->m_patternTotalPoints.store(0);
             pc->m_patternNominalSec.store(0.0f);
+            pc->m_patternModelSec.store(0.0f);
             if (cmd.type == FileCommand::CMD_LOAD) {
                 pc->m_fileReadyGeneration.store(cmd.generation);
             }

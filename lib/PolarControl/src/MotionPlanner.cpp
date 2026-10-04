@@ -223,6 +223,18 @@ bool MotionPlanner::blendCorner(Segment& last, PathPoint target) {
     return true;
 }
 
+EtaModel MotionPlanner::etaModel() const {
+    return makeEtaModel(motionLimits(), m_maxRho, m_cornerTolerance, MIN_SEGMENT_DURATION);
+}
+
+void MotionPlanner::startEstimate() {
+    m_etaStream.reset(etaModel());
+    m_pendingModelSec = 0.0;
+    m_completedModelSec = 0.0;
+    m_completedModelScaledSec = 0.0;
+    m_estimateSuspended = false;
+}
+
 PathPoint MotionPlanner::cornerOf(const Segment& blend) const {
     const double span = PolarPath::norm(blend.path.entry + blend.path.exit, m_maxRho);
     return blend.path.start + blend.path.entry * (blend.path.length / span);
@@ -268,6 +280,8 @@ bool MotionPlanner::addSegment(double theta, double rho) {
         std::abs(ts - m_queuedTSteps.load()) > INT32_MAX ||
         std::abs(rs - m_queuedRSteps.load()) > INT32_MAX)
         return false;
+    if (!m_estimateSuspended)
+        m_pendingModelSec += m_etaStream.add({theta, rho});
     if (int32_t(ts) == m_queuedTSteps.load() && int32_t(rs) == m_queuedRSteps.load()) {
         // Keep the last planned geometric endpoint: substep points must not
         // change the start of a later move without emitting that movement.
@@ -295,6 +309,10 @@ bool MotionPlanner::addSegment(double theta, double rho) {
     seg.nominalDuration = nominalSegmentSeconds(theta - nominalFromTheta, rho - nominalFromRho,
                                                 nominalFromRho, rho, m_tMaxVel, m_rMaxVel,
                                                 m_ballMaxVelocity);
+    // The model knows a segment's time once the next corner is known, so each
+    // segment carries its predecessor's estimate.
+    seg.modelDuration = static_cast<float>(m_pendingModelSec);
+    m_pendingModelSec = 0.0;
     if (m_resumeReady) {
         if (std::abs(theta - m_resumePath.end.theta) < 1e-10 &&
             std::abs(rho - m_resumePath.end.rho) < 1e-10) {
@@ -337,52 +355,23 @@ void MotionPlanner::setPathLimits(double velocity, double acceleration, double t
 }
 
 void MotionPlanner::calculatePathLimits(Segment& seg) {
-    PathPoint d1, d2, d3;
-    seg.path.derivativeBounds(d1, d2, d3);
-    double v = (seg.endDistance - seg.startDistance) / MIN_SEGMENT_DURATION;
-    double a = 1e12, j = 1e12;
-    auto axis = [&](double first, double second, double third, double vmax, double amax,
-                    double jmax) {
-        if (first < 1e-15)
-            return;
-        v = std::min(v, vmax * m_speedMultiplier / first);
-        if (second > 1e-14 || third > 1e-14) {
-            if (second > 1e-14)
-                v = std::min(v, std::sqrt(amax / (2 * second)));
-            if (third > 1e-14)
-                v = std::min(v, std::cbrt(jmax / (3 * third)));
-            a = std::min(a, amax / (2 * first));
-            j = std::min(j, jmax / (3 * first));
-        } else {
-            a = std::min(a, amax / first);
-            j = std::min(j, jmax / first);
-        }
-    };
-    axis(d1.theta, d2.theta, d3.theta, m_tMaxVel, m_tMaxAccel, m_tMaxJerk);
-    axis(d1.rho, d2.rho, d3.rho, m_rMaxVel, m_rMaxAccel, m_rMaxJerk);
-    // Bound Cartesian derivatives, including centripetal and Coriolis terms.
-    const double r = std::max(seg.path.start.rho, seg.path.end.rho);
-    const double cartFirst = std::hypot(d1.rho, r * d1.theta);
-    const double cartSecond =
-        d2.rho + r * d2.theta + 2 * d1.rho * d1.theta + r * d1.theta * d1.theta;
-    if (m_ballMaxVelocity > 0 && cartFirst > 1e-15)
-        v = std::min(v, m_ballMaxVelocity * m_speedMultiplier / cartFirst);
-    if (m_ballMaxAcceleration > 0 && cartFirst > 1e-15) {
-        if (cartSecond > 1e-14) {
-            v = std::min(v, std::sqrt(m_ballMaxAcceleration / (2 * cartSecond)));
-            a = std::min(a, m_ballMaxAcceleration / (2 * cartFirst));
-        } else
-            a = std::min(a, m_ballMaxAcceleration / cartFirst);
-    }
-    // Remaining jerk budget for 3*q''*v*a, after q'*j and q'''*v^3.
-    if (d2.theta > 1e-14)
-        a = std::min(a, m_tMaxJerk / (9 * d2.theta * v));
-    if (d2.rho > 1e-14)
-        a = std::min(a, m_rMaxJerk / (9 * d2.rho * v));
-    seg.maxVelocity = v;
-    seg.maxAcceleration = a;
-    seg.maxJerk = j;
+    pathLimits(seg.path, seg.endDistance - seg.startDistance, MIN_SEGMENT_DURATION, motionLimits(),
+               seg.maxVelocity, seg.maxAcceleration, seg.maxJerk);
     seg.limitsCalculated = true;
+}
+
+MotionLimits MotionPlanner::motionLimits() const {
+    MotionLimits m;
+    m.tMaxVel = m_tMaxVel;
+    m.tMaxAccel = m_tMaxAccel;
+    m.tMaxJerk = m_tMaxJerk;
+    m.rMaxVel = m_rMaxVel;
+    m.rMaxAccel = m_rMaxAccel;
+    m.rMaxJerk = m_rMaxJerk;
+    m.ballMaxVelocity = m_ballMaxVelocity;
+    m.ballMaxAcceleration = m_ballMaxAcceleration;
+    m.speedMultiplier = m_speedMultiplier;
+    return m;
 }
 
 void MotionPlanner::calculateSegmentProfile(Segment& seg, bool reportFailure) {
@@ -990,6 +979,9 @@ void MotionPlanner::process() {
             if (!current.blend)
                 m_completedCount++;
             m_completedNominalSec += current.nominalDuration;
+            m_completedModelSec += current.modelDuration;
+            if (m_speedMultiplier > 0)
+                m_completedModelScaledSec += current.modelDuration / m_speedMultiplier;
             m_completedPlannedSec += current.duration;
 
             // Move to next segment

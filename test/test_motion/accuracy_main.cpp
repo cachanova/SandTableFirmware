@@ -2,6 +2,7 @@
 #include "../../lib/PolarControl/src/MotionPlanner.cpp"
 #include "../../lib/PolarControl/src/SCurve.cpp"
 #include "ThrParser.hpp"
+#include "EtaModel.hpp"
 #include "esp32_mock.hpp"
 #include <algorithm>
 #include <array>
@@ -504,6 +505,60 @@ void denseStaircase() {
             "dense staircase endpoint lost steps");
     std::cout << "PASS dense staircase keeps committed entries reachable\n";
 }
+void runTimeEstimate() {
+    // The EtaModel total must track the planner's own planned time, and the
+    // planner must accumulate the same per-segment values as preflight.
+    for (const char* name : {"HexagonAlley.thr", "SierpinskiTriangle2.thr", "Spiral7.thr"}) {
+        std::ifstream in(std::string("test/test_motion/patterns/") + name);
+        require(bool(in), "estimate pattern missing");
+        std::vector<PathPoint> points;
+        for (std::string line; std::getline(in, line);) {
+            double theta = 0, rho = 0;
+            if (parseThrLine(line.c_str(), 425, theta, rho) == ThrLine::Coordinate)
+                points.push_back({theta, rho});
+        }
+        MotionPlanner p;
+        init(p);
+        p.resetPosition(points[0].theta, points[0].rho);
+        p.resetCompletedCount();
+        p.startEstimate();
+        EtaStream preflight;
+        preflight.reset(p.etaModel());
+        double model = 0, last = 0;
+        for (const auto& q : points)
+            model += preflight.add(q);
+        last = preflight.finish();
+        model += last;
+        size_t next = 0;
+        bool started = false;
+        for (int tick = 0; tick < 4000000; ++tick) {
+            bool changed = false;
+            while (next < points.size() && p.hasSpace()) {
+                require(p.addSegment(points[next].theta, points[next].rho), "estimate target");
+                ++next;
+                changed = true;
+            }
+            p.setEndOfPattern(next == points.size());
+            if (changed)
+                p.recalculate();
+            if (!started) {
+                p.start();
+                started = true;
+            }
+            p.process();
+            advanceMicros(10000);
+            if (next == points.size() && p.isIdle())
+                break;
+        }
+        require(p.isIdle(), "estimate pattern did not finish");
+        const double planned = p.getCompletedPlannedSec();
+        require(std::abs(p.getCompletedModelSec() + last - model) < 1e-3 * model,
+                "planner and preflight estimates disagree");
+        require(std::abs(model - planned) < 0.05 * planned, "estimate is off by more than 5%");
+        std::cout << "PASS run-time estimate " << name << ": model " << model / 3600 << " h, planned "
+                  << planned / 3600 << " h\n";
+    }
+}
 int main() try {
     compactProfiles();
     conversion();
@@ -515,6 +570,7 @@ int main() try {
     pauseResume();
     streaming();
     denseStaircase();
+    runTimeEstimate();
     std::cout << "ALL ACCURACY TESTS PASSED; Segment=" << sizeof(Segment)
               << " planner=" << sizeof(MotionPlanner) << " bytes\n";
     return 0;
