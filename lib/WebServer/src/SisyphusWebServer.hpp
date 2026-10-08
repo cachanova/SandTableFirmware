@@ -21,7 +21,6 @@ public:
                PresenceSensor *presenceSensor);
     void loop(); // Check for pattern queue processing
     void getRequestStats(uint32_t& total, uint32_t& inflight) const;
-    bool hasLiveStreamClients() const { return m_events.count() != 0; }
 
 private:
     AsyncWebServer m_server;
