@@ -27,6 +27,8 @@ PresenceSensor* const activePresenceSensor = nullptr;
 TaskHandle_t motorTaskHandle = NULL;
 TaskHandle_t webTaskHandle = NULL;
 std::atomic<bool> otaInProgress{false};
+std::atomic<bool> otaPowerOverride{false};
+uint32_t activeCpuMhz = 240;
 void reportPreviousPanic();
 
 void motorTask(void *parameter) {
@@ -110,7 +112,6 @@ void motorTask(void *parameter) {
 
 void webTask(void *parameter) {
     LOG("Web logic task started on Core %d\r\n", xPortGetCoreID());
-    const uint32_t activeCpuMhz = getCpuFrequencyMhz();
     IdlePowerPolicy powerPolicy(millis());
     bool lowPowerApplied = false;
     unsigned long lastStats = millis();
@@ -118,6 +119,9 @@ void webTask(void *parameter) {
     uint64_t totalLoopUs = 0;
     uint32_t maxLoopUs = 0;
     while (true) {
+        // ArduinoOTA.handle() blocks through the upload. Its onStart callback
+        // wakes the hardware directly; reconcile our cached state on return.
+        if (otaPowerOverride.exchange(false)) lowPowerApplied = false;
         uint32_t startUs = micros();
         const auto state = polarControl.getState();
         const bool mechanismMoving = state == PolarControl::RUNNING ||
@@ -203,6 +207,7 @@ void setup() {
     // useful when the ESP32 and attached driver logic share a USB supply.
     setCpuFrequencyMhz(80);
 #endif
+    activeCpuMhz = getCpuFrequencyMhz();
     Serial.begin(115200);
     ledController.begin(); // Hold the light off until the end of setup().
     delay(500);
@@ -282,6 +287,11 @@ void setup() {
         LOG("OTA Start: %s\r\n", type.c_str());
         // Stop motors during OTA update
         polarControl.emergencyStop();
+        // handle() does not return until this transfer ends, so the normal
+        // web-task power policy cannot wake the CPU or radio for us.
+        setCpuFrequencyMhz(activeCpuMhz);
+        WiFi.setSleep(false);
+        otaPowerOverride.store(true);
     });
     ArduinoOTA.onEnd([]() {
         otaInProgress.store(false);
