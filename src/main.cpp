@@ -10,15 +10,23 @@
 #include <SisyphusWebServer.hpp>
 #include <LEDController.hpp>
 #include <PresenceSensor.hpp>
+#include <IdlePowerPolicy.hpp>
+#include <atomic>
 
 #include <Config.h>
 PolarControl polarControl;
 SisyphusWebServer webServer(Config::kWebServerPort);
 LEDController ledController(Config::kLedPin);
+#ifndef SISYPHUS_DISABLE_PRESENCE
 PresenceSensor presenceSensor;
+PresenceSensor* const activePresenceSensor = &presenceSensor;
+#else
+PresenceSensor* const activePresenceSensor = nullptr;
+#endif
 
 TaskHandle_t motorTaskHandle = NULL;
 TaskHandle_t webTaskHandle = NULL;
+std::atomic<bool> otaInProgress{false};
 void reportPreviousPanic();
 
 void motorTask(void *parameter) {
@@ -102,6 +110,9 @@ void motorTask(void *parameter) {
 
 void webTask(void *parameter) {
     LOG("Web logic task started on Core %d\r\n", xPortGetCoreID());
+    const uint32_t activeCpuMhz = getCpuFrequencyMhz();
+    IdlePowerPolicy powerPolicy(millis());
+    bool lowPowerApplied = false;
     unsigned long lastStats = millis();
     uint32_t loopCount = 0;
     uint64_t totalLoopUs = 0;
@@ -112,7 +123,32 @@ void webTask(void *parameter) {
         const bool mechanismMoving = state == PolarControl::RUNNING ||
             state == PolarControl::STOPPING || state == PolarControl::CLEARING ||
             state == PolarControl::PREPARING || state == PolarControl::HOMING;
-        presenceSensor.loop(mechanismMoving);
+        const bool motionBusy = mechanismMoving ||
+            state == PolarControl::HOMING_REVIEW || otaInProgress.load();
+        uint32_t requestTotal = 0;
+        uint32_t requestInflight = 0;
+        webServer.getRequestStats(requestTotal, requestInflight);
+        const bool fullPower = powerPolicy.fullPower(
+            motionBusy, requestTotal,
+            requestInflight + static_cast<uint32_t>(webServer.hasLiveStreamClients()),
+            millis());
+        if (fullPower && lowPowerApplied) {
+            // Raise the CPU clock before the next web/motion processing pass.
+            if (setCpuFrequencyMhz(activeCpuMhz)) {
+                WiFi.setSleep(false);
+                lowPowerApplied = false;
+                LOG("[POWER] active: CPU %u MHz, Wi-Fi modem sleep off\r\n",
+                    activeCpuMhz);
+            }
+        } else if (!fullPower && !lowPowerApplied) {
+            // Modem sleep retains the STA connection and wakes for AP traffic.
+            if (setCpuFrequencyMhz(80)) {
+                WiFi.setSleep(true);
+                lowPowerApplied = true;
+                LOG("[POWER] idle: CPU 80 MHz, Wi-Fi modem sleep on\r\n");
+            }
+        }
+        if (activePresenceSensor) activePresenceSensor->loop(mechanismMoving);
         webServer.loop();
 #ifndef SISYPHUS_SKIP_OTA
         ArduinoOTA.handle();
@@ -214,7 +250,8 @@ void setup() {
         ESP.restart();
     }
 
-    // The controller is mains powered; avoid modem-sleep latency for controls.
+    // Keep the radio awake during startup and any automatic homing. The web
+    // task enables modem sleep once the controller has settled at rest.
     WiFi.setSleep(false);
 
     LOG("WiFi connected!\r\n");
@@ -226,9 +263,12 @@ void setup() {
     // web pages also send the browser's clock in case the network has no NTP.
     configTime(0, 0, "pool.ntp.org", "time.google.com");
 
-    // CSI uses the existing Wi-Fi link as an ambient motion sensor. Presence
-    // may affect lighting, but is never allowed to start or stop motion.
-    presenceSensor.begin();
+    // Keep CSI and its gateway probes out of the power-saving build.
+    if (activePresenceSensor) {
+        activePresenceSensor->begin();
+    } else {
+        LOG("Presence CSI disabled for idle power saving\r\n");
+    }
 
     // Setup OTA updates
 #ifdef SISYPHUS_SKIP_OTA
@@ -237,12 +277,14 @@ void setup() {
     ArduinoOTA.setHostname(Config::kOtaHostname);
     ArduinoOTA.setPassword(Config::kOtaPassword);
     ArduinoOTA.onStart([]() {
+        otaInProgress.store(true);
         String type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
         LOG("OTA Start: %s\r\n", type.c_str());
         // Stop motors during OTA update
         polarControl.emergencyStop();
     });
     ArduinoOTA.onEnd([]() {
+        otaInProgress.store(false);
         LOG("\nOTA End - Rebooting...\r\n");
     });
     ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
@@ -254,6 +296,7 @@ void setup() {
         }
     });
     ArduinoOTA.onError([](ota_error_t error) {
+        otaInProgress.store(false);
         LOG("OTA Error[%u]: ", error);
         if (error == OTA_AUTH_ERROR) {
             LOG("OTA Auth Failed\r\n");
@@ -315,7 +358,7 @@ void setup() {
 
     // Start web server
     LOG("Starting web server...\r\n");
-    webServer.begin(&polarControl, &ledController, &presenceSensor);
+    webServer.begin(&polarControl, &ledController, activePresenceSensor);
 
 #if !defined(SISYPHUS_BENCH_MOTION_TEST) && !defined(SISYPHUS_THETA_COMMISSIONING) && !defined(SISYPHUS_RHO_COMMISSIONING)
     // Serve the abort endpoint before allowing startup motion. The website
