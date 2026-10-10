@@ -39,6 +39,10 @@ At a high level the firmware is organized around three FreeRTOS tasks pinned acr
    dashboard whenever the table is **IDLE**. Stop playback first if it is running
    or paused. Use **Abort homing** to cancel; **Home** retries after an abort or
    failure. Pattern motion stays locked until homing succeeds.
+7. Later boots skip homing when the table was idle or paused at power-off. The
+   position is saved in internal flash each time motion settles and marked
+   untrusted before motion starts, so a power loss mid-pattern homes again.
+   See [position memory](docs/POSITION_MEMORY.md).
 
 ## Configuration
 Key settings in `lib/Config/src/Config.h`:

@@ -7,6 +7,13 @@
 #include <memory>
 #include <vector>
 #include "../../../lib/PolarControl/src/RhoPositionTracker.hpp"
+#include "../../../lib/PolarControl/src/PositionMemory.hpp"
+// Fake NVS: remembers the last record written.
+static PositionMemory::Record savedRecord{false,0,0}; static bool hasRecord=false;
+bool PositionMemory::Store::save(const Record& r){savedRecord=r;hasRecord=true;return true;}
+bool PositionMemory::Store::load(double,Record& out){if(!hasRecord)return false;out=savedRecord;return true;}
+bool PositionMemory::Store::clear(){hasRecord=false;return true;}
+constexpr bool kPositionMemoryEnabled=true;
 #define PI 3.14159265358979323846
 #define R_MAX 425
 #define R_ADDR 0
@@ -70,6 +77,7 @@ struct PolarControl {
     bool finishIndependentRhoJogLocked();
     void clearInactiveRhoHoldLocked();
     bool processNextMove();bool stop();void emergencyStop(bool=false);
+    PositionMemory::Store m_positionStore;void markMovingLocked();void saveSettledPositionLocked();void settleMotionLocked();
     bool prepareRhoDriversForManualJogLocked(){return true;}
     bool disableRhoDriversLocked(){disabled=true;return true;}
     void feedPlanner(){if(m_posGen){m_planner.targetTheta=m_posGen->theta;m_planner.targetRho=m_posGen->rho;}}
@@ -93,7 +101,7 @@ struct PolarControl {
     std::atomic<uint32_t> m_homingTraceStartedAtMs{0};
 };
 #include "controller_methods.inc"
-static void resetBus(){readFail=writeFail=-1;writes=0;for(auto& motor:regs){for(auto& r:motor)r=0;motor[0]=0x1c8;motor[0x6a]=100;motor[0x6c]=8;}}
+static void resetBus(){readFail=writeFail=-1;writes=0;hasRecord=false;savedRecord={false,0,0};for(auto& motor:regs){for(auto& r:motor)r=0;motor[0]=0x1c8;motor[0x6a]=100;motor[0x6c]=8;}}
 int main(){
     using C=PolarControl;using M=C::RhoJogMotor;
     {
@@ -126,6 +134,7 @@ int main(){
                 assert(regs[inactive][0x6c]==256 && regs[active][0x6c]==8);
                 assert((regs[inactive][0]&8)==0);
                 assert(c.m_planner.targetRho==202.5);
+                assert(hasRecord && !savedRecord.valid); // motion started: position untrusted
                 // Manual hold must work long after the boot homing deadline.
                 assert(c.serviceInactiveRhoHoldLocked());
                 if(end==0){c.m_planner.complete=true;c.processNextMove();}
@@ -137,11 +146,16 @@ int main(){
                 assert(regs[inactive][0x22]==0 && regs[inactive][0x6c]==8);
                 assert(regs[inactive][0]==0x1c8);
                 assert(c.m_planner.rho==50 && c.m_planner.theta==0.2);
+                assert(!savedRecord.valid); // INITIALIZED is not a trusted position
             }
         }
     }
     // A paired jog never isolates a motor or invalidates an existing home.
-    resetBus();{C c;c.m_state=C::IDLE;assert(c.jogRelative(0,10));assert(!c.m_independentRhoJog);assert(writes==0);c.m_planner.complete=true;c.processNextMove();assert(c.m_state==C::IDLE);assert(c.m_planner.rho==60);}
+    resetBus();{C c;c.m_state=C::IDLE;assert(c.jogRelative(0,10));assert(!c.m_independentRhoJog);assert(writes==0);c.m_planner.complete=true;c.processNextMove();assert(c.m_state==C::IDLE);assert(c.m_planner.rho==60);
+        assert(savedRecord.valid && savedRecord.rho==60 && savedRecord.theta==0.2); // settled: saved for the next boot
+    }
+    // Emergency stop from idle (the OTA path) writes nothing, so the reboot after an update still skips homing.
+    resetBus();{C c;c.m_state=C::IDLE;c.saveSettledPositionLocked();assert(savedRecord.valid);c.emergencyStop();assert(savedRecord.valid && savedRecord.rho==50 && c.m_state==C::INITIALIZED);}
     // Wrong axis, missing target driver, and busy state cannot start motion.
     resetBus();{C c;assert(!c.jogRelative(1,0,M::MAIN));c.m_rhoCompanionDriverConnected=false;assert(!c.jogRelative(0,1,M::COMPANION));c.m_state=C::HOMING;assert(!c.jogRelative(0,1,M::MAIN));assert(writes==0);}
     // Failed isolation writes do not start the planner and force profile recovery.

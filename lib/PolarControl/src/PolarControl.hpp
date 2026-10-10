@@ -3,6 +3,7 @@
 #include <Print.h>
 #include "MotionPlanner.hpp"
 #include "RhoPositionTracker.hpp"
+#include "PositionMemory.hpp"
 #include "Profiler.hpp"
 #include <PosGen.hpp>
 #include <ClearingPatternGen.hpp>
@@ -196,6 +197,10 @@ public:
   // Accept the current physical location as theta=0, rho=0 without moving.
   // The caller must require explicit operator confirmation first.
   bool setCurrentPositionAsHome();
+  // Adopt the position saved when the table last settled, if the record
+  // says no motion was under way since. Returns true when homing can be
+  // skipped. Production builds only; service images discard the record.
+  bool restoreSavedPosition();
   HomingStatus getHomingStatus() const;
   size_t getHomingTrace(HomingTraceSample* output, size_t capacity,
                         size_t* total = nullptr) const;
@@ -341,6 +346,14 @@ private:
   DriverSettings m_rDriverSettings;  // Rho driver
   HomingSettings m_homingSettings;
   std::atomic<bool> m_tuningStorageReady{false};
+
+  // Last trusted position in NVS. Callers hold m_mutex.
+  PositionMemory::Store m_positionStore;
+  void markMovingLocked();
+  void saveSettledPositionLocked();
+  // Leave motion for the recorded completion state, saving the position
+  // when that state is IDLE.
+  void settleMotionLocked();
 
   // Motion planner with lookahead and S-curves
   MotionPlanner m_planner;

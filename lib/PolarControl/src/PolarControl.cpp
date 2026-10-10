@@ -20,6 +20,16 @@
 #include <cstdlib>
 #include <SD.h>
 #include <LittleFS.h>
+
+namespace {
+// Bench and commissioning images move the axes without a trusted absolute
+// position, so they never record one and discard any record they find.
+#if defined(SISYPHUS_BENCH_MOTION_TEST) || defined(SISYPHUS_THETA_COMMISSIONING) || defined(SISYPHUS_RHO_COMMISSIONING)
+constexpr bool kPositionMemoryEnabled = false;
+#else
+constexpr bool kPositionMemoryEnabled = true;
+#endif
+}  // namespace
 #include <ArduinoJson.h>
 
 // ============================================================================
@@ -338,6 +348,10 @@ bool PolarControl::begin() {
     if (m_mutex == NULL) {
         LOG("ERROR: Failed to create motor mutex\r\n");
         return false;
+    }
+
+    if (!kPositionMemoryEnabled && !m_positionStore.clear()) {
+        LOG("WARNING: could not discard the saved position record\r\n");
     }
 
     // Machine tuning is controller configuration, so keep it in internal
@@ -739,6 +753,7 @@ bool PolarControl::home(bool confirmedOriginBounded, bool automaticBoot) {
     }
 
     m_rhoPosition.invalidate();
+    markMovingLocked();
     // Separate homing motion invalidates the old logical position. Production
     // restores zero only on success; service trials also require physical review.
     m_planner.stop();
@@ -837,6 +852,7 @@ void PolarControl::homingTask(void* arg) {
         self->m_planner.resetPosition(0.0f, 0.0f);
         self->m_rhoPosition.home();
         self->m_homingFailure.store(0);
+        self->saveSettledPositionLocked();
     }
     xSemaphoreGive(self->m_mutex);
 
@@ -866,6 +882,7 @@ bool PolarControl::confirmHome(bool successful) {
         m_rhoPosition.home();
         m_homingFailure.store(0);
         m_state.store(IDLE);
+        saveSettledPositionLocked();
         LOG("Homing visually confirmed; logical position reset\r\n");
     } else {
         // A rejected sensorless result is not safe to hold as a trusted paired
@@ -898,8 +915,70 @@ bool PolarControl::setCurrentPositionAsHome() {
     m_rhoPosition.home();
     m_homingFailure.store(0);
     m_state.store(IDLE);
+    saveSettledPositionLocked();
     xSemaphoreGive(m_mutex);
     LOG("Operator accepted current physical position as theta=0, rho=0\r\n");
+    return true;
+}
+
+void PolarControl::markMovingLocked() {
+    if (!kPositionMemoryEnabled) return;
+    if (!m_positionStore.save({false, 0.0, 0.0})) {
+        ErrorLog::instance().log("ERROR", "POSITION", "MEMORY_WRITE_FAILED",
+                                 "Could not record that motion started");
+    }
+}
+
+void PolarControl::saveSettledPositionLocked() {
+    if (!kPositionMemoryEnabled) return;
+    double theta = 0.0, rho = 0.0;
+    m_planner.getCurrentPosition(theta, rho);
+    if (!m_positionStore.save({true, theta, rho})) {
+        ErrorLog::instance().log("ERROR", "POSITION", "MEMORY_WRITE_FAILED",
+                                 "Could not save the settled position");
+    }
+}
+
+void PolarControl::settleMotionLocked() {
+    finishIndependentRhoJogLocked();
+    m_state = m_motionCompletionState.exchange(IDLE);
+    if (m_state.load() == IDLE) saveSettledPositionLocked();
+}
+
+bool PolarControl::restoreSavedPosition() {
+    if (!kPositionMemoryEnabled) return false;
+    PositionMemory::Record record{};
+    if (!m_positionStore.load(R_MAX, record)) {
+        LOG("No saved position; homing is required\r\n");
+        return false;
+    }
+    if (!record.valid) {
+        LOG("Power was lost while the table was moving; homing is required\r\n");
+        return false;
+    }
+    if (!m_thetaDriverConnected.load() || !m_rhoDriverConnected.load() ||
+        (Config::kRhoCompanionMotorEnabled &&
+         m_rhoCompanionDriverPresent.load() &&
+         !m_rhoCompanionDriverConnected.load())) {
+        LOG("Saved position not restored: a motor driver is offline\r\n");
+        return false;
+    }
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    if (m_state.load() != INITIALIZED || m_homingTaskHandle != NULL) {
+        xSemaphoreGive(m_mutex);
+        return false;
+    }
+    m_planner.stop();
+    const double theta = PositionMemory::normalizeTheta(record.theta);
+    m_planner.resetPosition(theta, record.rho);
+    m_rhoPosition.reference(record.rho);
+    m_homingFailure.store(0);
+    m_state.store(IDLE);
+    // Persist the normalized angle so the stored turn count never grows.
+    saveSettledPositionLocked();
+    xSemaphoreGive(m_mutex);
+    LOG("Restored saved position theta=%.4f rad rho=%.2f mm; homing skipped\r\n",
+        theta, record.rho);
     return true;
 }
 
@@ -2557,6 +2636,8 @@ bool PolarControl::start(std::unique_ptr<PosGen> posGen) {
     // Feed initial segments to planner
     feedPlanner();
 
+    markMovingLocked();
+
     // Start the motion planner
     m_planner.start();
 
@@ -2664,6 +2745,7 @@ bool PolarControl::jogRelative(float thetaDelta, float rhoDelta,
     }
 
     m_posGen = std_patch::make_unique<SingleTargetGen>(targetTheta, targetRho);
+    markMovingLocked();
     m_planner.stop();
     m_planner.resetCompletedCount();
     feedPlanner();
@@ -2717,6 +2799,8 @@ bool PolarControl::startClearing(ClearingPattern pattern) {
 
     // Feed initial segments to planner
     feedPlanner();
+
+    markMovingLocked();
 
     // Start the motion planner
     m_planner.start();
@@ -2780,12 +2864,15 @@ bool PolarControl::loadAndRunFile(String filePath, float maxRho) {
     m_planner.resetCompletedCount();
     m_planner.startEstimate();
 
+    markMovingLocked();
+
     // Send command
     if (xQueueOverwrite(m_cmdQueue, &cmd) != pdTRUE) {
         LOG("ERROR: Failed to send load command\r\n");
         ErrorLog::instance().log("ERROR", "FILE", "QUEUE_SEND_FAILED",
                                  "Failed to send load command");
         m_fileLoading = false; // Reset if send fails
+        saveSettledPositionLocked(); // Nothing moved; the position is still trusted.
         xSemaphoreGive(m_mutex);
         return false;
     }
@@ -2817,6 +2904,7 @@ bool PolarControl::resume() {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     if (m_state == PAUSED) {
         m_state = RUNNING;
+        markMovingLocked();
         feedPlanner();
         m_planner.start();
         xSemaphoreGive(m_mutex);
@@ -2861,8 +2949,7 @@ bool PolarControl::stop() {
         }
 
         if (m_planner.isIdle()) {
-            finishIndependentRhoJogLocked();
-            m_state = m_motionCompletionState.exchange(IDLE);
+            settleMotionLocked();
         } else {
             m_state = STOPPING;
         }
@@ -2938,6 +3025,7 @@ void PolarControl::resetTheta() {
     xSemaphoreTake(m_mutex, portMAX_DELAY);
     if (m_state.load() == IDLE) {
         m_planner.resetTheta();
+        saveSettledPositionLocked();
     }
     xSemaphoreGive(m_mutex);
 }
@@ -3330,17 +3418,16 @@ bool PolarControl::processNextMove() {
                     LOG("Motion resumed after speed change\r\n");
                 } else {
                     m_posGen.reset();
-                    finishIndependentRhoJogLocked();
-                    m_state = m_motionCompletionState.exchange(IDLE);
+                    settleMotionLocked();
                     LOG("Speed changed after motion completed\r\n");
                 }
             } else if (m_pauseAfterStop) {
                 m_pauseAfterStop = false;
                 m_state = PAUSED;
+                saveSettledPositionLocked();
                 LOG("Paused after controlled deceleration\r\n");
             } else {
-                finishIndependentRhoJogLocked();
-                m_state = m_motionCompletionState.exchange(IDLE);
+                settleMotionLocked();
                 LOG("Stopped after controlled deceleration\r\n");
             }
         }
@@ -3370,8 +3457,7 @@ bool PolarControl::processNextMove() {
                 updateSpeedSettings();
             }
             m_posGen.reset();
-            finishIndependentRhoJogLocked();
-            m_state = m_motionCompletionState.exchange(IDLE);
+            settleMotionLocked();
             LOG("Pattern Complete (idle state detected in processNextMove)\r\n");
             xSemaphoreGive(m_mutex);
             return false;
