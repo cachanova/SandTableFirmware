@@ -15,7 +15,9 @@ public:
         if (companionConnected && motor != Motor::MAIN) companion_ += delta;
     }
     void rebase(double plannerRho) { last_ = plannerRho; }
-    void home() { main_=companion_=last_=0; available_=referenced_=true; }
+    void home() { reference(0); }
+    // Both motors are at a trusted absolute rho, e.g. restored from memory.
+    void reference(double rho) { main_=companion_=last_=rho; available_=referenced_=true; }
     void invalidate() { available_=referenced_=false; }
     void beginRelative(double plannerRho) {
         if (!available_) { main_=companion_=midpoint_; available_=true; }

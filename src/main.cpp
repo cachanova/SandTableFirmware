@@ -311,9 +311,9 @@ void setup() {
         LOG("WARNING: RHO SERVICE firmware is active in manual mode; theta and patterns remain locked out.\r\n");
 #else
         if (Config::kAutoHomeOnBoot) {
-            LOG("Automatic homing scheduled after web server startup.\r\n");
+            LOG("Position restore or automatic homing scheduled after web server startup.\r\n");
         } else {
-            LOG("Automatic homing disabled; use the UI to home and confirm position.\r\n");
+            LOG("Automatic homing disabled; a saved position is restored, otherwise home from the UI.\r\n");
         }
 #endif
     }
@@ -328,7 +328,11 @@ void setup() {
 #if !defined(SISYPHUS_BENCH_MOTION_TEST) && !defined(SISYPHUS_THETA_COMMISSIONING) && !defined(SISYPHUS_RHO_COMMISSIONING)
     // Serve the abort endpoint before allowing startup motion. The website
     // is a secondary control; pulse, SG and time guards remain in firmware.
-    if (motorSubsystemReady && Config::kAutoHomeOnBoot) polarControl.home(false, true);
+    // A position saved when the table last settled skips homing entirely.
+    if (motorSubsystemReady && !polarControl.restoreSavedPosition() &&
+        Config::kAutoHomeOnBoot) {
+        polarControl.home(false, true);
+    }
 #endif
 
     LOG("\n=== System Ready ===\r\n");
