@@ -2633,10 +2633,11 @@ bool PolarControl::start(std::unique_ptr<PosGen> posGen) {
     // Reset planner stats for new pattern
     m_planner.resetCompletedCount();
 
+    // Feeding can start the planner, so the position is untrusted before that.
+    markMovingLocked();
+
     // Feed initial segments to planner
     feedPlanner();
-
-    markMovingLocked();
 
     // Start the motion planner
     m_planner.start();
@@ -2797,10 +2798,11 @@ bool PolarControl::startClearing(ClearingPattern pattern) {
     // Reset planner stats for new pattern
     m_planner.resetCompletedCount();
 
+    // Feeding can start the planner, so the position is untrusted before that.
+    markMovingLocked();
+
     // Feed initial segments to planner
     feedPlanner();
-
-    markMovingLocked();
 
     // Start the motion planner
     m_planner.start();

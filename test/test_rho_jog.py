@@ -12,7 +12,7 @@ class RhoJogTest(unittest.TestCase):
         names = ['sampleRhoPositionLocked', 'getRhoPositionEstimate', 'jogRelative', 'startInactiveRhoHoldLocked',
                  'serviceInactiveRhoHoldLocked', 'restoreInactiveRhoInterfaceLocked',
                  'finishIndependentRhoJogLocked', 'clearInactiveRhoHoldLocked',
-                 'processNextMove', 'stop', 'emergencyStop',
+                 'processNextMove', 'stop', 'emergencyStop', 'start',
                  'markMovingLocked', 'saveSettledPositionLocked', 'settleMotionLocked']
         methods = []
         for name in names:
