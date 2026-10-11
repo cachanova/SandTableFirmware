@@ -33,7 +33,7 @@ namespace Config { constexpr uint32_t kRhoHomingCycleTimeoutMs=90000; }
 struct ErrorLog { static ErrorLog& instance() { static ErrorLog e; return e; }
     template<class... T> void log(T...) {} };
 struct Profiler { void addSample(uint32_t) {} };
-struct SingleTargetGen { double theta,rho; SingleTargetGen(double t,double r):theta(t),rho(r){} };
+struct SingleTargetGen { double theta,rho; bool fed=false; SingleTargetGen(double t,double r):theta(t),rho(r){} };
 namespace std_patch { using std::make_unique; }
 struct Planner {
     double theta=0.2,rho=50,targetTheta=0,targetRho=0;
@@ -41,7 +41,7 @@ struct Planner {
     void getCurrentPosition(double& t,double& r) { t=theta;r=rho; }
     void resetPosition(double t,double r) { assert(idle);theta=t;rho=r; }
     void stop(){idle=true;}
-    void start(){idle=false;}
+    void start(){assert(hasRecord && !savedRecord.valid);idle=false;} // no step before the record is untrusted
     void stopGracefully(){idle=true;}
     void discardResume(){}
     void resetCompletedCount(){}
@@ -80,7 +80,9 @@ struct PolarControl {
     PositionMemory::Store m_positionStore;void markMovingLocked();void saveSettledPositionLocked();void settleMotionLocked();
     bool prepareRhoDriversForManualJogLocked(){return true;}
     bool disableRhoDriversLocked(){disabled=true;return true;}
-    void feedPlanner(){if(m_posGen){m_planner.targetTheta=m_posGen->theta;m_planner.targetRho=m_posGen->rho;}}
+    using PosGen=SingleTargetGen;
+    bool start(std::unique_ptr<PosGen>);
+    void feedPlanner(){if(m_posGen&&!m_posGen->fed){m_posGen->fed=true;m_planner.targetTheta=m_posGen->theta;m_planner.targetRho=m_posGen->rho;if(!m_planner.isRunning())m_planner.start();}}
     void updateSpeedSettings(){}
     int m_mutex=0,m_cmdQueue=1; void* m_homingTaskHandle=nullptr;
     Planner m_planner;
@@ -156,6 +158,8 @@ int main(){
     }
     // Emergency stop from idle (the OTA path) writes nothing, so the reboot after an update still skips homing.
     resetBus();{C c;c.m_state=C::IDLE;c.saveSettledPositionLocked();assert(savedRecord.valid);c.emergencyStop();assert(savedRecord.valid && savedRecord.rho==50 && c.m_state==C::INITIALIZED);}
+    // A pattern start writes the untrusted record before the planner takes a step.
+    resetBus();{C c;c.m_state=C::IDLE;assert(c.start(std_patch::make_unique<SingleTargetGen>(0.3,80)));assert(c.m_state==C::RUNNING && hasRecord && !savedRecord.valid);c.m_planner.complete=true;c.processNextMove();assert(c.m_state==C::IDLE && savedRecord.valid && savedRecord.rho==80);}
     // Wrong axis, missing target driver, and busy state cannot start motion.
     resetBus();{C c;assert(!c.jogRelative(1,0,M::MAIN));c.m_rhoCompanionDriverConnected=false;assert(!c.jogRelative(0,1,M::COMPANION));c.m_state=C::HOMING;assert(!c.jogRelative(0,1,M::MAIN));assert(writes==0);}
     // Failed isolation writes do not start the planner and force profile recovery.
