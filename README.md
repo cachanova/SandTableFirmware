@@ -194,6 +194,7 @@ The counterweight motor needs its own qualification when reconnected.
 ## Logging and Diagnostics
 - Serial logs include queue depth, underruns, timing stats, and state changes.
 - Error log is stored in memory and exposed via `GET /api/errors`.
+- Whole-table power: log a TC66C USB-C meter over Bluetooth with `scripts/tc66_monitor.py`. See [docs/POWER_METER.md](docs/POWER_METER.md).
 
 ## Tests
 Native motion planner tests:
