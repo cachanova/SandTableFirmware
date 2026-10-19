@@ -21,7 +21,8 @@ another always-on device or a different wake source. See [Espressif's sleep
 mode guide](https://docs.espressif.com/projects/esp-idf/en/release-v4.4/esp32/api-reference/system/sleep_modes.html).
 
 Measure wall power with sensing enabled and disabled before quantifying the
-remaining saving. Any future CPU or Wi-Fi sleep trial also needs idle request
+remaining saving. [POWER_METER.md](POWER_METER.md) covers the USB-C meter
+logger. Any future CPU or Wi-Fi sleep trial also needs idle request
 latency, packet loss, reset reason, and motion timing checks on the table.
 
 The light is another large load. An earlier full-brightness measurement found
