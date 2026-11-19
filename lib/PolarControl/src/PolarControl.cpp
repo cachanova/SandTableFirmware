@@ -490,9 +490,14 @@ bool PolarControl::begin() {
     return true;
 }
 
+// Slider 1-10 scales the ball speed limit by 0.1-1.0, for patterns and
+// clearing alike. MotionPlanner::setSpeedMultiplier applies the same clamp.
+float PolarControl::speedMultiplier() const {
+    return std::max(0.1f, std::min(1.0f, m_speed.load() / 10.0f));
+}
+
 void PolarControl::updateSpeedSettings() {
-    float speedFactor = m_speed.load() / 10.0f;
-    m_planner.setSpeedMultiplier(speedFactor);
+    m_planner.setSpeedMultiplier(speedMultiplier());
 }
 
 bool PolarControl::setupDrivers() {
@@ -2776,8 +2781,7 @@ bool PolarControl::startClearing(ClearingPattern pattern) {
         return false;
     }
 
-    m_clearingSpeedActive = true;
-    m_planner.setSpeedMultiplier(1.0f);
+    updateSpeedSettings();
 
     // Walks the generator once (a few thousand points, a few milliseconds),
     // including the approach from the ball's current position.
@@ -2939,17 +2943,6 @@ bool PolarControl::stop() {
             m_planner.stopGracefully();
         }
 
-        if (m_state == CLEARING && m_clearingSpeedActive) {
-            m_clearingSpeedActive = false;
-            if (m_planner.isIdle()) {
-                updateSpeedSettings();
-            } else {
-                // Keep the full-speed limits used to construct the controlled
-                // clearing brake until it has finished.
-                m_speedUpdatePending = true;
-            }
-        }
-
         if (m_planner.isIdle()) {
             settleMotionLocked();
         } else {
@@ -2973,16 +2966,14 @@ void PolarControl::setSpeed(uint8_t speed) {
     }
     m_speed.store(newSpeed);
 
-    if (m_clearingSpeedActive) {
-        // Clearing deliberately runs at full speed. The selected value takes
-        // effect when clearing completes or is stopped.
-    } else if (m_state == RUNNING) {
+    if (m_state == RUNNING || m_state == CLEARING) {
         // Generated events are immutable. Preserve their remaining targets,
         // brake with the current limits, and apply the newest requested speed
-        // only after reaching zero velocity.
+        // only after reaching zero velocity, then resume in the same state.
         m_planner.stopGracefully(true);
         capturePendingTargetsForResume();
         m_restartAfterSpeedChange = true;
+        m_restartState = m_state.load();
         m_speedUpdatePending = true;
         m_state = STOPPING;
     } else if (m_state == STOPPING) {
@@ -3136,14 +3127,16 @@ int PolarControl::getProgressPercent() const {
 }
 
 double PolarControl::clearingRemainingSecLocked() const {
-    // Clearing always runs at multiplier 1. Scale the nominal remainder by
-    // the slower of the pattern's simulated overhead and the ratio observed
-    // so far: the observed ratio catches slower motion settings, while the
-    // prior covers patterns that slow down most near the end.
+    // Nominal time assumes full speed. Scale the nominal remainder by the
+    // slower of the prior (the pattern's simulated overhead at the selected
+    // speed) and the ratio observed so far: the observed ratio catches slower
+    // motion settings, while the prior covers patterns that slow down most
+    // near the end. The slider only lowers the ball limit, so dividing by it
+    // bounds the slowdown from above, matching the pattern estimate.
     const double completedNominal = m_planner.getCompletedNominalSec();
     double remaining = m_clearingNominalSec - completedNominal;
     if (remaining < 0.0) remaining = 0.0;
-    double ratio = m_clearingOverhead;
+    double ratio = m_clearingOverhead / speedMultiplier();
     if (completedNominal > 30.0) {
         ratio = std::max(ratio, m_planner.getCompletedPlannedSec() / completedNominal);
     }
@@ -3160,10 +3153,8 @@ int PolarControl::getEtaSeconds() const {
         const State_t state = m_state.load();
         if (state == RUNNING || state == PAUSED || state == STOPPING ||
             state == PREPARING) {
-            // Same mapping and clamp as updateSpeedSettings/setSpeedMultiplier,
-            // read from the requested speed so the estimate reacts immediately.
-            const float multiplier =
-                std::max(0.1f, std::min(1.0f, m_speed.load() / 10.0f));
+            // Read from the requested speed so the estimate reacts immediately.
+            const float multiplier = speedMultiplier();
             const float totalModelSec = m_patternModelSec.load();
             double remaining;
             if (totalModelSec > 0.0f) {
@@ -3221,7 +3212,6 @@ void PolarControl::emergencyStop(bool disableRho) {
     m_pauseAfterStop = false;
     m_restartAfterSpeedChange = false;
     m_speedUpdatePending = false;
-    m_clearingSpeedActive = false;
     updateSpeedSettings();
     if (m_cmdQueue) {
         FileCommand cmd{};
@@ -3413,7 +3403,7 @@ bool PolarControl::processNextMove() {
             }
             if (m_restartAfterSpeedChange) {
                 m_restartAfterSpeedChange = false;
-                m_state = RUNNING;
+                m_state = m_restartState;
                 feedPlanner();
                 if (!m_planner.isIdle()) {
                     m_planner.start();
@@ -3453,10 +3443,6 @@ bool PolarControl::processNextMove() {
             if (!m_posGen && m_fileLoading) {
                 xSemaphoreGive(m_mutex);
                 return false;
-            }
-            if (m_state == CLEARING && m_clearingSpeedActive) {
-                m_clearingSpeedActive = false;
-                updateSpeedSettings();
             }
             m_posGen.reset();
             settleMotionLocked();

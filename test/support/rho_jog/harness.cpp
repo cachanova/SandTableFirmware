@@ -91,7 +91,8 @@ struct PolarControl {
     std::vector<int> m_resumePoints;size_t m_resumePointIndex=0;
     std::atomic<State_t> m_state{INITIALIZED},m_motionCompletionState{IDLE};
     std::atomic<bool> m_independentRhoJog{false},m_thetaDriverConnected{true},m_rhoDriverConnected{true},m_rhoCompanionDriverConnected{true},m_bootHomingCancelled{false},m_driverBusInitialized{true};
-    bool m_rhoManualProfileDirty=false,disabled=false,m_speedUpdatePending=false,m_restartAfterSpeedChange=false,m_pauseAfterStop=false,m_clearingSpeedActive=false,m_fileLoading=false;
+    bool m_rhoManualProfileDirty=false,disabled=false,m_speedUpdatePending=false,m_restartAfterSpeedChange=false,m_pauseAfterStop=false,m_fileLoading=false;
+    State_t m_restartState=RUNNING;
     std::atomic<int> m_fileReadyGeneration{0},m_fileGeneration{0};
     Profiler m_mutexWaitProfiler;
     struct {uint16_t microsteps=8;} m_rDriverSettings;
@@ -160,6 +161,12 @@ int main(){
     resetBus();{C c;c.m_state=C::IDLE;c.saveSettledPositionLocked();assert(savedRecord.valid);c.emergencyStop();assert(savedRecord.valid && savedRecord.rho==50 && c.m_state==C::INITIALIZED);}
     // A pattern start writes the untrusted record before the planner takes a step.
     resetBus();{C c;c.m_state=C::IDLE;assert(c.start(std_patch::make_unique<SingleTargetGen>(0.3,80)));assert(c.m_state==C::RUNNING && hasRecord && !savedRecord.valid);c.m_planner.complete=true;c.processNextMove();assert(c.m_state==C::IDLE && savedRecord.valid && savedRecord.rho==80);}
+    // A speed change brakes to zero, then resumes in the state it braked: clearing stays clearing.
+    for(auto resumed:{C::RUNNING,C::CLEARING}){resetBus();C c;c.m_state=C::IDLE;c.markMovingLocked();
+        c.m_posGen=std_patch::make_unique<SingleTargetGen>(0.3,80);c.m_state=C::STOPPING;
+        c.m_restartAfterSpeedChange=true;c.m_restartState=resumed;
+        c.processNextMove();assert(c.m_state==resumed && c.m_planner.isRunning() && !c.m_restartAfterSpeedChange);
+        c.m_planner.complete=true;c.processNextMove();assert(c.m_state==C::IDLE && savedRecord.valid && savedRecord.rho==80);}
     // Wrong axis, missing target driver, and busy state cannot start motion.
     resetBus();{C c;assert(!c.jogRelative(1,0,M::MAIN));c.m_rhoCompanionDriverConnected=false;assert(!c.jogRelative(0,1,M::COMPANION));c.m_state=C::HOMING;assert(!c.jogRelative(0,1,M::MAIN));assert(writes==0);}
     // Failed isolation writes do not start the planner and force profile recovery.

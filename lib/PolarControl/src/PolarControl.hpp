@@ -455,15 +455,17 @@ private:
 
   // Speed setting: 1-10
   std::atomic<uint8_t> m_speed{10};
-  bool m_clearingSpeedActive = false;
   bool m_pauseAfterStop = false;
   bool m_restartAfterSpeedChange = false;
+  // RUNNING or CLEARING: the state a speed-change brake resumes into.
+  State_t m_restartState = RUNNING;
   bool m_speedUpdatePending = false;
   std::vector<PolarCord_t> m_resumePoints;
   size_t m_resumePointIndex = 0;
 
   // Helpers
   void updateSpeedSettings();
+  float speedMultiplier() const;
   void capturePendingTargetsForResume();
   void feedPlanner();
   bool writeTuningSettingsLocked(const MotionSettings& motionSettings,
