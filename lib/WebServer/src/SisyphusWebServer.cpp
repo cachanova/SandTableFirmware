@@ -3128,6 +3128,18 @@ static bool parseDriverSettings(AsyncWebServerRequest *request, DriverSettings& 
     return true;
 }
 
+static void motionSettingsToJson(JsonObject& obj, const MotionSettings& motion) {
+    obj["rMaxVelocity"] = motion.rMaxVelocity;
+    obj["rMaxAccel"] = motion.rMaxAccel;
+    obj["rMaxJerk"] = motion.rMaxJerk;
+    obj["tMaxVelocity"] = motion.tMaxVelocity;
+    obj["tMaxAccel"] = motion.tMaxAccel;
+    obj["tMaxJerk"] = motion.tMaxJerk;
+    obj["ballMaxVelocity"] = motion.ballMaxVelocity;
+    obj["ballMaxAccel"] = motion.ballMaxAccel;
+    obj["cornerTolerance"] = motion.cornerTolerance;
+}
+
 static void sendTuningUpdateResult(AsyncWebServerRequest* request,
                                    TuningUpdateResult result) {
     switch (result) {
@@ -3152,18 +3164,13 @@ static void sendTuningUpdateResult(AsyncWebServerRequest* request,
 void SisyphusWebServer::handleTuningGet(AsyncWebServerRequest *request) {
     JsonDocument doc;
 
-    // Motion settings
-    const MotionSettings& motion = m_polarControl->getMotionSettings();
     JsonObject motionObj = doc["motion"].to<JsonObject>();
-    motionObj["rMaxVelocity"] = motion.rMaxVelocity;
-    motionObj["rMaxAccel"] = motion.rMaxAccel;
-    motionObj["rMaxJerk"] = motion.rMaxJerk;
-    motionObj["tMaxVelocity"] = motion.tMaxVelocity;
-    motionObj["tMaxAccel"] = motion.tMaxAccel;
-    motionObj["ballMaxVelocity"] = motion.ballMaxVelocity;
-    motionObj["ballMaxAccel"] = motion.ballMaxAccel;
-    motionObj["cornerTolerance"] = motion.cornerTolerance;
-    motionObj["tMaxJerk"] = motion.tMaxJerk;
+    motionSettingsToJson(motionObj, m_polarControl->getMotionSettings());
+    JsonObject profilesObj = doc["motionProfiles"].to<JsonObject>();
+    JsonObject factoryObj = profilesObj["factory"].to<JsonObject>();
+    motionSettingsToJson(factoryObj, PolarControl::factoryMotionSettings());
+    JsonObject superSpeedObj = profilesObj["superSpeed"].to<JsonObject>();
+    motionSettingsToJson(superSpeedObj, m_polarControl->superSpeedMotionSettings());
 
     // Driver settings
     const DriverSettings& theta = m_polarControl->getThetaDriverSettings();

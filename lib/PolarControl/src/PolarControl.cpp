@@ -490,9 +490,14 @@ bool PolarControl::begin() {
     return true;
 }
 
+// Slider 1-10 scales the ball speed limit by 0.1-1.0, for patterns and
+// clearing alike. MotionPlanner::setSpeedMultiplier applies the same clamp.
+float PolarControl::speedMultiplier() const {
+    return std::max(0.1f, std::min(1.0f, m_speed.load() / 10.0f));
+}
+
 void PolarControl::updateSpeedSettings() {
-    float speedFactor = m_speed.load() / 10.0f;
-    m_planner.setSpeedMultiplier(speedFactor);
+    m_planner.setSpeedMultiplier(speedMultiplier());
 }
 
 bool PolarControl::setupDrivers() {
@@ -2776,8 +2781,7 @@ bool PolarControl::startClearing(ClearingPattern pattern) {
         return false;
     }
 
-    m_clearingSpeedActive = true;
-    m_planner.setSpeedMultiplier(1.0f);
+    updateSpeedSettings();
 
     // Walks the generator once (a few thousand points, a few milliseconds),
     // including the approach from the ball's current position.
@@ -2939,17 +2943,6 @@ bool PolarControl::stop() {
             m_planner.stopGracefully();
         }
 
-        if (m_state == CLEARING && m_clearingSpeedActive) {
-            m_clearingSpeedActive = false;
-            if (m_planner.isIdle()) {
-                updateSpeedSettings();
-            } else {
-                // Keep the full-speed limits used to construct the controlled
-                // clearing brake until it has finished.
-                m_speedUpdatePending = true;
-            }
-        }
-
         if (m_planner.isIdle()) {
             settleMotionLocked();
         } else {
@@ -2973,16 +2966,14 @@ void PolarControl::setSpeed(uint8_t speed) {
     }
     m_speed.store(newSpeed);
 
-    if (m_clearingSpeedActive) {
-        // Clearing deliberately runs at full speed. The selected value takes
-        // effect when clearing completes or is stopped.
-    } else if (m_state == RUNNING) {
+    if (m_state == RUNNING || m_state == CLEARING) {
         // Generated events are immutable. Preserve their remaining targets,
         // brake with the current limits, and apply the newest requested speed
-        // only after reaching zero velocity.
+        // only after reaching zero velocity, then resume in the same state.
         m_planner.stopGracefully(true);
         capturePendingTargetsForResume();
         m_restartAfterSpeedChange = true;
+        m_restartState = m_state.load();
         m_speedUpdatePending = true;
         m_state = STOPPING;
     } else if (m_state == STOPPING) {
@@ -3136,14 +3127,16 @@ int PolarControl::getProgressPercent() const {
 }
 
 double PolarControl::clearingRemainingSecLocked() const {
-    // Clearing always runs at multiplier 1. Scale the nominal remainder by
-    // the slower of the pattern's simulated overhead and the ratio observed
-    // so far: the observed ratio catches slower motion settings, while the
-    // prior covers patterns that slow down most near the end.
+    // Nominal time assumes full speed. Scale the nominal remainder by the
+    // slower of the prior (the pattern's simulated overhead at the selected
+    // speed) and the ratio observed so far: the observed ratio catches slower
+    // motion settings, while the prior covers patterns that slow down most
+    // near the end. The slider only lowers the ball limit, so dividing by it
+    // bounds the slowdown from above, matching the pattern estimate.
     const double completedNominal = m_planner.getCompletedNominalSec();
     double remaining = m_clearingNominalSec - completedNominal;
     if (remaining < 0.0) remaining = 0.0;
-    double ratio = m_clearingOverhead;
+    double ratio = m_clearingOverhead / speedMultiplier();
     if (completedNominal > 30.0) {
         ratio = std::max(ratio, m_planner.getCompletedPlannedSec() / completedNominal);
     }
@@ -3160,10 +3153,8 @@ int PolarControl::getEtaSeconds() const {
         const State_t state = m_state.load();
         if (state == RUNNING || state == PAUSED || state == STOPPING ||
             state == PREPARING) {
-            // Same mapping and clamp as updateSpeedSettings/setSpeedMultiplier,
-            // read from the requested speed so the estimate reacts immediately.
-            const float multiplier =
-                std::max(0.1f, std::min(1.0f, m_speed.load() / 10.0f));
+            // Read from the requested speed so the estimate reacts immediately.
+            const float multiplier = speedMultiplier();
             const float totalModelSec = m_patternModelSec.load();
             double remaining;
             if (totalModelSec > 0.0f) {
@@ -3221,7 +3212,6 @@ void PolarControl::emergencyStop(bool disableRho) {
     m_pauseAfterStop = false;
     m_restartAfterSpeedChange = false;
     m_speedUpdatePending = false;
-    m_clearingSpeedActive = false;
     updateSpeedSettings();
     if (m_cmdQueue) {
         FileCommand cmd{};
@@ -3413,7 +3403,7 @@ bool PolarControl::processNextMove() {
             }
             if (m_restartAfterSpeedChange) {
                 m_restartAfterSpeedChange = false;
-                m_state = RUNNING;
+                m_state = m_restartState;
                 feedPlanner();
                 if (!m_planner.isIdle()) {
                     m_planner.start();
@@ -3454,10 +3444,6 @@ bool PolarControl::processNextMove() {
                 xSemaphoreGive(m_mutex);
                 return false;
             }
-            if (m_state == CLEARING && m_clearingSpeedActive) {
-                m_clearingSpeedActive = false;
-                updateSpeedSettings();
-            }
             m_posGen.reset();
             settleMotionLocked();
             LOG("Pattern Complete (idle state detected in processNextMove)\r\n");
@@ -3477,6 +3463,9 @@ bool PolarControl::processNextMove() {
 // Tuning Settings
 // ============================================================================
 
+// Each bound is at least twice the super speed profile value, so operators can
+// tune around that profile. The step-rate check below is the binding limit
+// for axis velocities.
 static bool validMotionSettings(const MotionSettings& settings) {
     const bool finite = std::isfinite(settings.rMaxVelocity) && std::isfinite(settings.rMaxAccel) &&
                         std::isfinite(settings.rMaxJerk) && std::isfinite(settings.tMaxVelocity) &&
@@ -3484,30 +3473,67 @@ static bool validMotionSettings(const MotionSettings& settings) {
                         std::isfinite(settings.ballMaxVelocity) &&
                         std::isfinite(settings.ballMaxAccel) &&
                         std::isfinite(settings.cornerTolerance);
-    return finite && settings.rMaxVelocity >= 0.1f && settings.rMaxVelocity <= 50.0f &&
-           settings.rMaxAccel >= 0.1f && settings.rMaxAccel <= 200.0f &&
+    return finite && settings.rMaxVelocity >= 0.1f && settings.rMaxVelocity <= 100.0f &&
+           settings.rMaxAccel >= 0.1f && settings.rMaxAccel <= 400.0f &&
            settings.rMaxJerk >= 0.1f && settings.rMaxJerk <= 2000.0f &&
            settings.tMaxVelocity >= 0.01f && settings.tMaxVelocity <= 5.0f &&
-           settings.tMaxAccel >= 0.01f && settings.tMaxAccel <= 20.0f &&
+           settings.tMaxAccel >= 0.01f && settings.tMaxAccel <= 40.0f &&
            settings.tMaxJerk >= 0.01f && settings.tMaxJerk <= 200.0f &&
-           settings.ballMaxVelocity >= 0.1f && settings.ballMaxVelocity <= 200.0f &&
+           settings.ballMaxVelocity >= 0.1f && settings.ballMaxVelocity <= 600.0f &&
            settings.ballMaxAccel >= 0.1f && settings.ballMaxAccel <= 2000.0f &&
            settings.cornerTolerance >= 0.0f && settings.cornerTolerance <= 0.25f;
 }
 
-// The software executor services at most one step event per 50 us. Keep a
-// substantial margin for dual-axis motion and Wi-Fi task jitter until pulse
-// generation moves to a hardware peripheral.
-static constexpr float kSafeAxisStepRate = 10000.0f;
+// The step executor services at most one step event per 50 us (20 kHz).
+// Both axes share each 50 us sample, so the event rate follows the faster
+// axis, not the sum. 16 kHz per axis leaves 20% headroom for Wi-Fi task
+// jitter and for samples that carry two steps on one axis.
+static constexpr float kSafeAxisStepRate = 16000.0f;
+
+static float thetaStepsPerRadian(uint16_t microsteps) {
+    return (200.0f * microsteps / (2.0f * PI)) * (60.0f / 16.0f);
+}
+
+static float rhoStepsPerMm(uint16_t microsteps) {
+    return 50.0f * microsteps;
+}
 
 static bool motionStepRatesAreSafe(const MotionSettings& motion,
                                    uint16_t thetaMicrosteps,
                                    uint16_t rhoMicrosteps) {
-    const float thetaStepsPerRadian =
-        (200.0f * thetaMicrosteps / (2.0f * PI)) * (60.0f / 16.0f);
-    const float rhoStepsPerMm = 50.0f * rhoMicrosteps;
-    return motion.tMaxVelocity * thetaStepsPerRadian <= kSafeAxisStepRate &&
-           motion.rMaxVelocity * rhoStepsPerMm <= kSafeAxisStepRate;
+    return motion.tMaxVelocity * thetaStepsPerRadian(thetaMicrosteps) <= kSafeAxisStepRate &&
+           motion.rMaxVelocity * rhoStepsPerMm(rhoMicrosteps) <= kSafeAxisStepRate;
+}
+
+// Largest velocity at or below the step-rate ceiling, rounded down to the
+// settings page's input step so the value round-trips through the form.
+static float safeAxisVelocity(float stepsPerUnit, float inputStep) {
+    const float velocity =
+        std::floor(kSafeAxisStepRate / stepsPerUnit / inputStep) * inputStep;
+    // Float rounding can land one ulp above the ceiling; step back if so.
+    return velocity * stepsPerUnit <= kSafeAxisStepRate ? velocity : velocity - inputStep;
+}
+
+MotionSettings PolarControl::superSpeedMotionSettings() const {
+    constexpr float kFactor = 10.0f;
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    const uint16_t thetaMicrosteps = m_tDriverSettings.microsteps;
+    const uint16_t rhoMicrosteps = m_rDriverSettings.microsteps;
+    xSemaphoreGive(m_mutex);
+
+    const MotionSettings factory = factoryMotionSettings();
+    MotionSettings fast = factory;
+    fast.rMaxVelocity = std::min(factory.rMaxVelocity * kFactor,
+        safeAxisVelocity(rhoStepsPerMm(rhoMicrosteps), 0.1f));
+    fast.rMaxAccel = factory.rMaxAccel * kFactor;
+    fast.rMaxJerk = factory.rMaxJerk * kFactor;
+    fast.tMaxVelocity = std::min(factory.tMaxVelocity * kFactor,
+        safeAxisVelocity(thetaStepsPerRadian(thetaMicrosteps), 0.01f));
+    fast.tMaxAccel = factory.tMaxAccel * kFactor;
+    fast.tMaxJerk = factory.tMaxJerk * kFactor;
+    fast.ballMaxVelocity = factory.ballMaxVelocity * kFactor;
+    fast.ballMaxAccel = factory.ballMaxAccel * kFactor;
+    return fast;
 }
 
 static bool validMicrosteps(uint16_t microsteps) {
