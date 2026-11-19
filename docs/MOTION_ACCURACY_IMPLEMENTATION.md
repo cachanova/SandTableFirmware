@@ -102,7 +102,7 @@ an explicit tradeoff of the new ball limit and curvature-aware path following.
 
 | Setting | Default | Accepted range | Meaning |
 |---|---:|---:|---|
-| Ball Max Speed | 30 mm/s | 0.1–200 mm/s | Planar speed ceiling; multiplied by the speed slider |
+| Ball Max Speed | 30 mm/s | 0.1–600 mm/s | Planar speed ceiling; multiplied by the speed slider |
 | Ball Max Acceleration | 100 mm/s² | 0.1–2000 mm/s² | Bound on planar acceleration |
 | Corner Smoothing | 0.10 mm | 0–0.25 mm | Continuous geometric deviation allowance; zero follows the exact polar segments |
 

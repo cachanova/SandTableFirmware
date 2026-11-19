@@ -162,6 +162,32 @@ const char SETTINGS_UI_HEAD[] PROGMEM = R"rawliteral(
         .btn-test-rho { border-color: var(--warn); color: var(--warn); }
         .btn-test-rho:hover { background: var(--warn); color: var(--paper); }
 
+        .profile-switch {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            border: 1px solid var(--ink);
+            margin-bottom: 10px;
+        }
+        .profile-option {
+            margin: 0;
+            border: none;
+            text-align: left;
+            text-transform: none;
+            letter-spacing: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding: 12px 16px;
+        }
+        .profile-option + .profile-option { border-left: 1px solid var(--ink); }
+        .profile-name { font-size: 11.5px; font-weight: 600; letter-spacing: 1.5px; text-transform: uppercase; }
+        .profile-detail { font-size: 11.5px; font-weight: 400; font-family: var(--mono); color: var(--ink-soft); }
+        .profile-option[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+        .profile-option[aria-pressed="true"]:hover { background: #34322c; }
+        .profile-option[aria-pressed="true"] .profile-detail { color: var(--hair); }
+        .profile-option:disabled:hover { background: none; }
+        .profile-option[aria-pressed="true"]:disabled:hover { background: var(--ink); }
+
         .test-description {
             font-size: 13px;
             color: var(--ink-faint);
@@ -290,14 +316,25 @@ const char SETTINGS_UI_BODY[] PROGMEM = R"rawliteral(
 
         <section class="block">
             <h2 class="rule-head">Motion Settings</h2>
+            <div class="profile-switch" role="group" aria-label="Motion profile">
+                <button type="button" class="profile-option" id="btn-profile-factory" aria-pressed="false" disabled>
+                    <span class="profile-name">Factory</span>
+                    <span class="profile-detail" id="profile-factory-detail">&nbsp;</span>
+                </button>
+                <button type="button" class="profile-option" id="btn-profile-superSpeed" aria-pressed="false" disabled>
+                    <span class="profile-name">Super speed &times;10</span>
+                    <span class="profile-detail" id="profile-superSpeed-detail">&nbsp;</span>
+                </button>
+            </div>
+            <p class="test-description" id="motion-profile-note">Pick a profile to adopt and save it, or edit the values below.</p>
             <div class="grid">
                 <div class="form-group">
                     <label>Rho Max Velocity (mm/s)</label>
-                    <input type="number" id="tune-rMaxVelocity" min="0.1" max="50" step="0.1">
+                    <input type="number" id="tune-rMaxVelocity" min="0.1" max="100" step="0.1">
                 </div>
                 <div class="form-group">
                     <label>Rho Max Accel (mm/s2)</label>
-                    <input type="number" id="tune-rMaxAccel" min="0.1" max="200" step="0.1">
+                    <input type="number" id="tune-rMaxAccel" min="0.1" max="400" step="0.1">
                 </div>
                 <div class="form-group">
                     <label>Rho Max Jerk (mm/s3)</label>
@@ -309,7 +346,7 @@ const char SETTINGS_UI_BODY[] PROGMEM = R"rawliteral(
                 </div>
                 <div class="form-group">
                     <label>Theta Max Accel (rad/s2)</label>
-                    <input type="number" id="tune-tMaxAccel" min="0.01" max="20" step="0.01">
+                    <input type="number" id="tune-tMaxAccel" min="0.01" max="40" step="0.01">
                 </div>
                 <div class="form-group">
                     <label>Theta Max Jerk (rad/s3)</label>
@@ -317,7 +354,7 @@ const char SETTINGS_UI_BODY[] PROGMEM = R"rawliteral(
                 </div>
                 <div class="form-group">
                     <label>Ball Max Speed (mm/s)</label>
-                    <input type="number" id="tune-ballMaxVelocity" min="0.1" max="200" step="0.1">
+                    <input type="number" id="tune-ballMaxVelocity" min="0.1" max="600" step="0.1">
                 </div>
                 <div class="form-group">
                     <label>Ball Max Acceleration (mm/s²)</label>
@@ -328,7 +365,10 @@ const char SETTINGS_UI_BODY[] PROGMEM = R"rawliteral(
                     <input type="number" id="tune-cornerTolerance" min="0" max="0.25" step="0.01">
                 </div>
             </div>
-            <button class="btn-primary" id="btn-save-motion">Save Motion Settings</button>
+            <div class="test-buttons">
+                <button class="btn-primary" id="btn-save-motion">Save Motion Settings</button>
+                <button class="btn-secondary" id="btn-reset-motion" disabled>Reset to Factory Defaults</button>
+            </div>
         </section>
 
         <section class="block">
@@ -736,15 +776,11 @@ const char SETTINGS_UI_SCRIPT[] PROGMEM = R"rawliteral(
                         .forEach(id => document.getElementById(id).disabled = true);
                 }
 
-                document.getElementById('tune-rMaxVelocity').value = data.motion.rMaxVelocity;
-                document.getElementById('tune-rMaxAccel').value = data.motion.rMaxAccel;
-                document.getElementById('tune-rMaxJerk').value = data.motion.rMaxJerk;
-                document.getElementById('tune-tMaxVelocity').value = data.motion.tMaxVelocity;
-                document.getElementById('tune-tMaxAccel').value = data.motion.tMaxAccel;
-                document.getElementById('tune-ballMaxVelocity').value = data.motion.ballMaxVelocity;
-                document.getElementById('tune-ballMaxAccel').value = data.motion.ballMaxAccel;
-                document.getElementById('tune-cornerTolerance').value = data.motion.cornerTolerance;
-                document.getElementById('tune-tMaxJerk').value = data.motion.tMaxJerk;
+                motionProfiles = data.motionProfiles;
+                motionStorageAvailable = data.persistenceAvailable;
+                savedMotion = Object.assign({}, data.motion);
+                fillMotionForm(data.motion);
+                renderMotionProfiles();
 
                 document.getElementById('tune-home-triggerPercent').value = data.homing.triggerPercent;
                 document.getElementById('tune-home-consecutiveSamples').value = data.homing.consecutiveSamples;
@@ -759,21 +795,118 @@ const char SETTINGS_UI_SCRIPT[] PROGMEM = R"rawliteral(
             }
         }
 
-        async function saveMotion() {
+        const motionFields = ['rMaxVelocity', 'rMaxAccel', 'rMaxJerk', 'tMaxVelocity', 'tMaxAccel',
+            'tMaxJerk', 'ballMaxVelocity', 'ballMaxAccel', 'cornerTolerance'];
+        const motionProfileNames = { factory: 'Factory', superSpeed: 'Super speed' };
+        let motionProfiles = null;
+        let motionStorageAvailable = false;
+        let savedMotion = null;
+        let motionSavePending = false;
+
+        function readMotionForm() {
+            const values = {};
+            motionFields.forEach(field => values[field] = document.getElementById('tune-' + field).value);
+            return values;
+        }
+
+        function fillMotionForm(values) {
+            motionFields.forEach(field => document.getElementById('tune-' + field).value = values[field]);
+        }
+
+        // Firmware floats round-trip through JSON and the form as decimals.
+        function sameMotion(a, b) {
+            return motionFields.every(field => {
+                const expected = Number(b[field]);
+                return Math.abs(Number(a[field]) - expected) <= 1e-4 * Math.max(1, Math.abs(expected));
+            });
+        }
+
+        function activeMotionProfile() {
+            if (!motionProfiles || !savedMotion) return null;
+            return Object.keys(motionProfileNames)
+                .find(name => motionProfiles[name] && sameMotion(savedMotion, motionProfiles[name])) || null;
+        }
+
+        const formatNumber = value => String(Number(Number(value).toPrecision(6)));
+
+        function renderMotionProfiles() {
+            const active = activeMotionProfile();
+            const unavailable = !motionStorageAvailable || motionSavePending;
+            document.getElementById('btn-reset-motion').disabled =
+                unavailable || !(motionProfiles && motionProfiles.factory);
+            Object.keys(motionProfileNames).forEach(name => {
+                const profile = motionProfiles && motionProfiles[name];
+                const button = document.getElementById('btn-profile-' + name);
+                button.setAttribute('aria-pressed', String(name === active));
+                button.disabled = !profile || unavailable;
+                document.getElementById('profile-' + name + '-detail').textContent = profile
+                    ? 'Ball ' + formatNumber(profile.ballMaxVelocity) + ' mm/s \u00b7 Rho ' +
+                      formatNumber(profile.rMaxVelocity) + ' mm/s \u00b7 Theta ' +
+                      formatNumber(profile.tMaxVelocity) + ' rad/s'
+                    : '\u00a0';
+            });
+            const note = document.getElementById('motion-profile-note');
+            if (!motionProfiles || !savedMotion) {
+                note.textContent = 'Motion profiles are unavailable until settings load.';
+            } else if (active) {
+                note.textContent = motionProfileNames[active] + ' profile is active.';
+            } else {
+                note.textContent = 'Custom values are active. Pick a profile to replace them.';
+            }
+            const factory = motionProfiles && motionProfiles.factory;
+            const fast = motionProfiles && motionProfiles.superSpeed;
+            if (factory && fast && Number(fast.rMaxVelocity) < Number(factory.rMaxVelocity) * 10 - 1e-3) {
+                note.textContent += ' Super speed caps rho at ' + formatNumber(fast.rMaxVelocity) +
+                    ' mm/s, the step-rate limit at the current rho microstepping.';
+            }
+        }
+
+        async function saveMotionValues(values, successMessage) {
+            if (motionSavePending) return false;
+            motionSavePending = true;
+            renderMotionProfiles();
             const formData = new FormData();
-            formData.append('rMaxVelocity', document.getElementById('tune-rMaxVelocity').value);
-            formData.append('rMaxAccel', document.getElementById('tune-rMaxAccel').value);
-            formData.append('rMaxJerk', document.getElementById('tune-rMaxJerk').value);
-            formData.append('tMaxVelocity', document.getElementById('tune-tMaxVelocity').value);
-            formData.append('tMaxAccel', document.getElementById('tune-tMaxAccel').value);
-            formData.append('ballMaxVelocity', document.getElementById('tune-ballMaxVelocity').value);
-            formData.append('ballMaxAccel', document.getElementById('tune-ballMaxAccel').value);
-            formData.append('cornerTolerance', document.getElementById('tune-cornerTolerance').value);
-            formData.append('tMaxJerk', document.getElementById('tune-tMaxJerk').value);
-            const response = await fetch(apiBase + '/tuning/motion', { method: 'POST', body: formData });
-            const result = await response.json();
-            if (result.success) uiNotify('Motion settings saved.');
-            else uiNotify('Not saved: ' + result.message, { tone: 'error' });
+            motionFields.forEach(field => formData.append(field, values[field]));
+            try {
+                const response = await fetch(apiBase + '/tuning/motion', { method: 'POST', body: formData });
+                const result = await response.json();
+                if (!result.success) throw new Error(result.message || 'HTTP ' + response.status);
+                savedMotion = Object.assign({}, values);
+                fillMotionForm(values);
+                uiNotify(successMessage);
+                return true;
+            } catch (err) {
+                uiNotify('Not saved: ' + err.message, { tone: 'error' });
+                return false;
+            } finally {
+                motionSavePending = false;
+                renderMotionProfiles();
+            }
+        }
+
+        async function saveMotion() {
+            return saveMotionValues(readMotionForm(), 'Motion settings saved.');
+        }
+
+        async function adoptMotionProfile(name) {
+            const profile = motionProfiles && motionProfiles[name];
+            if (!profile || motionSavePending) return false;
+            const confirmations = {
+                factory: ['Every motion value returns to the factory default and is saved. Motion must be stopped.',
+                    { title: 'Reset motion to factory defaults?', confirmLabel: 'Reset' }],
+                superSpeed: ['Every motion limit rises to 10\u00d7 factory, with rho capped at its step-rate limit. ' +
+                    'The table runs much faster and louder, ' +
+                    'and the ball may lose the magnet on tight curves. Motion must be stopped.',
+                    { title: 'Adopt super speed?', confirmLabel: 'Adopt super speed' }]
+            };
+            if (!await uiConfirm(...confirmations[name])) return false;
+            return saveMotionValues(profile, motionProfileNames[name] + ' profile adopted.');
+        }
+
+        // The profile switch only acts on a change; Reset always re-saves.
+        function selectMotionProfile(name) {
+            if (activeMotionProfile() === name) return Promise.resolve(false);
+            return adoptMotionProfile(name);
         }
 
         async function saveDriver(driver) {
@@ -830,6 +963,9 @@ const char SETTINGS_UI_SCRIPT[] PROGMEM = R"rawliteral(
         }
 
         document.getElementById('btn-save-motion').addEventListener('click', saveMotion);
+        document.getElementById('btn-reset-motion').addEventListener('click', () => adoptMotionProfile('factory'));
+        document.getElementById('btn-profile-factory').addEventListener('click', () => selectMotionProfile('factory'));
+        document.getElementById('btn-profile-superSpeed').addEventListener('click', () => selectMotionProfile('superSpeed'));
         document.getElementById('btn-save-presence').addEventListener('click', savePresenceSettings);
         document.getElementById('btn-presence-calibrate').addEventListener('click', calibratePresence);
         document.getElementById('btn-save-theta').addEventListener('click', () => saveDriver('theta'));

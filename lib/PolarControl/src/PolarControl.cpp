@@ -3477,6 +3477,9 @@ bool PolarControl::processNextMove() {
 // Tuning Settings
 // ============================================================================
 
+// Each bound is at least twice the super speed profile value, so operators can
+// tune around that profile. The step-rate check below is the binding limit
+// for axis velocities.
 static bool validMotionSettings(const MotionSettings& settings) {
     const bool finite = std::isfinite(settings.rMaxVelocity) && std::isfinite(settings.rMaxAccel) &&
                         std::isfinite(settings.rMaxJerk) && std::isfinite(settings.tMaxVelocity) &&
@@ -3484,30 +3487,67 @@ static bool validMotionSettings(const MotionSettings& settings) {
                         std::isfinite(settings.ballMaxVelocity) &&
                         std::isfinite(settings.ballMaxAccel) &&
                         std::isfinite(settings.cornerTolerance);
-    return finite && settings.rMaxVelocity >= 0.1f && settings.rMaxVelocity <= 50.0f &&
-           settings.rMaxAccel >= 0.1f && settings.rMaxAccel <= 200.0f &&
+    return finite && settings.rMaxVelocity >= 0.1f && settings.rMaxVelocity <= 100.0f &&
+           settings.rMaxAccel >= 0.1f && settings.rMaxAccel <= 400.0f &&
            settings.rMaxJerk >= 0.1f && settings.rMaxJerk <= 2000.0f &&
            settings.tMaxVelocity >= 0.01f && settings.tMaxVelocity <= 5.0f &&
-           settings.tMaxAccel >= 0.01f && settings.tMaxAccel <= 20.0f &&
+           settings.tMaxAccel >= 0.01f && settings.tMaxAccel <= 40.0f &&
            settings.tMaxJerk >= 0.01f && settings.tMaxJerk <= 200.0f &&
-           settings.ballMaxVelocity >= 0.1f && settings.ballMaxVelocity <= 200.0f &&
+           settings.ballMaxVelocity >= 0.1f && settings.ballMaxVelocity <= 600.0f &&
            settings.ballMaxAccel >= 0.1f && settings.ballMaxAccel <= 2000.0f &&
            settings.cornerTolerance >= 0.0f && settings.cornerTolerance <= 0.25f;
 }
 
-// The software executor services at most one step event per 50 us. Keep a
-// substantial margin for dual-axis motion and Wi-Fi task jitter until pulse
-// generation moves to a hardware peripheral.
-static constexpr float kSafeAxisStepRate = 10000.0f;
+// The step executor services at most one step event per 50 us (20 kHz).
+// Both axes share each 50 us sample, so the event rate follows the faster
+// axis, not the sum. 16 kHz per axis leaves 20% headroom for Wi-Fi task
+// jitter and for samples that carry two steps on one axis.
+static constexpr float kSafeAxisStepRate = 16000.0f;
+
+static float thetaStepsPerRadian(uint16_t microsteps) {
+    return (200.0f * microsteps / (2.0f * PI)) * (60.0f / 16.0f);
+}
+
+static float rhoStepsPerMm(uint16_t microsteps) {
+    return 50.0f * microsteps;
+}
 
 static bool motionStepRatesAreSafe(const MotionSettings& motion,
                                    uint16_t thetaMicrosteps,
                                    uint16_t rhoMicrosteps) {
-    const float thetaStepsPerRadian =
-        (200.0f * thetaMicrosteps / (2.0f * PI)) * (60.0f / 16.0f);
-    const float rhoStepsPerMm = 50.0f * rhoMicrosteps;
-    return motion.tMaxVelocity * thetaStepsPerRadian <= kSafeAxisStepRate &&
-           motion.rMaxVelocity * rhoStepsPerMm <= kSafeAxisStepRate;
+    return motion.tMaxVelocity * thetaStepsPerRadian(thetaMicrosteps) <= kSafeAxisStepRate &&
+           motion.rMaxVelocity * rhoStepsPerMm(rhoMicrosteps) <= kSafeAxisStepRate;
+}
+
+// Largest velocity at or below the step-rate ceiling, rounded down to the
+// settings page's input step so the value round-trips through the form.
+static float safeAxisVelocity(float stepsPerUnit, float inputStep) {
+    const float velocity =
+        std::floor(kSafeAxisStepRate / stepsPerUnit / inputStep) * inputStep;
+    // Float rounding can land one ulp above the ceiling; step back if so.
+    return velocity * stepsPerUnit <= kSafeAxisStepRate ? velocity : velocity - inputStep;
+}
+
+MotionSettings PolarControl::superSpeedMotionSettings() const {
+    constexpr float kFactor = 10.0f;
+    xSemaphoreTake(m_mutex, portMAX_DELAY);
+    const uint16_t thetaMicrosteps = m_tDriverSettings.microsteps;
+    const uint16_t rhoMicrosteps = m_rDriverSettings.microsteps;
+    xSemaphoreGive(m_mutex);
+
+    const MotionSettings factory = factoryMotionSettings();
+    MotionSettings fast = factory;
+    fast.rMaxVelocity = std::min(factory.rMaxVelocity * kFactor,
+        safeAxisVelocity(rhoStepsPerMm(rhoMicrosteps), 0.1f));
+    fast.rMaxAccel = factory.rMaxAccel * kFactor;
+    fast.rMaxJerk = factory.rMaxJerk * kFactor;
+    fast.tMaxVelocity = std::min(factory.tMaxVelocity * kFactor,
+        safeAxisVelocity(thetaStepsPerRadian(thetaMicrosteps), 0.01f));
+    fast.tMaxAccel = factory.tMaxAccel * kFactor;
+    fast.tMaxJerk = factory.tMaxJerk * kFactor;
+    fast.ballMaxVelocity = factory.ballMaxVelocity * kFactor;
+    fast.ballMaxAccel = factory.ballMaxAccel * kFactor;
+    return fast;
 }
 
 static bool validMicrosteps(uint16_t microsteps) {

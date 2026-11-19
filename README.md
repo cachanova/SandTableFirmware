@@ -78,6 +78,12 @@ Core endpoints (see `lib/WebServer/src/SisyphusWebServer.cpp`):
 - The light uses a steady GPIO output, starts off, and has no PWM or fading; see [light control](docs/LIGHT_CONTROL.md).
 - `GET|POST /api/speed` speed control
 - `GET /api/tuning/*` driver and motion tuning
+- Settings has two motion profiles. **Factory** holds the tuned quiet defaults,
+  which **Reset to Factory Defaults** also restores. **Super speed ×10** raises
+  every factory limit 10×. Rho velocity is capped at the 16 kHz per-axis step
+  ceiling, which is 40 mm/s at the default 8 microsteps. Clicking a profile saves
+  it, and the active profile is highlighted. `GET /api/tuning` returns both
+  profiles under `motionProfiles`.
 - `GET /api/presence` CSI presence telemetry
 - `POST /api/presence/calibrate` start empty-room calibration
 - `GET|POST /api/settings/presence` configure the movement response

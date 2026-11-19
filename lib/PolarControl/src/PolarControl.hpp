@@ -280,6 +280,13 @@ public:
   // Tuning getters/setters
   MotionSettings getMotionSettings() const;
 
+  // Motion profiles offered on the settings page. Factory is the compiled
+  // default. Super speed is 10x every factory limit except corner smoothing,
+  // with each axis velocity capped at the safe step rate for the current
+  // microstep settings, so it always passes saveMotionSettings validation.
+  static MotionSettings factoryMotionSettings() { return MotionSettings{}; }
+  MotionSettings superSpeedMotionSettings() const;
+
   DriverSettings getThetaDriverSettings() const;
   DriverSettings getRhoDriverSettings() const;
   HomingSettings getHomingSettings() const;
